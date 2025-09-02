@@ -555,38 +555,12 @@ class InteractWordMessage:
 
     @classmethod
     def from_command(cls, data: dict):
-        from blivedm.protobuf import parse_pb
-        uid = 0
-        username = ''
-        face = ''
-        timestamp = 0
-        msg_type = 0
-        # 兼容pb结构
-        if 'pb' in data:
-            pb_fields = parse_pb(data['pb'])
-            # 下面的字段号需根据实际抓包调整
-            uid = pb_fields.get(1, 0)
-            username = pb_fields.get(2, '')
-            face = pb_fields.get(3, '')
-            timestamp = pb_fields.get(8, 0)
-            msg_type = pb_fields.get(5, 1)  # 1为进房
-        else:
-            # 兼容老结构
-            uid = data.get('uid', 0)
-            username = data.get('uname') or data.get('username', '')
-            face = data.get('uface') or data.get('face', '')
-            timestamp = data.get('timestamp', 0)
-            msg_type = data.get('msg_type', 0)
-            if 'uinfo' in data:
-                user_info = data['uinfo']
-                user_base_info = user_info.get('base', {})
-                uid = user_info.get('uid', uid)
-                username = user_base_info.get('name', username)
-                face = user_base_info.get('face', face)
+        user_info = data['uinfo']
+        user_base_info = user_info['base']
         return cls(
-            uid=uid,
-            username=username,
-            face=face,
-            timestamp=timestamp,
-            msg_type=msg_type,
+            uid=user_info['uid'],
+            username=user_base_info['name'],
+            face=user_base_info['face'],
+            timestamp=data['timestamp'],
+            msg_type=data['msg_type'],
         )

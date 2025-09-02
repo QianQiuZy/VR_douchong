@@ -9,7 +9,6 @@ import threading
 from aiohttp import ContentTypeError
 
 import aiohttp
-# blivedm需要使用特殊版本，不能直接pip install blivedm，需要使用https://github.com/xyself/blivedm版本
 import blivedm
 import blivedm.models.web as web_models
 from flask import Flask, jsonify
@@ -33,12 +32,11 @@ logging.basicConfig(
 )
 
 # ------------------ 数据库 ------------------
-# 这里要自己填自己数据库对应的账户密码
 DB_CONFIG = {
     "host": "localhost",
-    "user": "user",
-    "password": "password",
-    "db": "db",
+    "user": "hareigift",
+    "password": "hareillbc0301",
+    "db": "hareigift",
     "port": 3306,
 }
 engine = create_engine(
@@ -256,10 +254,9 @@ class RoomLiveStats(Base):
 Base.metadata.create_all(engine)
 
 # ------------------ 直播间配置 ------------------
-# 这里是VR所有主播的直播间，自己根据自己需要监控的自己增减
-ROOM_IDS = [1820703922,21696950,1947277414,21756924,23771189,1967216004,23805029,23260993,23771092,23771139,25788785,21452505,21224291,21484828,25788858,23550749,22470216,22605464,1967215387,1967212929,31368705,80397,282208,30655190,22778610,27628030,31368697,3032130,21403601,23017349,21457197,30655198,31368686,23770996,1861373970,21672023,784734,23017343,30655213,21613356,30655179,27627985,1766907940,27628009,22389319,26966466,30655172,1766909591,21696957,21763344,23550773,23805059,25788830,26966452,30655203,32638817,32638818,6068126,22359795,6374209]
-SESSDATA = "这里自己填，cookies获取方法自己查询"
-ROOM_ANCHORS = {1820703922:"花礼Harei",21696950:"阿萨AzA",1947277414:"泽音Melody",21756924:"雪绘Yukie",23771189:"恬豆发芽了",1967216004:"三理Mit3uri",23805029:"雾深Girimi",23260993:"瑞娅_Rhea",23771092:"又一充电中",23771139:"沐霂是MUMU呀",25788785:"岁己SUI",21452505:"七海Nana7mi",21224291:"安堂いなり_official",21484828:"轴伊Joi_Channel",25788858:"莱恩Leo",23550749:"尤格Yog",22470216:"悠亚Yua",22605464:"千幽Chiyuu",1967215387:"命依Mei",1967212929:"沐毛Meme",31368705:"米汀Nagisa",80397:"阿梓从小就很可爱",282208:"诺莺Nox",30655190:"弥月Mizuki",22778610:"勾檀Mayumi",27628030:"未知夜Michiya",31368697:"雪烛Yukisyo",3032130:"舒三妈Susam",21403601:"艾因Eine",23017349:"桃星Tocci",21457197:"中单光一",30655198:"蜜言Mikoto",31368686:"帕可Pako",23770996:"梨安不迷路",1861373970:"妮慕Nimue",21672023:"弥希Miki",784734:"宫园凛RinMiyazono",23017343:"吉吉Kiti",30655213:"漆羽Urushiha",21613356:"惑姬Waku",30655179:"入福步Ayumi",27627985:"哎小呜Awu",1766907940:"点酥Susu",27628009:"初濑Hatsuse",22389319:"千春_Chiharu",26966466:"栞栞Shiori",30655172:"离枝Richi",1766909591:"桃代Momoka",21696957:"度人Tabibito",21763344:"沙夜_Saya",23550773:"暴食Hunger",23805059:"希维Sybil",25788830:"江乱Era",26966452:"伊舞Eve",30655203:"晴一Hajime",32638817:"鬼间Kima",32638818:"阿命Inochi",6068126:"糯依Noi",22359795:"菜菜子Nanako",6374209:"小可学妹"}
+ROOM_IDS = [1820703922,21696950,1947277414,21756924,23771189,1967216004,23805029,23260993,23771092,23771139,25788785,21452505,21224291,21484828,25788858,23550749,22470216,22605464,1967215387,1967212929,31368705,80397,282208,30655190,22778610,27628030,31368697,3032130,21403601,23017349,21457197,30655198,31368686,23770996,1861373970,21672023,784734,23017343,30655213,21613356,30655179,27627985,1766907940,27628009,22389319,26966466,30655172,1766909591,21696957,21763344,23550773,23805059,25788830,26966452,30655203,32638817,32638818,6068126,22359795,6374209,938957,1791260756,1791264553,1791260716]
+SESSDATA = "自己填入"
+ROOM_ANCHORS = {1820703922:"花礼Harei",21696950:"阿萨AzA",1947277414:"泽音Melody",21756924:"雪绘Yukie",23771189:"恬豆发芽了",1967216004:"三理Mit3uri",23805029:"雾深Girimi",23260993:"瑞娅_Rhea",23771092:"又一充电中",23771139:"沐霂是MUMU呀",25788785:"岁己SUI",21452505:"七海Nana7mi",21224291:"安堂いなり_official",21484828:"轴伊Joi_Channel",25788858:"莱恩Leo",23550749:"尤格Yog",22470216:"悠亚Yua",22605464:"千幽Chiyuu",1967215387:"命依Mei",1967212929:"沐毛Meme",31368705:"米汀Nagisa",80397:"阿梓从小就很可爱",282208:"诺莺Nox",30655190:"弥月Mizuki",22778610:"勾檀Mayumi",27628030:"未知夜Michiya",31368697:"雪烛Yukisyo",3032130:"舒三妈Susam",21403601:"艾因Eine",23017349:"桃星Tocci",21457197:"中单光一",30655198:"蜜言Mikoto",31368686:"帕可Pako",23770996:"梨安不迷路",1861373970:"妮慕Nimue",21672023:"弥希Miki",784734:"宫园凛RinMiyazono",23017343:"吉吉Kiti",30655213:"漆羽Urushiha",21613356:"惑姬Waku",30655179:"入福步Ayumi",27627985:"哎小呜Awu",1766907940:"点酥Susu",27628009:"初濑Hatsuse",22389319:"千春_Chiharu",26966466:"栞栞Shiori",30655172:"离枝Richi",1766909591:"桃代Momoka",21696957:"度人Tabibito",21763344:"沙夜_Saya",23550773:"暴食Hunger",23805059:"希维Sybil",25788830:"江乱Era",26966452:"伊舞Eve",30655203:"晴一Hajime",32638817:"鬼间Kima",32638818:"阿命Inochi",6068126:"糯依Noi",22359795:"菜菜子Nanako",6374209:"小可学妹",938957:"祖娅纳惜",1791260756:"柚雨Kioi",1791264553:"能能Nori",1791260716:"犬绒Mofu"}
 
 aiohttp_session: Optional[aiohttp.ClientSession] = None
 
@@ -295,17 +292,40 @@ class MyHandler(blivedm.BaseHandler):
             value = message.total_coin / 1000
             RoomStats.update_or_create(room_id=client.room_id, gift=value)
             logging.info(
-                f"[{client.room_id}] {message.uname} 赠送 {message.gift_name}×{message.num} ({value:.2f})"
+                f"[{client.room_id}] {message.uname} uid{message.uid} 赠送 {message.gift_name}×{message.num} ({value:.2f})"
             )
         except Exception as e:
             logging.error(f"处理礼物记录时出错: {e}")
 
     def _on_user_toast_v2(self, client, message):
         try:
-            value = (message.price * message.num) / 1000
+            # 原始总金币 = 单价 × 数量
+            total_coins = message.price * message.num
+
+            # 1. 修正 price 字段异常，舰长红包会记录为1.9RMB上舰修正
+            if message.price == 1900:
+                total_coins = 198000
+
+            # 2. 按 guard_level 与 num 做映射修正，弹幕raw的多月舰长会有数据问题手动修正
+            if message.num != 1:
+                if message.guard_level == 3:
+                    mapping = {3: 534000, 6: 1038000, 12: 2046000}
+                    total_coins = mapping.get(message.num, total_coins)
+                elif message.guard_level == 2:
+                    mapping = {3: 4794000, 6: 9588000, 12: 19176000}
+                    total_coins = mapping.get(message.num, total_coins)
+                elif message.guard_level == 1:
+                    mapping = {3: 51994000}
+                    total_coins = mapping.get(message.num, total_coins)
+
+            # 3. 转换为 RMB 单位（1 RMB = 1000 金瓜子）
+            value = total_coins / 1000
+
+            # 写入数据库
             RoomStats.update_or_create(room_id=client.room_id, guard=value)
             logging.info(
-                f"[{client.room_id}] {message.username} 上舰 lvl={message.guard_level} ({value:.2f})"
+                f"[{client.room_id}] {message.username} {message.uid} 上舰 lvl={message.guard_level} "
+                f"num={message.num} 修正后={value:.1f} RMB"
             )
         except Exception as e:
             logging.error(f"处理舰长记录时出错: {e}")
@@ -315,7 +335,7 @@ class MyHandler(blivedm.BaseHandler):
             value = message.price
             RoomStats.update_or_create(room_id=client.room_id, super_chat=value)
             logging.info(
-                f"[{client.room_id}] SC ¥{message.price:.2f} {message.uname}: {message.message}"
+                f"[{client.room_id}] SC ¥{message.price:.2f} {message.uname} {message.uid}: {message.message}"
             )
         except Exception as e:
             logging.error(f"处理醒目留言记录时出错: {e}")
@@ -487,10 +507,23 @@ async def main():
         if aiohttp_session:
             await aiohttp_session.close()
 
+# ------------------ Flask API ------------------
 app = Flask(__name__)
 
 @app.route("/gift", methods=["GET"])
 def get_stats():
+    """
+    返回所有房间的统计列表，包含：
+      - room_id
+      - anchor_name
+      - attention（粉丝数）
+      - status（直播状态 0/1）
+      - gift / guard / super_chat（三种礼物数值，单位RMB）
+      - live_duration（当月累计时长 HH:MM:SS）
+      - effective_days（有效天数）
+      - live_time（开播时间）
+      - title（开播标题）
+    """
     results = []
     session = Session()
     try:
