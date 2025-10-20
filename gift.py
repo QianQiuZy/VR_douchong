@@ -1,4 +1,5 @@
 # douchong.py (monthly-only, no room_stats)
+
 import asyncio
 import http.cookies
 import logging
@@ -7,6 +8,7 @@ from typing import Optional, Tuple, Dict
 import threading
 from aiohttp import ContentTypeError
 import random, math, time
+import asyncio
 
 import aiohttp
 import blivedm
@@ -370,16 +372,15 @@ async def _reconnect_one(room_id: int):
         return
 
     client = ROOM_CLIENTS.get(room_id)
-    try:
-        if client is not None:
-            if hasattr(client, "stop_and_close"):
-                await client.stop_and_close()
-            else:
-                client.stop()
-            if hasattr(client, "join"):
-                await client.join()
-    except Exception as e:
-        logging.warning(f"[reconnect] 停止/回收旧连接异常 room={room_id}: {e}")
+    if client is not None:
+        try:
+            # blivedm 新版的优雅关闭
+            await client.stop_and_close()
+        except asyncio.CancelledError:
+            # Python 3.12: CancelledError 是 BaseException，属预期的关闭流程
+            logging.debug(f"[reconnect] room={room_id} stop_and_close 触发取消（预期），忽略")
+        except Exception as e:
+            logging.warning(f"[reconnect] stop_and_close 异常 room={room_id}: {e}")
 
     await asyncio.sleep(3)
     await _start_client(room_id)
@@ -526,6 +527,9 @@ async def reconnect_scheduler():
         try:
             await _reconnect_one(target)
             done_today.add(target)
+        except asyncio.CancelledError:
+            logging.debug(f"[reconnect] room={target} 关闭过程中取消（预期），忽略继续")
+            # 不 add 到 done_today，以便明日或稍后再试
         except Exception as e:
             logging.error(f"[reconnect] 房间 {target} 重连失败: {e}")
 
