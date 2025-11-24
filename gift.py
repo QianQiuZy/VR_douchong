@@ -7,8 +7,9 @@ import datetime
 from typing import Optional, Tuple, Dict
 import threading
 from aiohttp import ContentTypeError
-import random, math, time
-import asyncio
+import random, math, time, os, hmac, hashlib
+import smtplib
+from email.mime.text import MIMEText
 
 import aiohttp
 import blivedm
@@ -26,6 +27,8 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     and_,
     Index,
+    text,
+    BigInteger,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
@@ -54,6 +57,15 @@ engine = create_engine(
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
 
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
+EMAIL_FROM = os.getenv("EMAIL_FROM", "")
+EMAIL_TO   = os.getenv("EMAIL_TO", "")
+
+COOKIE_ALERT_SENT = False  # 防止同一次失效被疯狂刷邮件
+
 # ------------------ 工具 ------------------
 def month_str(dt: Optional[datetime.datetime] = None) -> str:
     dt = dt or datetime.datetime.now()
@@ -69,6 +81,62 @@ def month_range(month: str) -> Tuple[datetime.date, datetime.date]:
     else:
         end = datetime.date(year, mon + 1, 1)
     return start, end
+    
+def normalize_month_code(raw: Optional[str]) -> Optional[str]:
+    """
+    接受 'YYYYMM' 或 'YYYY-MM'，返回标准 'YYYYMM'；非法返回 None。
+    """
+    if not raw:
+        return None
+    s = raw.strip()
+    m1 = re.fullmatch(r"(\d{4})(\d{2})", s)
+    m2 = re.fullmatch(r"(\d{4})-(\d{2})", s)
+    if m1:
+        yyyy, mm = m1.group(1), m1.group(2)
+    elif m2:
+        yyyy, mm = m2.group(1), m2.group(2)
+    else:
+        return None
+    try:
+        mi = int(mm)
+        if 1 <= mi <= 12:
+            return f"{yyyy}{mm}"
+    except Exception:
+        return None
+    return None
+
+def send_cookie_invalid_email_async(log_line: str):
+    """
+    检测到 uid=0 时发送一次告警邮件（进程生命周期内只发一次）。
+    """
+    global COOKIE_ALERT_SENT
+    if COOKIE_ALERT_SENT:
+        return
+    COOKIE_ALERT_SENT = True
+
+    def _worker():
+        try:
+            subject = "B站直播礼物监听 Cookies 失效告警"
+            body = (
+                "检测到 B 站直播礼物消息 uid=0，疑似 SESSDATA Cookies 已失效。\n\n"
+                f"原始日志：{log_line}\n"
+                "请尽快检查并更新 douchong.py 使用的 SESSDATA。"
+            )
+            msg = MIMEText(body, "plain", "utf-8")
+            msg["Subject"] = subject
+            msg["From"] = EMAIL_FROM
+            msg["To"] = EMAIL_TO
+
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+                server.starttls()
+                server.login(SMTP_USER, SMTP_PASS)
+                server.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
+
+            logging.info("[SMTP] Cookies 失效告警邮件已发送")
+        except Exception as e:
+            logging.error(f"[SMTP] 发送 Cookies 失效告警失败: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 # ------------------ 表定义 ------------------
 class RoomInfo(Base):
@@ -165,7 +233,7 @@ class RoomLiveStats(Base):
 
     @classmethod
     def add_duration(cls, room_id: int, date_: datetime.date, seconds: int):
-        for _ in range(3):
+        for i in range(3):
             session = Session()
             try:
                 row = session.query(cls).filter_by(room_id=room_id, date=date_).first()
@@ -178,8 +246,7 @@ class RoomLiveStats(Base):
                 return
             except SQLAlchemyError as e:
                 session.rollback()
-                session.close()
-                logging.warning(f"[RoomLiveStats] 第 {_+1} 次尝试 add_duration 失败: {e}")
+                logging.warning(f"[RoomLiveStats] 第 {i+1} 次尝试 add_duration 失败: {e}")
             finally:
                 try:
                     session.close()
@@ -218,6 +285,20 @@ class LiveSession(Base):
     guard       = Column(Float, default=0.0, nullable=False)
     super_chat  = Column(Float, default=0.0, nullable=False)
     month       = Column(String(6), nullable=False, index=True)  # 以开播月份为准
+    
+    danmaku_count = Column(Integer, default=0, nullable=False)
+
+    # 新增：开播/下播时的守护快照 + 粉丝团快照
+    # guard_1 = 舰长数量；guard_2 = 提督数量；guard_3 = 总督数量
+    start_guard_1   = Column(Integer, nullable=True)
+    start_guard_2   = Column(Integer, nullable=True)
+    start_guard_3   = Column(Integer, nullable=True)
+    start_fans_count = Column(Integer, nullable=True)
+
+    end_guard_1     = Column(Integer, nullable=True)
+    end_guard_2     = Column(Integer, nullable=True)
+    end_guard_3     = Column(Integer, nullable=True)
+    end_fans_count  = Column(Integer, nullable=True)
 
     @classmethod
     def start_session(cls, room_id: int, start_dt: datetime.datetime, title: str) -> Optional[int]:
@@ -283,7 +364,7 @@ class LiveSession(Base):
             session.close()
 
     @classmethod
-    def close_session_by_id(cls, session_id: int, end_dt: datetime.datetime):
+    def close_session_by_id(cls, session_id: Optional[int], end_dt: datetime.datetime):
         if not session_id:
             return
         session = Session()
@@ -297,6 +378,170 @@ class LiveSession(Base):
             logging.error(f"[LiveSession] close_session_by_id 失败: {e}")
         finally:
             session.close()
+
+    @classmethod
+    def update_start_counts(
+        cls,
+        session_id: int,
+        guard_1: Optional[int] = None,
+        guard_2: Optional[int] = None,
+        guard_3: Optional[int] = None,
+        fans_count: Optional[int] = None,
+    ):
+        """更新开播瞬间的守护/粉丝团快照。"""
+        if not session_id:
+            return
+        session = Session()
+        try:
+            row = session.query(cls).filter_by(id=session_id).first()
+            if not row:
+                return
+            if guard_1 is not None:
+                row.start_guard_1 = guard_1
+            if guard_2 is not None:
+                row.start_guard_2 = guard_2
+            if guard_3 is not None:
+                row.start_guard_3 = guard_3
+            if fans_count is not None:
+                row.start_fans_count = fans_count
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[LiveSession] update_start_counts 失败: {e}")
+        finally:
+            session.close()
+
+    @classmethod
+    def update_end_counts(
+        cls,
+        session_id: int,
+        guard_1: Optional[int] = None,
+        guard_2: Optional[int] = None,
+        guard_3: Optional[int] = None,
+        fans_count: Optional[int] = None,
+    ):
+        """更新下播瞬间的守护/粉丝团快照。"""
+        if not session_id:
+            return
+        session = Session()
+        try:
+            row = session.query(cls).filter_by(id=session_id).first()
+            if not row:
+                return
+            if guard_1 is not None:
+                row.end_guard_1 = guard_1
+            if guard_2 is not None:
+                row.end_guard_2 = guard_2
+            if guard_3 is not None:
+                row.end_guard_3 = guard_3
+            if fans_count is not None:
+                row.end_fans_count = fans_count
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[LiveSession] update_end_counts 失败: {e}")
+        finally:
+            session.close()
+            
+    @classmethod
+    def add_danmaku_by_id(cls, session_id: int, count: int):
+        """按 session_id 追加弹幕数量"""
+        if not session_id or count <= 0:
+            return
+        session = Session()
+        try:
+            row = session.query(cls).filter_by(id=session_id).first()
+            if not row:
+                return
+            row.danmaku_count = (row.danmaku_count or 0) + int(count)
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[LiveSession] add_danmaku_by_id 失败: {e}")
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+    @classmethod
+    def add_danmaku_by_room_open(cls, room_id: int, count: int):
+        """兜底：按 room_id 找当前未结束场次追加弹幕数量"""
+        if count <= 0:
+            return
+        session = Session()
+        try:
+            row = (
+                session.query(cls)
+                .filter(and_(cls.room_id == room_id, cls.end_time.is_(None)))
+                .order_by(cls.start_time.desc())
+                .first()
+            )
+            if not row:
+                return
+            row.danmaku_count = (row.danmaku_count or 0) + int(count)
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[LiveSession] add_danmaku_by_room_open 失败: {e}")
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+            
+class SuperChatLog(Base):
+    """单条 SC 消息日志"""
+    __tablename__ = "super_chat_log"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    room_id   = Column(Integer, nullable=False, index=True)
+    uname     = Column(String(100), nullable=False)
+    uid       = Column(BigInteger, nullable=False)
+    send_time = Column(DateTime, nullable=False, index=True)
+    price     = Column(Float, nullable=False)
+    message   = Column(String(500), nullable=False)
+
+    __table_args__ = (
+        Index("idx_scl_room_time", "room_id", "send_time"),
+        Index("idx_scl_uid_time", "uid", "send_time"),
+    )
+
+    @classmethod
+    def log_sc(
+        cls,
+        room_id: int,
+        uname: str,
+        uid: int,
+        price: float,
+        content: str,
+        send_time: Optional[datetime.datetime] = None,
+    ):
+        session = Session()
+        try:
+            final_time = send_time or datetime.datetime.now()
+            # 避免 1970 年之类的异常时间被写入，统一兜底为当前时间
+            if final_time.year < 2000:
+                final_time = datetime.datetime.now()
+
+            row = cls(
+                room_id=room_id,
+                uname=uname or "",
+                uid=int(uid or 0),
+                price=float(price or 0.0),
+                message=content or "",
+                send_time=final_time,
+            )
+            session.add(row)
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[SuperChatLog] 写入失败: {e}")
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
 
 def _room_ids_for_month(m: str, include_config: bool = True) -> list[int]:
     """返回指定月份应展示的房间集合：DB出现过的房间 ∪ (可选) ROOM_IDS"""
@@ -328,11 +573,67 @@ def _room_ids_for_month(m: str, include_config: bool = True) -> list[int]:
 Base.metadata.create_all(engine)
 
 # ------------------ 直播间配置 ------------------
-ROOM_IDS = [1820703922,21696950,1947277414,27628019,21756924,23771189,1967216004,23805029,23260993,23771092,23771139,25788785,21452505,21224291,21484828,25788858,23550749,22470216,22605464,1967215387,1967212929,31368705,80397,282208,30655190,22778610,27628030,31368697,3032130,21403601,23017349,21457197,30655198,31368686,23770996,1861373970,21672023,784734,23017343,30655213,21613356,30655179,27627985,1766907940,27628009,22389319,26966466,30655172,1766909591,21696957,21763344,23550773,23805059,25788830,26966452,30655203,32638817,32638818,6068126,22359795,6374209,938957,1791260756,1791264553,1791260716]
-SESSDATA = "自己填"
-ROOM_ANCHORS = {1820703922:"花礼Harei",21696950:"阿萨AzA",1947277414:"泽音Melody",27628019:"雨纪_Ameki",21756924:"雪绘Yukie",23771189:"恬豆发芽了",1967216004:"三理Mit3uri",23805029:"雾深Girimi",23260993:"瑞娅_Rhea",23771092:"又一充电中",23771139:"沐霂是MUMU呀",25788785:"岁己SUI",21452505:"七海Nana7mi",21224291:"安堂いなり_official",21484828:"轴伊Joi_Channel",25788858:"莱恩Leo",23550749:"尤格Yog",22470216:"悠亚Yua",22605464:"千幽Chiyuu",1967215387:"命依Mei",1967212929:"沐毛Meme",31368705:"米汀Nagisa",80397:"阿梓从小就很可爱",282208:"诺莺Nox",30655190:"弥月Mizuki",22778610:"勾檀Mayumi",27628030:"未知夜Michiya",31368697:"雪烛Yukisyo",3032130:"舒三妈Susam",21403601:"艾因Eine",23017349:"桃星Tocci",21457197:"中单光一",30655198:"蜜言Mikoto",31368686:"帕可Pako",23770996:"梨安不迷路",1861373970:"妮慕Nimue",21672023:"弥希Miki",784734:"宫园凛RinMiyazono",23017343:"吉吉Kiti",30655213:"漆羽Urushiha",21613356:"惑姬Waku",30655179:"入福步Ayumi",27627985:"哎小呜Awu",1766907940:"点酥Susu",27628009:"初濑Hatsuse",22389319:"千春_Chiharu",26966466:"栞栞Shiori",30655172:"离枝Richi",1766909591:"桃代Momoka",21696957:"度人Tabibito",21763344:"沙夜_Saya",23550773:"暴食Hunger",23805059:"希维Sybil",25788830:"江乱Era",26966452:"伊舞Eve",30655203:"晴一Hajime",32638817:"鬼间Kima",32638818:"阿命Inochi",6068126:"糯依Noi",22359795:"菜菜子Nanako",6374209:"小可学妹",938957:"祖娅纳惜",1791260756:"柚雨Kioi",1791264553:"能能Nori",1791260716:"犬绒Mofu"}
+ROOM_IDS = [
+    1820703922,21696950,1947277414,27628019,21756924,
+    23771189,1967216004,23805029,23260993,23771092,
+    23771139,25788785,21452505,21224291,21484828,
+    25788858,23550749,22470216,22605464,1967215387,
+    1967212929,31368705,80397,282208,30655190,
+    22778610,27628030,31368697,3032130,21403601,
+    23017349,21457197,30655198,31368686,23770996,
+    1861373970,784734,23017343,30655213,21613356,
+    30655179,27627985,1766907940,27628009,22389319,
+    26966466,30655172,1766909591,21696957,21763344,
+    23550773,23805059,30655203,32638817,32638818,
+    6068126,22359795,6374209,938957,1791260756,
+    1791264553,1791260716,21470454,
+]
+SESSDATA_VALUE = ""
+BILI_JCT_VALUE           = ""
+DEDEUSERID_VALUE         = ""
+DEDEUSERID_CKMD5_VALUE   = ""
+SID_VALUE                = ""
+BUVID3_VALUE             = ""
+DEVICE_FP_VALUE          = ""
+
+BILI_COOKIES_BASE = {
+    "SESSDATA": SESSDATA_VALUE,
+    "bili_jct": BILI_JCT_VALUE,
+    "DedeUserID": DEDEUSERID_VALUE,
+    "DedeUserID__ckMd5": DEDEUSERID_CKMD5_VALUE,
+    "sid": SID_VALUE,
+    "buvid3": BUVID3_VALUE,
+    "deviceFingerprint": DEVICE_FP_VALUE,
+}
+
+BILI_TICKET: Optional[str] = None
+BILI_TICKET_EXPIRES: Optional[int] = None  # Unix 时间戳
+
+# bili_ticket 相关常量（按你示例）
+BILI_TICKET_KEY    = "XgwSnGZ1p"
+BILI_TICKET_URL    = "https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket"
+BILI_TICKET_KEY_ID = "ec02"
+
+ROOM_ANCHORS = {
+    1820703922:"花礼Harei",21696950:"阿萨AzA",1947277414:"泽音Melody",27628019:"雨纪_Ameki",21756924:"雪绘Yukie",
+    23771189:"恬豆发芽了",1967216004:"三理Mit3uri",23805029:"雾深Girimi",23260993:"瑞娅_Rhea",23771092:"又一充电中",
+    23771139:"沐霂是MUMU呀",25788785:"岁己SUI",21452505:"七海Nana7mi",21224291:"安堂いなり_official",21484828:"轴伊Joi_Channel",
+    25788858:"莱恩Leo",23550749:"尤格Yog",22470216:"悠亚Yua",22605464:"千幽Chiyuu",1967215387:"命依Mei",
+    1967212929:"沐毛Meme",31368705:"米汀Nagisa",80397:"阿梓从小就很可爱",282208:"诺莺Nox",30655190:"弥月Mizuki",
+    22778610:"勾檀Mayumi",27628030:"未知夜Michiya",31368697:"雪烛Yukisyo",3032130:"舒三妈Susam",21403601:"艾因Eine",
+    23017349:"桃星Tocci",21457197:"中单光一",30655198:"蜜言Mikoto",31368686:"帕可Pako",23770996:"梨安不迷路",
+    1861373970:"妮慕Nimue",784734:"宫园凛RinMiyazono",23017343:"吉吉Kiti",30655213:"漆羽Urushiha",21613356:"惑姬Waku",
+    30655179:"入福步Ayumi",27627985:"哎小呜Awu",1766907940:"点酥Susu",27628009:"初濑Hatsuse",22389319:"千春_Chiharu",
+    26966466:"栞栞Shiori",30655172:"离枝Richi",1766909591:"桃代Momoka",21696957:"度人Tabibito",21763344:"沙夜_Saya",
+    23550773:"暴食Hunger",23805059:"希维Sybil",30655203:"晴一Hajime",32638817:"鬼间Kima",32638818:"阿命Inochi",
+    6068126:"糯依Noi",22359795:"菜菜子Nanako",6374209:"小可学妹",938957:"祖娅纳惜",1791260756:"柚雨Kioi",
+    1791264553:"能能Nori",1791260716:"犬绒Mofu",21470454:"VirtuaReal",
+}
 
 aiohttp_session: Optional[aiohttp.ClientSession] = None
+
+# room_id -> uid（仅初始化时获取一次，后续不刷新）
+ROOM_UIDS: Dict[int, int] = {}
 
 def init_room_info():
     for rid, name in ROOM_ANCHORS.items():
@@ -340,18 +641,32 @@ def init_room_info():
 
 def init_session():
     cookies = http.cookies.SimpleCookie()
-    cookies["SESSDATA"] = SESSDATA
-    cookies["SESSDATA"]["domain"] = "bilibili.com"
+    # 基础 Cookie 统一写入
+    for k, v in BILI_COOKIES_BASE.items():
+        if not v:
+            continue
+        cookies[k] = v
+        cookies[k]["domain"] = "bilibili.com"
+
     global aiohttp_session
     connector = aiohttp.TCPConnector(ssl=False)
     aiohttp_session = aiohttp.ClientSession(connector=connector)
     aiohttp_session.cookie_jar.update_cookies(cookies)
+    logging.info("[session] 已初始化基础 Cookies：%s", ",".join(cookies.keys()))
 
 # ------------------ blivedm 事件处理 ------------------
 CURRENT_SESSIONS: Dict[int, int] = {}  # room_id -> live_session.id
 ROOM_CLIENTS: Dict[int, blivedm.BLiveClient] = {}
 LAST_RECONNECT: Dict[int, datetime.datetime] = {}
-RECONNECT_DAILY_STATE = {"date": None, "done": set()}  # 每日重连进度
+RECONNECT_DAILY_STATE = {"date": None, "done": set()}  # 保留占位，不再使用配额逻辑
+
+def _now():
+    return datetime.datetime.now()
+
+def _seconds_to_hms(sec: int) -> str:
+    h, r = divmod(sec, 3600)
+    m, s = divmod(r, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 async def _start_client(room_id: int):
     """启动单个房间连接，并登记到全局表"""
@@ -362,7 +677,7 @@ async def _start_client(room_id: int):
     # 初始化 last_reconnect，使初始分布更均匀（回溯 0~3 天随机偏移）
     LAST_RECONNECT.setdefault(
         room_id,
-        datetime.datetime.now() - datetime.timedelta(days=random.random() * 3.0)
+        _now() - datetime.timedelta(days=random.random() * 3.0)
     )
     logging.info(f"[connect] 已连接房间 {room_id}")
 
@@ -384,20 +699,26 @@ async def _reconnect_one(room_id: int):
 
     await asyncio.sleep(3)
     await _start_client(room_id)
-    LAST_RECONNECT[room_id] = datetime.datetime.now()
+    LAST_RECONNECT[room_id] = _now()
     logging.info(f"[reconnect] 房间 {room_id} 重连完成")
-
-def _seconds_to_hms(sec: int) -> str:
-    h, r = divmod(sec, 3600)
-    m, s = divmod(r, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
 
 class MyHandler(blivedm.BaseHandler):
     def _on_heartbeat(self, client, message):  # noqa: N802
         pass
 
     def _on_danmaku(self, client, message):  # noqa: N802
-        pass
+        """
+        弹幕统计：仅做计数，不直接写库。
+        每条弹幕按房间累加，后由 danmaku_flush_scheduler 每分钟统一入库。
+        """
+        try:
+            room_id = client.room_id
+            # 只在当前判定为“在播”时统计，避免误计
+            if LAST_STATUS.get(room_id, 0) != 1:
+                return
+            DANMAKU_PENDING[room_id] = DANMAKU_PENDING.get(room_id, 0) + 1
+        except Exception as e:
+            logging.error(f"[Danmaku] 统计弹幕时出错: {e}")
 
     def _on_gift(self, client, message):  # noqa: N802
         try:
@@ -410,7 +731,18 @@ class MyHandler(blivedm.BaseHandler):
                 LiveSession.add_values_by_id(sid, gift=value)
             else:
                 LiveSession.add_values_by_room_open(client.room_id, gift=value)
-            logging.info(f"[{client.room_id}] {message.uname} uid{message.uid} 赠送 {message.gift_name}×{message.num} ({value:.2f})")
+            log_msg = (
+                f"[{client.room_id}] {message.uname} uid{message.uid} "
+                f"赠送 {message.gift_name}×{message.num} ({value:.2f})"
+            )
+            logging.info(log_msg)
+
+            # uid=0 视为 Cookies 已失效，触发一次 SMTP 告警
+            try:
+                if getattr(message, "uid", 0) == 0:
+                    send_cookie_invalid_email_async(log_msg)
+            except Exception as e:
+                logging.error(f"[Gift] 检测 uid0 告警时出错: {e}")
         except Exception as e:
             logging.error(f"处理礼物记录时出错: {e}")
 
@@ -447,13 +779,63 @@ class MyHandler(blivedm.BaseHandler):
     def _on_super_chat(self, client, message):  # noqa: N802
         try:
             value = message.price
+            # 月累计 + 单场累计
             RoomStatsMonthly.add_amounts(client.room_id, month_str(), super_chat=value)
+
             sid = CURRENT_SESSIONS.get(client.room_id)
             if sid:
                 LiveSession.add_values_by_id(sid, super_chat=value)
             else:
                 LiveSession.add_values_by_room_open(client.room_id, super_chat=value)
-            logging.info(f"[{client.room_id}] SC ¥{message.price:.2f} {message.uname} {message.uid}: {message.message}")
+
+            # === SC 日志记录 ===
+            # 发送人名称
+            uname = getattr(message, "uname", "") or ""
+            if not uname:
+                user_info = getattr(message, "user_info", None)
+                if isinstance(user_info, dict):
+                    uname = user_info.get("uname", "") or uname
+
+            # 发送人 UID
+            uid = getattr(message, "uid", 0) or 0
+            if not uid:
+                user_info = getattr(message, "user_info", None)
+                if isinstance(user_info, dict):
+                    uid = user_info.get("uid", 0) or uid
+
+            content = getattr(message, "message", "") or ""
+
+            # 时间戳：优先用 message.time，其次 ts
+            ts_raw = getattr(message, "time", None)
+            if ts_raw is None:
+                ts_raw = getattr(message, "ts", None)
+
+            send_dt = None
+            if ts_raw is not None:
+                try:
+                    ts_int = int(ts_raw)
+                    # 处理毫秒级时间戳：大于 1e12 视为毫秒
+                    if ts_int > 1_000_000_000_000:
+                        ts_int = ts_int // 1000
+
+                    # 过滤明显异常时间戳（2000 年之前视为无效）
+                    if ts_int >= 946684800:  # 2000-01-01 00:00:00
+                        send_dt = datetime.datetime.fromtimestamp(ts_int)
+                except Exception:
+                    send_dt = None
+
+            SuperChatLog.log_sc(
+                room_id=client.room_id,
+                uname=uname,
+                uid=uid,
+                price=value,
+                content=content,
+                send_time=send_dt,
+            )
+
+            logging.info(
+                f"[{client.room_id}] SC ¥{value:.2f} {uname} {uid}: {content}"
+            )
         except Exception as e:
             logging.error(f"处理醒目留言记录时出错: {e}")
 
@@ -463,86 +845,20 @@ async def run_clients_loop():
         await _start_client(room_id)
         await asyncio.sleep(3)
 
-async def reconnect_scheduler():
-    """
-    目标：约 3 天全量重连一次。
-    - 仅在 03:00~07:00 内执行；
-    - 00:00~00:30 禁止重连；
-    - 总开播数 > 10 时跳过；
-    - 直播中的房间跳过；
-    - 每天配额：ceil(N/3)，分散在窗口内逐个执行；
-    """
-    global RECONNECT_DAILY_STATE
-    N = len(ROOM_IDS)
-    daily_quota = max(1, math.ceil(N / 3))  # 约 3 天覆盖全部
-
-    while True:
-        now = _now()
-
-        # 00:00~00:30 禁止重连
-        if now.hour == 0 and now.minute < 30:
-            await asyncio.sleep(60)
-            continue
-
-        # 跨天重置当日进度
-        if RECONNECT_DAILY_STATE["date"] != now.date():
-            RECONNECT_DAILY_STATE = {"date": now.date(), "done": set()}
-            logging.info(f"[reconnect] 新的一天，重置配额，今日计划重连 ≈ {daily_quota} 个房间")
-
-        # 仅在 03:00~07:00 窗口执行
-        if not (4 <= now.hour < 6):
-            await asyncio.sleep(300)  # 5 分钟后再看
-            continue
-
-        # 总开播数 > 10 -> 跳过本轮
-        live_count = sum(1 for v in LAST_STATUS.values() if v == 1)
-        if live_count > 10:
-            logging.debug(f"[reconnect] 开播数={live_count} > 10，暂不重连")
-            await asyncio.sleep(120)
-            continue
-
-        done_today = RECONNECT_DAILY_STATE["done"]
-        if len(done_today) >= daily_quota:
-            # 今日额度已满，降低频率
-            await asyncio.sleep(600)
-            continue
-
-        # 候选：未达成今日额度、当前不在播、确有客户端的房间
-        candidates = [
-            rid for rid in ROOM_IDS
-            if rid not in done_today
-            and LAST_STATUS.get(rid, 0) != 1
-            and rid in ROOM_CLIENTS
-        ]
-        if not candidates:
-            await asyncio.sleep(180)
-            continue
-
-        # 以“上次重连时间”升序优先（更久未重连者优先），再在前若干个里做少量随机打散
-        candidates.sort(key=lambda rid: LAST_RECONNECT.get(rid, datetime.datetime.fromtimestamp(0)))
-        top_k = candidates[:min(10, len(candidates))]
-        target = random.choice(top_k)
-
-        # 执行重连（单个）
-        try:
-            await _reconnect_one(target)
-            done_today.add(target)
-        except asyncio.CancelledError:
-            logging.debug(f"[reconnect] room={target} 关闭过程中取消（预期），忽略继续")
-            # 不 add 到 done_today，以便明日或稍后再试
-        except Exception as e:
-            logging.error(f"[reconnect] 房间 {target} 重连失败: {e}")
-
-        # 两次重连之间：至少 3s，再额外加一点抖动，避免集中
-        await asyncio.sleep(3 + random.uniform(0.5, 2.0))
-
-def _now():
-    return datetime.datetime.now()
-
 # ------------------ 直播状态 & 粉丝数监视 ------------------
 LAST_STATUS: Dict[int, int] = {rid: 0 for rid in ROOM_IDS}
 STREAM_STARTS: Dict[int, datetime.datetime] = {}
-LIVE_INFO: Dict[int, Dict[str, str]] = {rid: {"live_time": "0000-00-00 00:00:00", "title": ""} for rid in ROOM_IDS}
+LIVE_INFO: Dict[int, Dict[str, str]] = {
+    rid: {"live_time": "0000-00-00 00:00:00", "title": ""} for rid in ROOM_IDS
+}
+
+DANMAKU_PENDING: Dict[int, int] = {}
+# 新增：当前粉丝团数量 / 当前守护数量（非按场次，是“最新状态”）
+FANS_COUNT: Dict[int, int] = {}  # room_id -> 当前粉丝团数量
+GUARD_COUNTS: Dict[int, Dict[str, int]] = {}  # room_id -> {"guard_1": 舰长, "guard_2": 提督, "guard_3": 总督}
+
+# 粉丝团 & 守护 信息获取任务队列：元素为 (room_id, session_id)，session_id 为 None 表示只更新当前状态
+GUARD_FANS_QUEUE: "asyncio.Queue[tuple[int, Optional[int], Optional[str]]]" = asyncio.Queue()
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -550,80 +866,538 @@ USER_AGENT = (
     "Chrome/123.0.0.0 Safari/537.36"
 )
 
+LIVE_STATUS_API = "https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids"
+ROOM_INFO_API   = "https://api.live.bilibili.com/room/v1/Room/get_info"
+
+# 新增：粉丝团/舰长 API
+FANS_API  = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getFansMembersRank"
+GUARD_API = "https://api.live.bilibili.com/xlive/general-interface/v1/guard/GuardActive"
+
 def _split_and_record(room_id: int, start: datetime.datetime, end: datetime.datetime):
     """将 [start, end] 按自然日切片，并累加到 RoomLiveStats 表中。"""
     cur = start
     while cur < end:
-        next_boundary = (
-            datetime.datetime.combine(cur.date(), datetime.time.max)
-            if cur.date() == end.date()
-            else datetime.datetime.combine(cur.date() + datetime.timedelta(days=1), datetime.time.min)
-        )
+        if cur.date() == end.date():
+            next_boundary = end
+        else:
+            next_boundary = datetime.datetime.combine(cur.date() + datetime.timedelta(days=1), datetime.time.min)
         slice_end = min(end, next_boundary)
         seconds = int((slice_end - cur).total_seconds())
-        RoomLiveStats.add_duration(room_id, cur.date(), seconds)
+        if seconds > 0:
+            RoomLiveStats.add_duration(room_id, cur.date(), seconds)
         cur = slice_end
 
-async def monitor_all_rooms_status():
-    while True:
-        for idx, room_id in enumerate(ROOM_IDS):
-            url = f"https://api.live.bilibili.com/room/v1/Room/get_info?room_id={room_id}"
+async def ensure_bili_ticket(force: bool = False) -> str:
+    """
+    确保全局 bili_ticket 可用：
+      - 若已有未过期 ticket 且 force=False，则直接复用；
+      - 否则调用 GenWebTicket 接口获取新 ticket，并写入 Cookie。
+    """
+    global BILI_TICKET, BILI_TICKET_EXPIRES
+
+    if aiohttp_session is None:
+        raise RuntimeError("aiohttp_session 未初始化，无法获取 bili_ticket")
+
+    now_ts = int(time.time())
+    # 若已有 ticket 且尚未过期，且本次不是强制刷新，则直接返回
+    if (
+        not force
+        and BILI_TICKET
+        and BILI_TICKET_EXPIRES
+        and BILI_TICKET_EXPIRES - now_ts > 60
+    ):
+        return BILI_TICKET
+
+    csrf = BILI_COOKIES_BASE.get("bili_jct", "") or ""
+    if not csrf:
+        logging.warning("[bili_ticket] bili_jct 为空，可能导致 GenWebTicket 调用失败")
+
+    hexsign = hmac.new(
+        BILI_TICKET_KEY.encode("utf-8"),
+        f"ts{now_ts}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    params = {
+        "key_id": BILI_TICKET_KEY_ID,
+        "hexsign": hexsign,
+        "context[ts]": str(now_ts),
+        "csrf": csrf,
+    }
+    headers = {"User-Agent": USER_AGENT}
+
+    try:
+        async with aiohttp_session.post(
+            BILI_TICKET_URL,
+            params=params,
+            headers=headers,
+            timeout=10,
+        ) as resp:
             try:
-                async with aiohttp_session.get(
-                    url, timeout=5,
-                    headers={"User-Agent": USER_AGENT, "Referer": "https://live.bilibili.com"}
-                ) as resp:
-                    if resp.status != 200:
-                        logging.warning(f"[LiveStatus] 房间 {room_id} 接口返回状态 {resp.status}")
-                        if resp.status == 412:
-                            await asyncio.sleep(2)
-                        continue
-                    try:
-                        payload = await resp.json(content_type=None)
-                    except ContentTypeError:
-                        text = (await resp.text())[:200]
-                        logging.warning(f"[LiveStatus] 房间 {room_id} 返回非 JSON，前 200 字：{text}")
-                        continue
+                obj = await resp.json(content_type=None)
+            except ContentTypeError:
+                text = (await resp.text())[:200]
+                raise RuntimeError(f"获取 bili_ticket 返回非 JSON，前 200 字：{text}")
+    except Exception as e:
+        raise RuntimeError(f"请求 bili_ticket 接口异常: {e}") from e
 
-                data = payload.get("data") or {}
-                raw_status    = int(data.get("live_status", 0))
-                status        = 0 if raw_status == 2 else raw_status
-                live_time_val = data.get("live_time") or "0000-00-00 00:00:00"
-                raw_title     = data.get("title") or ""
-                attention     = int(data.get("attention", 0))
+    if obj.get("code") != 0 or "data" not in obj:
+        raise RuntimeError(f"获取 bili_ticket 失败: {obj}")
 
-                RoomInfo.upsert(room_id, attention=attention)
+    data = obj["data"] or {}
+    ticket = data.get("ticket")
+    if not ticket:
+        raise RuntimeError(f"获取 bili_ticket 失败，未包含 ticket 字段: {obj}")
 
+    created_at = int(data.get("created_at", now_ts))
+    ttl        = int(data.get("ttl", 0))
+    expires_ts = created_at + ttl
+
+    BILI_TICKET = ticket
+    BILI_TICKET_EXPIRES = expires_ts
+
+    # 写入 Cookie
+    c = http.cookies.SimpleCookie()
+    c["bili_ticket"] = ticket
+    c["bili_ticket"]["domain"] = "bilibili.com"
+    aiohttp_session.cookie_jar.update_cookies(c)
+
+    logging.info(
+        "[bili_ticket] 刷新成功，过期时间=%s (%d)",
+        datetime.datetime.fromtimestamp(expires_ts).strftime("%Y-%m-%d %H:%M:%S"),
+        expires_ts,
+    )
+    return ticket
+
+async def _fetch_room_info_and_update(room_id: int, update_uid: bool) -> bool:
+    """
+    旧 API：get_info?room_id=xxx
+    - 初始化阶段：update_uid=True -> 写入 UID + attention
+    - 定时刷新阶段：update_uid=False -> 仅刷新 attention
+    """
+    if aiohttp_session is None:
+        logging.error("[RoomInfo] aiohttp_session 未初始化")
+        return False
+
+    url = f"{ROOM_INFO_API}?room_id={room_id}"
+    try:
+        async with aiohttp_session.get(
+            url,
+            timeout=5,
+            headers={"User-Agent": USER_AGENT, "Referer": "https://live.bilibili.com"},
+        ) as resp:
+            if resp.status != 200:
+                logging.warning(f"[RoomInfo] 房间 {room_id} get_info HTTP {resp.status}")
+                return False
+            try:
+                payload = await resp.json(content_type=None)
+            except ContentTypeError:
+                text = (await resp.text())[:200]
+                logging.warning(f"[RoomInfo] 房间 {room_id} get_info 返回非 JSON，前 200 字：{text}")
+                return False
+    except Exception as e:
+        logging.error(f"[RoomInfo] 房间 {room_id} 请求异常: {e}")
+        return False
+
+    data = payload.get("data") or {}
+    attention_raw = data.get("attention", 0)
+    try:
+        attention = int(attention_raw)
+    except (TypeError, ValueError):
+        attention = 0
+
+    RoomInfo.upsert(room_id, attention=attention)
+
+    if update_uid:
+        uid_raw = data.get("uid")
+        try:
+            uid = int(uid_raw)
+        except (TypeError, ValueError):
+            uid = 0
+        if uid:
+            ROOM_UIDS[room_id] = uid
+            logging.info(f"[RoomInfo] room_id={room_id} uid={uid} attention={attention}")
+        else:
+            logging.warning(f"[RoomInfo] room_id={room_id} uid 获取失败，原始值={uid_raw!r}")
+    else:
+        logging.debug(f"[RoomInfo] room_id={room_id} 刷新 attention={attention}（不更新 uid）")
+
+    return True
+
+async def init_uids_and_attention_once(max_rounds: int = 5):
+    """
+    首次启动时：通过 get_info 拉取所有房间的 uid + 粉丝数。
+    要求：在开始使用 get_status_info_by_uids 轮询前，尽量让所有房间都有 UID。
+    """
+    logging.info("[init] 开始初始化 UID 和粉丝数（get_info）")
+    for round_idx in range(1, max_rounds + 1):
+        missing = [rid for rid in ROOM_IDS if rid not in ROOM_UIDS]
+        if not missing:
+            logging.info("[init] 所有 UID 已成功获取")
+            return
+        logging.info(f"[init] 第 {round_idx}/{max_rounds} 轮获取 UID，待获取房间数={len(missing)}")
+        for room_id in missing:
+            await _fetch_room_info_and_update(room_id, update_uid=True)
+            await asyncio.sleep(0.3)  # 稍微限速，避免过快
+    missing = [rid for rid in ROOM_IDS if rid not in ROOM_UIDS]
+    if missing:
+        logging.error(f"[init] 经过 {max_rounds} 轮仍有 UID 获取失败，将在状态轮询中跳过这些房间: {missing}")
+    else:
+        logging.info("[init] 所有 UID 已成功获取")
+
+async def _fetch_guard_counts(uid: int, room_id: int) -> Optional[tuple[int, int, int]]:
+    """
+    调用 GuardActive 接口，返回 (guard_1, guard_2, guard_3)
+    guard_1 = 舰长数(来自 guard_num_3)
+    guard_2 = 提督数(来自 guard_num_2)
+    guard_3 = 总督数(来自 guard_num_1)
+    """
+    if aiohttp_session is None:
+        logging.error("[Guard] aiohttp_session 未初始化")
+        return None
+
+    try:
+        async with aiohttp_session.get(
+            GUARD_API,
+            params={"ruid": str(uid), "platform": "pc"},
+            timeout=10,
+            headers={"User-Agent": USER_AGENT, "Referer": "https://live.bilibili.com"},
+        ) as resp:
+            if resp.status != 200:
+                logging.warning(f"[Guard] room_id={room_id} HTTP {resp.status}")
+                return None
+            try:
+                payload = await resp.json(content_type=None)
+            except ContentTypeError:
+                text = (await resp.text())[:200]
+                logging.warning(f"[Guard] room_id={room_id} 返回非 JSON，前 200 字：{text}")
+                return None
+    except Exception as e:
+        logging.error(f"[Guard] room_id={room_id} 请求异常: {e}")
+        return None
+
+    data = payload.get("data") or {}
+
+    def _to_int(x):
+        try:
+            return int(x)
+        except (TypeError, ValueError):
+            return 0
+
+    # bilibili 原始：guard_num_3 = 舰长, guard_num_2 = 提督, guard_num_1 = 总督
+    num_captain  = _to_int(data.get("guard_num_3", 0))
+    num_admiral  = _to_int(data.get("guard_num_2", 0))
+    num_governor = _to_int(data.get("guard_num_1", 0))
+
+    # 我们 API 约定：guard_1 = 舰长；guard_2 = 提督；guard_3 = 总督
+    guard_1 = num_captain
+    guard_2 = num_admiral
+    guard_3 = num_governor
+
+    logging.info(
+        f"[Guard] room_id={room_id} guard_1(舰长)={guard_1} guard_2(提督)={guard_2} guard_3(总督)={guard_3}"
+    )
+
+    return guard_1, guard_2, guard_3
+
+
+async def _fetch_fans_count(uid: int, room_id: int) -> Optional[int]:
+    """
+    调用 fans members rank 接口，返回粉丝团数量 num。
+    """
+    if aiohttp_session is None:
+        logging.error("[Fans] aiohttp_session 未初始化")
+        return None
+
+    try:
+        async with aiohttp_session.get(
+            FANS_API,
+            params={"ruid": str(uid), "page_size": "1", "page": "1"},
+            timeout=10,
+            headers={"User-Agent": USER_AGENT, "Referer": "https://live.bilibili.com"},
+        ) as resp:
+            if resp.status != 200:
+                logging.warning(f"[Fans] room_id={room_id} HTTP {resp.status}")
+                return None
+            try:
+                payload = await resp.json(content_type=None)
+            except ContentTypeError:
+                text = (await resp.text())[:200]
+                logging.warning(f"[Fans] room_id={room_id} 返回非 JSON，前 200 字：{text}")
+                return None
+    except Exception as e:
+        logging.error(f"[Fans] room_id={room_id} 请求异常: {e}")
+        return None
+
+    data = payload.get("data") or {}
+    num_raw = data.get("num", 0)
+    try:
+        num = int(num_raw)
+    except (TypeError, ValueError):
+        num = 0
+
+    logging.info(f"[Fans] room_id={room_id} 粉丝团数量={num}")
+    return num
+
+
+async def guard_fans_worker():
+    """
+    全局唯一 worker：
+    - 从 GUARD_FANS_QUEUE 取出 (room_id, session_id, phase)
+    - 先调用 GuardActive，再等待 ≥1s，再调用 Fans API，再等待 ≥1s
+    - phase:
+        * None: 仅更新当前状态缓存（FANS_COUNT/GUARD_COUNTS）
+        * "start": 更新开播快照（live_session.start_*）
+        * "end":   更新下播快照（live_session.end_*）
+    """
+    while True:
+        room_id, session_id, phase = await GUARD_FANS_QUEUE.get()
+        uid = ROOM_UIDS.get(room_id)
+        if uid is None:
+            logging.warning(f"[Guard/Fans] room_id={room_id} 未找到 uid，跳过")
+            GUARD_FANS_QUEUE.task_done()
+            continue
+
+        try:
+            # 1) 守护数量
+            guard_vals = None
+            try:
+                guard_vals = await _fetch_guard_counts(uid, room_id)
+            except Exception as e:
+                logging.error(f"[Guard/Fans] room_id={room_id} _fetch_guard_counts 异常: {e}")
+
+            if guard_vals is not None:
+                guard_1, guard_2, guard_3 = guard_vals
+                GUARD_COUNTS[room_id] = {
+                    "guard_1": guard_1,
+                    "guard_2": guard_2,
+                    "guard_3": guard_3,
+                }
+                if session_id:
+                    if phase == "start":
+                        LiveSession.update_start_counts(
+                            session_id,
+                            guard_1=guard_1,
+                            guard_2=guard_2,
+                            guard_3=guard_3,
+                        )
+                    elif phase == "end":
+                        LiveSession.update_end_counts(
+                            session_id,
+                            guard_1=guard_1,
+                            guard_2=guard_2,
+                            guard_3=guard_3,
+                        )
+
+            await asyncio.sleep(1.0)
+
+            # 2) 粉丝团数量
+            fans = None
+            try:
+                fans = await _fetch_fans_count(uid, room_id)
+            except Exception as e:
+                logging.error(f"[Guard/Fans] room_id={room_id} _fetch_fans_count 异常: {e}")
+
+            if fans is not None:
+                FANS_COUNT[room_id] = fans
+                if session_id:
+                    if phase == "start":
+                        LiveSession.update_start_counts(
+                            session_id,
+                            fans_count=fans,
+                        )
+                    elif phase == "end":
+                        LiveSession.update_end_counts(
+                            session_id,
+                            fans_count=fans,
+                        )
+
+            await asyncio.sleep(1.0)
+        finally:
+            GUARD_FANS_QUEUE.task_done()
+
+async def danmaku_flush_scheduler():
+    """
+    弹幕计数定时入库：
+      - 每 60 秒执行一次；
+      - 将 DANMAKU_PENDING 中的增量写入当前未结束的 live_session.danmaku_count。
+    """
+    while True:
+        await asyncio.sleep(60)
+        if not DANMAKU_PENDING:
+            continue
+
+        # 拍快照并清零缓冲，避免长时间持有锁
+        snapshot = dict(DANMAKU_PENDING)
+        DANMAKU_PENDING.clear()
+
+        for room_id, inc in snapshot.items():
+            if inc <= 0:
+                continue
+            sid = CURRENT_SESSIONS.get(room_id)
+            if sid:
+                LiveSession.add_danmaku_by_id(sid, inc)
+            else:
+                LiveSession.add_danmaku_by_room_open(room_id, inc)
+        logging.debug(f"[Danmaku] 本轮入库完成，房间数={len(snapshot)}")
+
+async def refresh_attention_scheduler():
+    """
+    每 3 小时通过旧 API 刷新一次所有房间的粉丝数（attention），uid 不再更新。
+    """
+    # 首次刷新前等待 3 小时；初始化阶段已经拉过一次
+    while True:
+        await asyncio.sleep(3 * 3600)
+        logging.info("[RoomInfo] 开始 3 小时粉丝数刷新任务")
+        for room_id in ROOM_IDS:
+            await _fetch_room_info_and_update(room_id, update_uid=False)
+            await asyncio.sleep(0.3)
+        logging.info("[RoomInfo] 本轮粉丝数刷新任务完成")
+
+async def guard_fans_refresh_scheduler():
+    """
+    未开播房间每小时刷新一次守护数量 + 粉丝团数量。
+    启动后会先立即执行一轮刷新，之后每小时执行一次。
+    - 使用 GUARD_FANS_QUEUE，确保两个接口统一排队执行。
+    """
+    # 等待 UID 初始化完成
+    while not ROOM_UIDS:
+        logging.info("[Guard/Fans] 等待 UID 初始化...")
+        await asyncio.sleep(1)
+
+    # 启动后先刷一遍未开播房间
+    logging.info("[Guard/Fans] 启动后立刻执行一轮未开播房间守护+粉丝团刷新")
+    for room_id in ROOM_IDS:
+        if LAST_STATUS.get(room_id, 0) != 1:
+            try:
+                await GUARD_FANS_QUEUE.put((room_id, None, None))
+            except Exception as e:
+                logging.error(f"[Guard/Fans] 启动刷新 投递任务 room_id={room_id} 失败: {e}")
+            await asyncio.sleep(0.1)
+    logging.info("[Guard/Fans] 启动初次未开播房间刷新任务结束")
+
+    # 之后每小时执行
+    while True:
+        await asyncio.sleep(3600)
+        logging.info("[Guard/Fans] 开始每小时未开播房间刷新任务")
+        for room_id in ROOM_IDS:
+            # 仅未开播房间
+            if LAST_STATUS.get(room_id, 0) != 1:
+                try:
+                    await GUARD_FANS_QUEUE.put((room_id, None, None))
+                except Exception as e:
+                    logging.error(f"[Guard/Fans] 投递任务 room_id={room_id} 失败: {e}")
+                await asyncio.sleep(0.1)
+        logging.info("[Guard/Fans] 本轮未开播房间刷新任务结束")
+
+async def monitor_all_rooms_status():
+    """
+    使用新 API：get_status_info_by_uids?uids[]=... 批量查询所有房间的直播状态。
+    查询周期：每 3 秒。
+
+    改进点：
+      - 当本轮结果中缺少某个 UID（或结构异常）时，不再立刻判定下播，
+        而是沿用上一轮状态，等待下一轮。
+    """
+    # 等待 UID 初始化
+    while not ROOM_UIDS:
+        logging.info("[LiveStatus] 等待 UID 初始化...")
+        await asyncio.sleep(1)
+
+    logging.info(f"[LiveStatus] UID 初始化完成，当前可用房间数={len(ROOM_UIDS)}，启动状态轮询")
+
+    while True:
+        try:
+            if aiohttp_session is None:
+                logging.error("[LiveStatus] aiohttp_session 未初始化")
+                await asyncio.sleep(3)
+                continue
+
+            # 组装批量查询参数
+            params = [("uids[]", str(uid)) for uid in ROOM_UIDS.values()]
+            async with aiohttp_session.get(
+                LIVE_STATUS_API,
+                params=params,
+                timeout=10,
+                headers={"User-Agent": USER_AGENT, "Referer": "https://live.bilibili.com"},
+            ) as resp:
+                if resp.status != 200:
+                    logging.warning(f"[LiveStatus] get_status_info_by_uids HTTP {resp.status}")
+                    await asyncio.sleep(3)
+                    continue
+
+                try:
+                    payload = await resp.json(content_type=None)
+                except ContentTypeError:
+                    text = (await resp.text())[:200]
+                    logging.warning(f"[LiveStatus] get_status_info_by_uids 返回非 JSON，前 200 字：{text}")
+                    await asyncio.sleep(3)
+                    continue
+
+            data = payload.get("data") or {}
+            now = _now()
+
+            # 逐房间处理
+            for room_id in ROOM_IDS:
+                uid = ROOM_UIDS.get(room_id)
+                info = data.get(str(uid)) if uid is not None else None
                 prev = LAST_STATUS.get(room_id, 0)
+
+                # === 关键改动：当本轮没有该 UID 或结构异常时，不判定下播，沿用上一状态 ===
+                if not info or "live_status" not in info:
+                    if prev == 1:
+                        logging.warning(
+                            f"[LiveStatus] room_id={room_id} 本轮未返回有效数据，沿用上一轮“在播”状态"
+                        )
+                    else:
+                        logging.debug(
+                            f"[LiveStatus] room_id={room_id} 本轮未返回有效数据，保持状态={prev}"
+                        )
+                    # 不改 LAST_STATUS / STREAM_STARTS / LIVE_INFO，直接下一房间
+                    continue
+
+                # === 正常有数据的分支 ===
+                raw_status = int(info.get("live_status", 0))
+                # B 站约定：2 为轮播，视作未开播
+                status = 0 if raw_status == 2 else raw_status
                 LAST_STATUS[room_id] = status
 
                 if status == 1:
-                    # 解析开播时间
+                    # live_time 为时间戳（秒），未开播为 0
+                    live_time_raw = info.get("live_time", 0)
                     try:
-                        start_dt = datetime.datetime.strptime(live_time_val, "%Y-%m-%d %H:%M:%S")
-                    except ValueError:
-                        if str(live_time_val).isdigit():
-                            start_dt = datetime.datetime.fromtimestamp(int(live_time_val))
+                        if isinstance(live_time_raw, (int, float)) or str(live_time_raw).isdigit():
+                            start_dt = datetime.datetime.fromtimestamp(int(live_time_raw))
                         else:
-                            start_dt = datetime.datetime.now()
+                            start_dt = now
+                    except (ValueError, OSError, OverflowError):
+                        start_dt = now
 
-                    # 首次上播：建立会话
+                    raw_title = info.get("title") or ""
+
+                    # 从未播 -> 开播：认为是上播
                     if prev == 0:
                         STREAM_STARTS[room_id] = start_dt
                         sid = LiveSession.start_session(room_id, start_dt, raw_title)
                         if sid:
                             CURRENT_SESSIONS[room_id] = sid
+                            # 开播瞬间：立刻刷新守护数量 + 粉丝团数量，并记录到本场 live_session 中
+                            try:
+                                GUARD_FANS_QUEUE.put_nowait((room_id, sid, "start"))
+                            except Exception as e:
+                                logging.error(f"[Guard/Fans] 开播投递任务 room_id={room_id} 失败: {e}")
                         logging.info(f"[{room_id}] 上播，开始时间 {start_dt:%F %T}")
 
-                    # 缓存 live_time 和 title
-                    LIVE_INFO[room_id]["live_time"] = live_time_val
-                    LIVE_INFO[room_id]["title"]     = raw_title
+                    LIVE_INFO.setdefault(room_id, {})
+                    LIVE_INFO[room_id]["live_time"] = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    LIVE_INFO[room_id]["title"] = raw_title
 
                 else:
-                    # 真正下播：分片、关闭会话
+                    # 已下播/未开播
+                    LAST_STATUS[room_id] = 0
                     if prev == 1 and room_id in STREAM_STARTS:
                         st = STREAM_STARTS.pop(room_id)
-                        end_dt = datetime.datetime.now()
+                        end_dt = now
                         _split_and_record(room_id, st, end_dt)
                         # 关闭该场会话
                         sid = CURRENT_SESSIONS.pop(room_id, None)
@@ -631,15 +1405,87 @@ async def monitor_all_rooms_status():
                         duration_str = _seconds_to_hms(int((end_dt - st).total_seconds()))
                         logging.info(f"[{room_id}] 下播，时长 {duration_str}")
 
-                    # 清空缓存
+                        # 下播瞬间：立刻刷新守护 + 粉丝团并写入本场
+                        if sid:
+                            try:
+                                GUARD_FANS_QUEUE.put_nowait((room_id, sid, "end"))
+                            except Exception as e:
+                                logging.error(f"[Guard/Fans] 下播投递任务 room_id={room_id} 失败: {e}")
+
+                    LIVE_INFO.setdefault(room_id, {})
                     LIVE_INFO[room_id]["live_time"] = "0000-00-00 00:00:00"
-                    LIVE_INFO[room_id]["title"]     = ""
+                    LIVE_INFO[room_id]["title"] = ""
 
+        except Exception as e:
+            logging.error(f"[LiveStatus] get_status_info_by_uids 调用异常: {e}")
+
+        # 两次调用间隔 3 秒
+        await asyncio.sleep(3)
+
+# ------------------ 每日 6:00 全量重连调度 ------------------
+async def reconnect_scheduler():
+    """
+    每日重连：
+    - 每天约 06:00 对所有房间执行一次重连；
+    - 若房间当前在播（LAST_STATUS == 1），则跳过本日重连；
+    - 两次重连之间间隔 >= 3 秒，并带一点随机抖动。
+    """
+    while True:
+        now = _now()
+        target = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += datetime.timedelta(days=1)
+        sleep_sec = max(1.0, (target - now).total_seconds())
+        logging.info(f"[reconnect] 距离下一次全量重连还有约 {sleep_sec/60:.1f} 分钟")
+        await asyncio.sleep(sleep_sec)
+
+        logging.info("[reconnect] 开始执行每日全量重连任务")
+        for room_id in ROOM_IDS:
+            if LAST_STATUS.get(room_id, 0) == 1:
+                logging.info(f"[reconnect] 房间 {room_id} 当前在播，跳过今日重连")
+                continue
+            try:
+                await _reconnect_one(room_id)
+            except asyncio.CancelledError:
+                logging.debug(f"[reconnect] room={room_id} 被取消（预期），略过")
             except Exception as e:
-                logging.error(f"[LiveStatus] 房间 {room_id} 状态获取异常: {e}")
+                logging.error(f"[reconnect] 房间 {room_id} 重连失败: {e}")
+            await asyncio.sleep(3 + random.uniform(0.5, 2.0))
+        logging.info("[reconnect] 本日全量重连任务完成")
 
-            if idx < len(ROOM_IDS) - 1:
-                await asyncio.sleep(0.8)
+async def bili_ticket_scheduler():
+    """
+    bili_ticket 刷新调度：
+      - 启动后先尝试获取一次；
+      - 之后每天 05:00 强制刷新一次 bili_ticket。
+    """
+    # 等待 aiohttp_session 初始化
+    while aiohttp_session is None:
+        logging.info("[bili_ticket] 等待 aiohttp_session 初始化...")
+        await asyncio.sleep(1)
+
+    # 启动时先强制获取一次
+    try:
+        await ensure_bili_ticket(force=True)
+    except Exception as e:
+        logging.error(f"[bili_ticket] 首次获取失败: {e}")
+
+    while True:
+        now = _now()
+        target = now.replace(hour=5, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += datetime.timedelta(days=1)
+        sleep_sec = max(60.0, (target - now).total_seconds())
+        logging.info(
+            "[bili_ticket] 距离下一次刷新还有约 %.2f 小时",
+            sleep_sec / 3600.0,
+        )
+        await asyncio.sleep(sleep_sec)
+
+        try:
+            await ensure_bili_ticket(force=True)
+        except Exception as e:
+            logging.error(f"[bili_ticket] 定时刷新失败: {e}")
 
 # ------------------ 月底清零（无操作以保留全部历史） ------------------
 async def monthly_reset_scheduler():
@@ -650,12 +1496,20 @@ async def monthly_reset_scheduler():
 async def main():
     init_room_info()
     init_session()
+    # 先初始化 UID + 粉丝数，完成后再开启状态轮询
+    await init_uids_and_attention_once()
+
     try:
         await asyncio.gather(
             run_clients_loop(),
-            monitor_all_rooms_status(),
+            monitor_all_rooms_status(),      # 按 UID 批量轮询直播状态
             monthly_reset_scheduler(),
-            reconnect_scheduler(),
+            reconnect_scheduler(),           # 每日 6:00 全量重连
+            refresh_attention_scheduler(),   # 每 3 小时刷新关注数（attention）
+            guard_fans_worker(),             # 守护 + 粉丝团队列 worker
+            guard_fans_refresh_scheduler(),  # 未开播房间每小时刷新守护 + 粉丝团
+            bili_ticket_scheduler(),         # 每日 5:00 刷新 bili_ticket
+            danmaku_flush_scheduler(),
         )
     finally:
         if aiohttp_session:
@@ -694,6 +1548,13 @@ def get_stats_current_month():
             title_val     = info.get("title", "")
             status_val    = LAST_STATUS.get(room_id, 0)
 
+            # 当前守护数量 / 粉丝团数量（最新状态）
+            guard_info  = GUARD_COUNTS.get(room_id, {}) or {}
+            guard_1 = guard_info.get("guard_1", 0)  # 舰长
+            guard_2 = guard_info.get("guard_2", 0)  # 提督
+            guard_3 = guard_info.get("guard_3", 0)  # 总督
+            fans_count = FANS_COUNT.get(room_id, 0)
+
             results.append({
                 "room_id": room_id,
                 "anchor_name": anchor_name,
@@ -707,6 +1568,10 @@ def get_stats_current_month():
                 "live_time": live_time_val,
                 "title": title_val,
                 "month": m,
+                "guard_1": guard_1,       # 舰长
+                "guard_2": guard_2,       # 提督
+                "guard_3": guard_3,       # 总督
+                "fans_count": fans_count, # 粉丝团数量
             })
         return jsonify(results)
     except SQLAlchemyError as e:
@@ -745,10 +1610,21 @@ def get_stats_by_month():
                 live_time_val = info.get("live_time", "0000-00-00 00:00:00")
                 title_val     = info.get("title", "")
                 status_val    = LAST_STATUS.get(room_id, 0)
+
+                guard_info  = GUARD_COUNTS.get(room_id, {}) or {}
+                guard_1 = guard_info.get("guard_1", 0)
+                guard_2 = guard_info.get("guard_2", 0)
+                guard_3 = guard_info.get("guard_3", 0)
+                fans_count = FANS_COUNT.get(room_id, 0)
             else:
                 live_time_val = "0000-00-00 00:00:00"
                 title_val     = ""
                 status_val    = 0
+                # 历史月份不保留守护 / 粉丝团历史，直接返回 null
+                guard_1 = None
+                guard_2 = None
+                guard_3 = None
+                fans_count = None
 
             results.append({
                 "room_id": room_id,
@@ -763,6 +1639,10 @@ def get_stats_by_month():
                 "live_time": live_time_val,
                 "title": title_val,
                 "month": m,
+                "guard_1": guard_1,
+                "guard_2": guard_2,
+                "guard_3": guard_3,
+                "fans_count": fans_count,
             })
         return jsonify(results)
     except SQLAlchemyError as e:
@@ -803,11 +1683,91 @@ def get_live_sessions_by_room_month():
                 "gift":       r.gift,
                 "guard":      r.guard,
                 "super_chat": r.super_chat,
+                "danmaku_count": r.danmaku_count or 0,
+
+                # 开播时快照（旧数据为 None -> JSON null）
+                "start_guard_1": r.start_guard_1,     # 舰长
+                "start_guard_2": r.start_guard_2,     # 提督
+                "start_guard_3": r.start_guard_3,     # 总督
+                "start_fans_count": r.start_fans_count,
+
+                # 下播时快照（旧数据为 None -> JSON null）
+                "end_guard_1": r.end_guard_1,
+                "end_guard_2": r.end_guard_2,
+                "end_guard_3": r.end_guard_3,
+                "end_fans_count": r.end_fans_count,
             })
         return jsonify({"room_id": room_id, "month": m, "sessions": out})
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_live_sessions_by_room_month] 查询失败: {e}")
+        return jsonify({"error": "数据库查询失败"}), 500
+    finally:
+        session.close()
+        
+@app.route("/gift/sc", methods=["GET"])
+def get_sc_logs():
+    """
+    SC 日志查询：
+      GET /gift/sc?room_id=1111&month=202511
+      - room_id 必填
+      - month 可选，默认当前月；支持 YYYYMM 或 YYYY-MM
+      返回：发送时间、发送人名称、UID、价格、内容
+    """
+    room_id_str = request.args.get("room_id")
+    if not room_id_str:
+        return jsonify({"error": "room_id 参数必填"}), 400
+    try:
+        room_id = int(room_id_str)
+    except ValueError:
+        return jsonify({"error": "room_id 参数无效"}), 400
+    if room_id <= 0:
+        return jsonify({"error": "room_id 必须为正整数"}), 400
+
+    month_raw = request.args.get("month")
+    if month_raw:
+        month_code = normalize_month_code(month_raw)
+        if not month_code:
+            return jsonify({"error": "month 格式不正确，应为 YYYYMM 或 YYYY-MM"}), 400
+    else:
+        month_code = month_str()
+
+    # 利用已有 month_range，算出该月起止 date，再转为 datetime
+    start_date, end_date = month_range(month_code)
+    start_dt = datetime.datetime.combine(start_date, datetime.time.min)
+    end_dt = datetime.datetime.combine(end_date, datetime.time.min)
+
+    session = Session()
+    try:
+        rows = (
+            session.query(SuperChatLog)
+            .filter(
+                SuperChatLog.room_id == room_id,
+                SuperChatLog.send_time >= start_dt,
+                SuperChatLog.send_time < end_dt,
+            )
+            .order_by(SuperChatLog.send_time.asc())
+            .all()
+        )
+
+        out = []
+        for r in rows:
+            out.append({
+                "send_time": r.send_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "uname": r.uname,
+                "uid": r.uid,
+                "price": r.price,
+                "message": r.message,
+            })
+
+        return jsonify({
+            "room_id": room_id,
+            "month": month_code,
+            "list": out,
+        })
+    except SQLAlchemyError as e:
+        session.rollback()
+        logging.error(f"[get_sc_logs] 查询失败: {e}")
         return jsonify({"error": "数据库查询失败"}), 500
     finally:
         session.close()
