@@ -95,6 +95,10 @@ class BaseHandler(HandlerInterface):
         'SUPER_CHAT_MESSAGE_DELETE': _make_msg_callback('_on_super_chat_delete', web_models.SuperChatDeleteMessage),
         # 进入房间、关注主播等互动消息
         'INTERACT_WORD': _make_msg_callback('_on_interact_word', web_models.InteractWordMessage),
+        # 通知类弹幕（如特殊礼物）
+        'COMMON_NOTICE_DANMAKU': _make_msg_callback(
+            '_on_common_notice_danmaku', web_models.CommonNoticeDanmakuMessage
+        ),
 
         #
         # 开放平台消息
@@ -162,6 +166,11 @@ class BaseHandler(HandlerInterface):
 
     def _on_interact_word(self, client: ws_base.WebSocketClientBase, message: web_models.InteractWordMessage):
         """进入房间、关注主播等互动消息"""
+
+    def _on_common_notice_danmaku(
+        self, client: ws_base.WebSocketClientBase, message: web_models.CommonNoticeDanmakuMessage
+    ):
+        """通知类弹幕"""
 
     #
     # 开放平台消息

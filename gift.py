@@ -67,6 +67,15 @@ EMAIL_TO   = os.getenv("EMAIL_TO", "")
 
 COOKIE_ALERT_SENT = False  # 防止同一次失效被疯狂刷邮件
 
+COMMON_NOTICE_GIFT_COIN_MAP = {
+    "干杯之旅": 10000,
+    "启航之旅": 100000,
+    "友谊的小船": 4900,
+    "冲浪": 89900,
+    "海湾之旅": 799900,
+    "鸿运小电视": 1000000,
+}
+
 # ------------------ 工具 ------------------
 def month_str(dt: Optional[datetime.datetime] = None) -> str:
     dt = dt or datetime.datetime.now()
@@ -704,6 +713,46 @@ async def _reconnect_one(room_id: int):
     logging.info(f"[reconnect] 房间 {room_id} 重连完成")
 
 class MyHandler(blivedm.BaseHandler):
+    def _record_gift(
+        self,
+        client,
+        gift_name: str,
+        num: int,
+        total_coin: int,
+        uname: str = "",
+        uid: int = 0,
+        trigger_cookie_alert: bool = False,
+    ):
+        value = total_coin / 1000  # RMB
+        RoomStatsMonthly.add_amounts(client.room_id, month_str(), gift=value)
+        sid = CURRENT_SESSIONS.get(client.room_id)
+        if sid:
+            LiveSession.add_values_by_id(sid, gift=value)
+        else:
+            LiveSession.add_values_by_room_open(client.room_id, gift=value)
+        log_msg = (
+            f"[{client.room_id}] {uname} uid{uid} "
+            f"赠送 {gift_name}×{num} ({value:.2f})"
+        )
+        logging.info(log_msg)
+
+        if trigger_cookie_alert:
+            try:
+                if uid == 0:
+                    send_cookie_invalid_email_async(log_msg)
+            except Exception as e:
+                logging.error(f"[Gift] 检测 uid0 告警时出错: {e}")
+
+    @staticmethod
+    def _parse_common_notice_gift(message) -> Tuple[str, str]:
+        segments = getattr(message, "content_segments", [])
+        texts = [seg.text for seg in segments if getattr(seg, "text", "")] if segments else []
+        if not texts:
+            return "", ""
+        sender = texts[0].strip()
+        gift_name = texts[-1].strip()
+        return sender, gift_name
+
     def _on_heartbeat(self, client, message):  # noqa: N802
         pass
 
@@ -723,29 +772,43 @@ class MyHandler(blivedm.BaseHandler):
 
     def _on_gift(self, client, message):  # noqa: N802
         try:
-            value = message.total_coin / 1000  # RMB
-            # 写入按月累计
-            RoomStatsMonthly.add_amounts(client.room_id, month_str(), gift=value)
-            # 写入单场（仅在开播的会话内）
-            sid = CURRENT_SESSIONS.get(client.room_id)
-            if sid:
-                LiveSession.add_values_by_id(sid, gift=value)
-            else:
-                LiveSession.add_values_by_room_open(client.room_id, gift=value)
-            log_msg = (
-                f"[{client.room_id}] {message.uname} uid{message.uid} "
-                f"赠送 {message.gift_name}×{message.num} ({value:.2f})"
+            self._record_gift(
+                client=client,
+                gift_name=message.gift_name,
+                num=message.num,
+                total_coin=message.total_coin,
+                uname=message.uname,
+                uid=message.uid,
+                trigger_cookie_alert=True,
             )
-            logging.info(log_msg)
-
-            # uid=0 视为 Cookies 已失效，触发一次 SMTP 告警
-            try:
-                if getattr(message, "uid", 0) == 0:
-                    send_cookie_invalid_email_async(log_msg)
-            except Exception as e:
-                logging.error(f"[Gift] 检测 uid0 告警时出错: {e}")
         except Exception as e:
             logging.error(f"处理礼物记录时出错: {e}")
+
+    def _on_common_notice_danmaku(self, client, message):  # noqa: N802
+        try:
+            sender, gift_name = self._parse_common_notice_gift(message)
+            if not gift_name:
+                logging.info(
+                    f"[{client.room_id}] COMMON_NOTICE_DANMAKU 未解析到礼物名: {message.content_text}"
+                )
+                return
+            coin_value = COMMON_NOTICE_GIFT_COIN_MAP.get(gift_name)
+            if coin_value is None:
+                logging.info(
+                    f"[{client.room_id}] COMMON_NOTICE_DANMAKU 未匹配礼物价格: {gift_name}"
+                )
+                return
+            self._record_gift(
+                client=client,
+                gift_name=gift_name,
+                num=1,
+                total_coin=coin_value,
+                uname=sender,
+                uid=0,
+                trigger_cookie_alert=False,
+            )
+        except Exception as e:
+            logging.error(f"处理 COMMON_NOTICE_DANMAKU 礼物记录时出错: {e}")
 
     def _on_user_toast_v2(self, client, message):  # noqa: N802
         try:

@@ -10,6 +10,7 @@ __all__ = (
     'GuardBuyMessage',
     'SuperChatMessage',
     'SuperChatDeleteMessage',
+    'CommonNoticeDanmakuMessage',
 )
 
 
@@ -333,6 +334,51 @@ class GiftMessage:
             medal_room_id=medal_room_id,
             medal_ruid=medal_ruid,
         )
+
+
+@dataclasses.dataclass
+class CommonNoticeDanmakuSegment:
+    segment_type: int = 0
+    """分段类型"""
+    font_color: str = ''
+    """字体颜色"""
+    text: str = ''
+    """文本内容"""
+
+    @classmethod
+    def from_command(cls, data: dict):
+        return cls(
+            segment_type=data.get('type', 0),
+            font_color=data.get('font_color', ''),
+            text=data.get('text', ''),
+        )
+
+
+@dataclasses.dataclass
+class CommonNoticeDanmakuMessage:
+    """
+    通知类弹幕消息（COMMON_NOTICE_DANMAKU）
+    """
+
+    terminals: List[int] = dataclasses.field(default_factory=list)
+    """终端类型"""
+    content_segments: List[CommonNoticeDanmakuSegment] = dataclasses.field(default_factory=list)
+    """分段文本"""
+
+    @classmethod
+    def from_command(cls, data: dict):
+        segments = [
+            CommonNoticeDanmakuSegment.from_command(segment)
+            for segment in data.get('content_segments', [])
+        ]
+        return cls(
+            terminals=data.get('terminals', []),
+            content_segments=segments,
+        )
+
+    @property
+    def content_text(self) -> str:
+        return ''.join(segment.text for segment in self.content_segments if segment.text)
 
 
 @dataclasses.dataclass
