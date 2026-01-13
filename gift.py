@@ -4,6 +4,7 @@ import asyncio
 import http.cookies
 import logging
 import datetime
+import json
 import re
 from typing import Optional, Tuple, Dict
 import threading
@@ -40,13 +41,42 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
+def load_env_file(env_path: str = ".env") -> None:
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip("'").strip('"')
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception as exc:
+        logging.error(f"[env] 加载 .env 失败: {exc}")
+
+load_env_file(os.getenv("ENV_FILE", ".env"))
+
+def _get_env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.warning(f"[env] {name} 不是有效整数，使用默认值 {default}")
+        return default
+
 # ------------------ 数据库 ------------------
 DB_CONFIG = {
-    "host": "localhost",
-    "user": "111",
-    "password": "111",
-    "db": "111",
-    "port": 3306,
+    "host": os.getenv("DB_HOST", "localhost"),
+    "user": os.getenv("DB_USER", "111"),
+    "password": os.getenv("DB_PASSWORD", "111"),
+    "db": os.getenv("DB_NAME", "111"),
+    "port": _get_env_int("DB_PORT", 3306),
 }
 engine = create_engine(
     f"mysql+pymysql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
@@ -64,6 +94,8 @@ SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "")
 EMAIL_TO   = os.getenv("EMAIL_TO", "")
+APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
+APP_PORT = _get_env_int("APP_PORT", 4666)
 
 COOKIE_ALERT_SENT = False  # 防止同一次失效被疯狂刷邮件
 
@@ -553,12 +585,91 @@ class SuperChatLog(Base):
             except Exception:
                 pass
 
+ROOMS_JSON_PATH = os.getenv("ROOMS_JSON_PATH", "rooms.json")
+ROOM_CONFIG_LOCK = threading.Lock()
+ROOM_IDS: list[int] = []
+ROOM_ANCHORS: Dict[int, str] = {}
+
+def load_rooms_config() -> None:
+    if not os.path.exists(ROOMS_JSON_PATH):
+        logging.warning(f"[rooms] 未找到房间配置文件: {ROOMS_JSON_PATH}")
+        return
+    try:
+        with open(ROOMS_JSON_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle) or {}
+    except json.JSONDecodeError as exc:
+        logging.error(f"[rooms] JSON 解析失败: {exc}")
+        return
+    except Exception as exc:
+        logging.error(f"[rooms] 读取配置失败: {exc}")
+        return
+
+    room_ids = payload.get("room_ids", [])
+    room_anchors = payload.get("room_anchors", {})
+    if not isinstance(room_ids, list):
+        logging.error("[rooms] room_ids 必须是数组")
+        return
+    if not isinstance(room_anchors, dict):
+        logging.error("[rooms] room_anchors 必须是对象")
+        return
+
+    normalized_ids: list[int] = []
+    normalized_anchors: Dict[int, str] = {}
+    for rid in room_ids:
+        try:
+            rid_int = int(rid)
+        except (TypeError, ValueError):
+            continue
+        normalized_ids.append(rid_int)
+
+    for raw_id, name in room_anchors.items():
+        try:
+            rid_int = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        normalized_anchors[rid_int] = str(name) if name is not None else ""
+
+    for rid in normalized_ids:
+        normalized_anchors.setdefault(rid, "")
+
+    with ROOM_CONFIG_LOCK:
+        ROOM_IDS.clear()
+        ROOM_IDS.extend(sorted(set(normalized_ids)))
+        ROOM_ANCHORS.clear()
+        ROOM_ANCHORS.update(normalized_anchors)
+
+def save_rooms_config() -> None:
+    with ROOM_CONFIG_LOCK:
+        payload = {
+            "room_ids": sorted(set(ROOM_IDS)),
+            "room_anchors": {str(rid): name for rid, name in ROOM_ANCHORS.items()},
+        }
+    try:
+        with open(ROOMS_JSON_PATH, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logging.error(f"[rooms] 保存配置失败: {exc}")
+
+def get_room_ids() -> list[int]:
+    with ROOM_CONFIG_LOCK:
+        return list(ROOM_IDS)
+
+def get_room_anchors() -> Dict[int, str]:
+    with ROOM_CONFIG_LOCK:
+        return dict(ROOM_ANCHORS)
+
+def get_room_anchor_name(room_id: int) -> str:
+    with ROOM_CONFIG_LOCK:
+        return ROOM_ANCHORS.get(room_id, "")
+
+load_rooms_config()
+
 def _room_ids_for_month(m: str, include_config: bool = True) -> list[int]:
     """返回指定月份应展示的房间集合：DB出现过的房间 ∪ (可选) ROOM_IDS"""
     session = Session()
     try:
         start, end = month_range(m)
-        ids = set(ROOM_IDS) if include_config else set()
+        ids = set(get_room_ids()) if include_config else set()
 
         # room_stats_monthly 有记录的房间
         q1 = session.query(RoomStatsMonthly.room_id).filter_by(month=m).all()
@@ -583,28 +694,13 @@ def _room_ids_for_month(m: str, include_config: bool = True) -> list[int]:
 Base.metadata.create_all(engine)
 
 # ------------------ 直播间配置 ------------------
-ROOM_IDS = [
-    1820703922,21696950,1947277414,27628019,21756924,
-    23771189,1967216004,23805029,23260993,23771092,
-    23771139,25788785,21452505,21224291,21484828,
-    25788858,23550749,22470216,22605464,1967215387,
-    1967212929,31368705,80397,282208,30655190,
-    22778610,27628030,31368697,3032130,21403601,
-    23017349,21457197,30655198,31368686,23770996,
-    1861373970,784734,23017343,30655213,21613356,
-    30655179,27627985,1766907940,27628009,22389319,
-    26966466,30655172,1766909591,21696957,21763344,
-    23550773,23805059,30655203,32638817,32638818,
-    6068126,22359795,6374209,938957,1791260756,
-    1791264553,1791260716,21470454,
-]
-SESSDATA_VALUE = ""
-BILI_JCT_VALUE           = ""
-DEDEUSERID_VALUE         = ""
-DEDEUSERID_CKMD5_VALUE   = ""
-SID_VALUE                = ""
-BUVID3_VALUE             = ""
-DEVICE_FP_VALUE          = ""
+SESSDATA_VALUE = os.getenv("SESSDATA_VALUE", "")
+BILI_JCT_VALUE           = os.getenv("BILI_JCT_VALUE", "")
+DEDEUSERID_VALUE         = os.getenv("DEDEUSERID_VALUE", "")
+DEDEUSERID_CKMD5_VALUE   = os.getenv("DEDEUSERID_CKMD5_VALUE", "")
+SID_VALUE                = os.getenv("SID_VALUE", "")
+BUVID3_VALUE             = os.getenv("BUVID3_VALUE", "")
+DEVICE_FP_VALUE          = os.getenv("DEVICE_FP_VALUE", "")
 
 BILI_COOKIES_BASE = {
     "SESSDATA": SESSDATA_VALUE,
@@ -624,29 +720,13 @@ BILI_TICKET_KEY    = "XgwSnGZ1p"
 BILI_TICKET_URL    = "https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket"
 BILI_TICKET_KEY_ID = "ec02"
 
-ROOM_ANCHORS = {
-    1820703922:"花礼Harei",21696950:"阿萨AzA",1947277414:"泽音Melody",27628019:"雨纪_Ameki",21756924:"雪绘Yukie",
-    23771189:"恬豆发芽了",1967216004:"三理Mit3uri",23805029:"雾深Girimi",23260993:"瑞娅_Rhea",23771092:"又一充电中",
-    23771139:"沐霂是MUMU呀",25788785:"岁己SUI",21452505:"七海Nana7mi",21224291:"安堂いなり_official",21484828:"轴伊Joi_Channel",
-    25788858:"莱恩Leo",23550749:"尤格Yog",22470216:"悠亚Yua",22605464:"千幽Chiyuu",1967215387:"命依Mei",
-    1967212929:"沐毛Meme",31368705:"米汀Nagisa",80397:"阿梓从小就很可爱",282208:"诺莺Nox",30655190:"弥月Mizuki",
-    22778610:"勾檀Mayumi",27628030:"未知夜Michiya",31368697:"雪烛Yukisyo",3032130:"舒三妈Susam",21403601:"艾因Eine",
-    23017349:"桃星Tocci",21457197:"中单光一",30655198:"蜜言Mikoto",31368686:"帕可Pako",23770996:"梨安不迷路",
-    1861373970:"妮慕Nimue",784734:"宫园凛RinMiyazono",23017343:"吉吉Kiti",30655213:"漆羽Urushiha",21613356:"惑姬Waku",
-    30655179:"入福步Ayumi",27627985:"哎小呜Awu",1766907940:"点酥Susu",27628009:"初濑Hatsuse",22389319:"千春_Chiharu",
-    26966466:"栞栞Shiori",30655172:"离枝Richi",1766909591:"桃代Momoka",21696957:"度人Tabibito",21763344:"沙夜_Saya",
-    23550773:"暴食Hunger",23805059:"希维Sybil",30655203:"晴一Hajime",32638817:"鬼间Kima",32638818:"阿命Inochi",
-    6068126:"糯依Noi",22359795:"菜菜子Nanako",6374209:"小可学妹",938957:"祖娅纳惜",1791260756:"柚雨Kioi",
-    1791264553:"能能Nori",1791260716:"犬绒Mofu",21470454:"VirtuaReal",
-}
-
 aiohttp_session: Optional[aiohttp.ClientSession] = None
 
 # room_id -> uid（仅初始化时获取一次，后续不刷新）
 ROOM_UIDS: Dict[int, int] = {}
 
 def init_room_info():
-    for rid, name in ROOM_ANCHORS.items():
+    for rid, name in get_room_anchors().items():
         RoomInfo.upsert(rid, anchor_name=name)
 
 def init_session():
@@ -905,16 +985,14 @@ class MyHandler(blivedm.BaseHandler):
 
 async def run_clients_loop():
     # 批量按 3 秒间隔启动
-    for room_id in ROOM_IDS:
+    for room_id in get_room_ids():
         await _start_client(room_id)
         await asyncio.sleep(3)
 
 # ------------------ 直播状态 & 粉丝数监视 ------------------
-LAST_STATUS: Dict[int, int] = {rid: 0 for rid in ROOM_IDS}
+LAST_STATUS: Dict[int, int] = {}
 STREAM_STARTS: Dict[int, datetime.datetime] = {}
-LIVE_INFO: Dict[int, Dict[str, str]] = {
-    rid: {"live_time": "0000-00-00 00:00:00", "title": ""} for rid in ROOM_IDS
-}
+LIVE_INFO: Dict[int, Dict[str, str]] = {}
 
 DANMAKU_PENDING: Dict[int, int] = {}
 # 新增：当前粉丝团数量 / 当前守护数量（非按场次，是“最新状态”）
@@ -936,6 +1014,79 @@ ROOM_INFO_API   = "https://api.live.bilibili.com/room/v1/Room/get_info"
 # 新增：粉丝团/舰长 API
 FANS_API  = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getFansMembersRank"
 GUARD_API = "https://api.live.bilibili.com/xlive/general-interface/v1/guard/GuardActive"
+
+def ensure_room_state(room_id: int) -> None:
+    LAST_STATUS.setdefault(room_id, 0)
+    LIVE_INFO.setdefault(room_id, {"live_time": "0000-00-00 00:00:00", "title": ""})
+    FANS_COUNT.setdefault(room_id, 0)
+    GUARD_COUNTS.setdefault(room_id, {"guard_1": 0, "guard_2": 0, "guard_3": 0})
+
+for _room_id in get_room_ids():
+    ensure_room_state(_room_id)
+
+async def init_uid_and_attention_for_room(room_id: int, max_rounds: int = 3) -> None:
+    for round_idx in range(1, max_rounds + 1):
+        if room_id in ROOM_UIDS:
+            return
+        logging.info(f"[init] room_id={room_id} 获取 UID 第 {round_idx}/{max_rounds} 轮")
+        await _fetch_room_info_and_update(room_id, update_uid=True)
+        await asyncio.sleep(0.3)
+    if room_id not in ROOM_UIDS:
+        logging.error(f"[init] room_id={room_id} UID 获取失败，后续状态轮询将跳过")
+
+async def add_room_async(room_id: int, anchor_name: str) -> Tuple[bool, str]:
+    with ROOM_CONFIG_LOCK:
+        if room_id in ROOM_IDS:
+            return False, "房间已存在"
+        ROOM_IDS.append(room_id)
+        ROOM_IDS.sort()
+        ROOM_ANCHORS[room_id] = anchor_name or ""
+    save_rooms_config()
+    ensure_room_state(room_id)
+    RoomInfo.upsert(room_id, anchor_name=anchor_name)
+    await init_uid_and_attention_for_room(room_id)
+    if aiohttp_session is None:
+        return False, "aiohttp_session 未初始化"
+    await _start_client(room_id)
+    if LAST_STATUS.get(room_id, 0) != 1:
+        try:
+            GUARD_FANS_QUEUE.put_nowait((room_id, None, None))
+        except Exception as e:
+            logging.error(f"[Guard/Fans] 新增房间投递任务 room_id={room_id} 失败: {e}")
+    return True, "房间已添加并启动任务"
+
+async def delete_room_async(room_id: int) -> Tuple[bool, str]:
+    with ROOM_CONFIG_LOCK:
+        if room_id not in ROOM_IDS:
+            return False, "房间不存在"
+        ROOM_IDS.remove(room_id)
+        ROOM_ANCHORS.pop(room_id, None)
+    save_rooms_config()
+
+    client = ROOM_CLIENTS.pop(room_id, None)
+    if client is not None:
+        try:
+            await client.stop_and_close()
+        except asyncio.CancelledError:
+            logging.debug(f"[delete] room={room_id} stop_and_close 触发取消（预期）")
+        except Exception as e:
+            logging.warning(f"[delete] room={room_id} stop_and_close 异常: {e}")
+
+    if room_id in STREAM_STARTS:
+        st = STREAM_STARTS.pop(room_id)
+        end_dt = _now()
+        _split_and_record(room_id, st, end_dt)
+        sid = CURRENT_SESSIONS.pop(room_id, None)
+        LiveSession.close_session_by_id(sid, end_dt)
+
+    ROOM_UIDS.pop(room_id, None)
+    LAST_STATUS.pop(room_id, None)
+    LIVE_INFO.pop(room_id, None)
+    LAST_RECONNECT.pop(room_id, None)
+    DANMAKU_PENDING.pop(room_id, None)
+    FANS_COUNT.pop(room_id, None)
+    GUARD_COUNTS.pop(room_id, None)
+    return True, "房间已删除并停止任务"
 
 def _split_and_record(room_id: int, start: datetime.datetime, end: datetime.datetime):
     """将 [start, end] 按自然日切片，并累加到 RoomLiveStats 表中。"""
@@ -1095,7 +1246,7 @@ async def init_uids_and_attention_once(max_rounds: int = 5):
     """
     logging.info("[init] 开始初始化 UID 和粉丝数（get_info）")
     for round_idx in range(1, max_rounds + 1):
-        missing = [rid for rid in ROOM_IDS if rid not in ROOM_UIDS]
+        missing = [rid for rid in get_room_ids() if rid not in ROOM_UIDS]
         if not missing:
             logging.info("[init] 所有 UID 已成功获取")
             return
@@ -1103,7 +1254,7 @@ async def init_uids_and_attention_once(max_rounds: int = 5):
         for room_id in missing:
             await _fetch_room_info_and_update(room_id, update_uid=True)
             await asyncio.sleep(0.3)  # 稍微限速，避免过快
-    missing = [rid for rid in ROOM_IDS if rid not in ROOM_UIDS]
+    missing = [rid for rid in get_room_ids() if rid not in ROOM_UIDS]
     if missing:
         logging.error(f"[init] 经过 {max_rounds} 轮仍有 UID 获取失败，将在状态轮询中跳过这些房间: {missing}")
     else:
@@ -1313,7 +1464,7 @@ async def refresh_attention_scheduler():
     while True:
         await asyncio.sleep(3 * 3600)
         logging.info("[RoomInfo] 开始 3 小时粉丝数刷新任务")
-        for room_id in ROOM_IDS:
+        for room_id in get_room_ids():
             await _fetch_room_info_and_update(room_id, update_uid=False)
             await asyncio.sleep(0.3)
         logging.info("[RoomInfo] 本轮粉丝数刷新任务完成")
@@ -1331,7 +1482,7 @@ async def guard_fans_refresh_scheduler():
 
     # 启动后先刷一遍未开播房间
     logging.info("[Guard/Fans] 启动后立刻执行一轮未开播房间守护+粉丝团刷新")
-    for room_id in ROOM_IDS:
+    for room_id in get_room_ids():
         if LAST_STATUS.get(room_id, 0) != 1:
             try:
                 await GUARD_FANS_QUEUE.put((room_id, None, None))
@@ -1344,7 +1495,7 @@ async def guard_fans_refresh_scheduler():
     while True:
         await asyncio.sleep(3600)
         logging.info("[Guard/Fans] 开始每小时未开播房间刷新任务")
-        for room_id in ROOM_IDS:
+        for room_id in get_room_ids():
             # 仅未开播房间
             if LAST_STATUS.get(room_id, 0) != 1:
                 try:
@@ -1376,6 +1527,10 @@ async def monitor_all_rooms_status():
                 logging.error("[LiveStatus] aiohttp_session 未初始化")
                 await asyncio.sleep(3)
                 continue
+            if not ROOM_UIDS:
+                logging.info("[LiveStatus] 暂无可用 UID，等待房间加入")
+                await asyncio.sleep(3)
+                continue
 
             # 组装批量查询参数
             params = [("uids[]", str(uid)) for uid in ROOM_UIDS.values()]
@@ -1402,7 +1557,7 @@ async def monitor_all_rooms_status():
             now = _now()
 
             # 逐房间处理
-            for room_id in ROOM_IDS:
+            for room_id in get_room_ids():
                 uid = ROOM_UIDS.get(room_id)
                 info = data.get(str(uid)) if uid is not None else None
                 prev = LAST_STATUS.get(room_id, 0)
@@ -1504,7 +1659,7 @@ async def reconnect_scheduler():
         await asyncio.sleep(sleep_sec)
 
         logging.info("[reconnect] 开始执行每日全量重连任务")
-        for room_id in ROOM_IDS:
+        for room_id in get_room_ids():
             if LAST_STATUS.get(room_id, 0) == 1:
                 logging.info(f"[reconnect] 房间 {room_id} 当前在播，跳过今日重连")
                 continue
@@ -1558,6 +1713,8 @@ async def monthly_reset_scheduler():
 
 # 主入口
 async def main():
+    global MAIN_LOOP
+    MAIN_LOOP = asyncio.get_running_loop()
     init_room_info()
     init_session()
     # 先初始化 UID + 粉丝数，完成后再开启状态轮询
@@ -1581,6 +1738,62 @@ async def main():
 
 # ------------------ Flask API ------------------
 app = Flask(__name__)
+MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+def _run_in_main_loop(coro: asyncio.Future, timeout: int = 30):
+    if MAIN_LOOP is None:
+        raise RuntimeError("MAIN_LOOP 未初始化")
+    future = asyncio.run_coroutine_threadsafe(coro, MAIN_LOOP)
+    return future.result(timeout=timeout)
+
+def _parse_room_payload(payload: dict) -> Tuple[Optional[int], Optional[str], str]:
+    room_id_raw = payload.get("room_id")
+    anchor_raw = payload.get("room_anchors")
+    if room_id_raw is None:
+        return None, None, "room_id 必填"
+    try:
+        room_id = int(room_id_raw)
+    except (TypeError, ValueError):
+        return None, None, "room_id 必须为整数"
+    if room_id <= 0:
+        return None, None, "room_id 必须为正整数"
+    if anchor_raw is None:
+        return room_id, None, "room_anchors 必填"
+    if isinstance(anchor_raw, dict):
+        name = anchor_raw.get(str(room_id)) or anchor_raw.get(room_id)
+    else:
+        name = anchor_raw
+    if not isinstance(name, str) or not name.strip():
+        return room_id, None, "room_anchors 必须为非空字符串"
+    return room_id, name.strip(), ""
+
+@app.route("/add/room", methods=["POST"])
+def add_room_api():
+    payload = request.get_json(silent=True) or {}
+    room_id, anchor_name, error = _parse_room_payload(payload)
+    if error:
+        return jsonify({"error": error}), 400
+    try:
+        ok, message = _run_in_main_loop(add_room_async(room_id, anchor_name))
+    except Exception as exc:
+        logging.error(f"[API] /add/room 执行失败: {exc}")
+        return jsonify({"error": "添加房间失败"}), 500
+    status = 200 if ok else 409
+    return jsonify({"ok": ok, "room_id": room_id, "message": message}), status
+
+@app.route("/delete/room", methods=["POST"])
+def delete_room_api():
+    payload = request.get_json(silent=True) or {}
+    room_id, anchor_name, error = _parse_room_payload(payload)
+    if error:
+        return jsonify({"error": error}), 400
+    try:
+        ok, message = _run_in_main_loop(delete_room_async(room_id))
+    except Exception as exc:
+        logging.error(f"[API] /delete/room 执行失败: {exc}")
+        return jsonify({"error": "删除房间失败"}), 500
+    status = 200 if ok else 404
+    return jsonify({"ok": ok, "room_id": room_id, "message": message}), status
 
 @app.route("/gift", methods=["GET"])
 def get_stats_current_month():
@@ -1601,7 +1814,7 @@ def get_stats_current_month():
             gd = rsm.guard if rsm else 0.0
             sc = rsm.super_chat if rsm else 0.0
 
-            anchor_name = (session.query(RoomInfo.anchor_name).filter_by(room_id=room_id).scalar()) or ROOM_ANCHORS.get(room_id, "")
+            anchor_name = (session.query(RoomInfo.anchor_name).filter_by(room_id=room_id).scalar()) or get_room_anchor_name(room_id)
             attention   = (session.query(RoomInfo.attention).filter_by(room_id=room_id).scalar()) or 0
 
             total_sec, eff_days = RoomLiveStats.month_aggregate_for_month(room_id, m)
@@ -1663,7 +1876,7 @@ def get_stats_by_month():
             gd = rsm.guard if rsm else 0.0
             sc = rsm.super_chat if rsm else 0.0
 
-            anchor_name = (session.query(RoomInfo.anchor_name).filter_by(room_id=room_id).scalar()) or ROOM_ANCHORS.get(room_id, "")
+            anchor_name = (session.query(RoomInfo.anchor_name).filter_by(room_id=room_id).scalar()) or get_room_anchor_name(room_id)
             attention   = (session.query(RoomInfo.attention).filter_by(room_id=room_id).scalar()) or 0
 
             total_sec, eff_days = RoomLiveStats.month_aggregate_for_month(room_id, m)
@@ -1837,5 +2050,5 @@ def get_sc_logs():
         session.close()
 
 if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=4666), daemon=True).start()
+    threading.Thread(target=lambda: app.run(host=APP_HOST, port=APP_PORT), daemon=True).start()
     asyncio.run(main())
