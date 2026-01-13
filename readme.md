@@ -44,13 +44,15 @@ VR斗虫排行耪，每月最后一天24点清零
    EXIT;
    ```
 
-5.**修改数据**
+5.**配置环境与房间**
 
-   修改app.py中的SESSDATA字段保证链接稳定
+   将 `.env.example` 复制为 `.env`，并填写数据库与 B 站 Cookies 等关键配置。
    
-   修改app.py中的DB_CONFIG来连接数据库（保证账户名密码数据库名和上述命名时保持一致即可）
+   房间列表与主播映射统一存放在 `rooms.json`（字段：`room_ids`、`room_anchors`）。
    
-   增加或去除主播：修改uid_list中的UID，并且在对应列表中增加主播名称
+   也可以通过 API 动态新增或删除房间：
+   - `POST /add/room`：payload 需包含 `room_id` 与 `room_anchors`
+   - `POST /delete/room`：payload 需包含 `room_id` 与 `room_anchors`
 
 6.**运行**
    ```bash
