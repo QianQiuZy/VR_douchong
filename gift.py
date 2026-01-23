@@ -342,6 +342,10 @@ class LiveSession(Base):
     end_guard_3     = Column(Integer, nullable=True)
     end_fans_count  = Column(Integer, nullable=True)
 
+    # 新增：同接统计（开播期间轮询贡献榜 count）
+    avg_concurrency = Column(Float, nullable=True)
+    max_concurrency = Column(Integer, nullable=True)
+
     @classmethod
     def start_session(cls, room_id: int, start_dt: datetime.datetime, title: str) -> Optional[int]:
         session = Session()
@@ -418,6 +422,31 @@ class LiveSession(Base):
         except SQLAlchemyError as e:
             session.rollback()
             logging.error(f"[LiveSession] close_session_by_id 失败: {e}")
+        finally:
+            session.close()
+
+    @classmethod
+    def update_concurrency_by_id(
+        cls,
+        session_id: Optional[int],
+        avg_concurrency: Optional[float] = None,
+        max_concurrency: Optional[int] = None,
+    ):
+        if not session_id:
+            return
+        session = Session()
+        try:
+            row = session.query(cls).filter_by(id=session_id).first()
+            if not row:
+                return
+            if avg_concurrency is not None:
+                row.avg_concurrency = float(avg_concurrency)
+            if max_concurrency is not None:
+                row.max_concurrency = int(max_concurrency)
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[LiveSession] update_concurrency_by_id 失败: {e}")
         finally:
             session.close()
 
@@ -998,6 +1027,9 @@ DANMAKU_PENDING: Dict[int, int] = {}
 # 新增：当前粉丝团数量 / 当前守护数量（非按场次，是“最新状态”）
 FANS_COUNT: Dict[int, int] = {}  # room_id -> 当前粉丝团数量
 GUARD_COUNTS: Dict[int, Dict[str, int]] = {}  # room_id -> {"guard_1": 舰长, "guard_2": 提督, "guard_3": 总督}
+# 新增：同接轮询缓存（按房间缓存当前场次统计）
+# 结构：room_id -> {"session_id": int, "total": int, "samples": int, "max": int, "last": int}
+CONCURRENCY_CACHE: Dict[int, Dict[str, int]] = {}
 
 # 粉丝团 & 守护 信息获取任务队列：元素为 (room_id, session_id)，session_id 为 None 表示只更新当前状态
 GUARD_FANS_QUEUE: "asyncio.Queue[tuple[int, Optional[int], Optional[str]]]" = asyncio.Queue()
@@ -1014,6 +1046,36 @@ ROOM_INFO_API   = "https://api.live.bilibili.com/room/v1/Room/get_info"
 # 新增：粉丝团/舰长 API
 FANS_API  = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getFansMembersRank"
 GUARD_API = "https://api.live.bilibili.com/xlive/general-interface/v1/guard/GuardActive"
+CONTRIBUTION_RANK_API = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/queryContributionRank"
+
+def _init_concurrency_cache(room_id: int, session_id: int) -> None:
+    CONCURRENCY_CACHE[room_id] = {
+        "session_id": int(session_id),
+        "total": 0,
+        "samples": 0,
+        "max": 0,
+        "last": 0,
+    }
+
+def _update_concurrency_cache(room_id: int, session_id: int, count: int) -> None:
+    cache = CONCURRENCY_CACHE.get(room_id)
+    if not cache or cache.get("session_id") != session_id:
+        _init_concurrency_cache(room_id, session_id)
+        cache = CONCURRENCY_CACHE[room_id]
+    cache["total"] = int(cache.get("total", 0)) + int(count)
+    cache["samples"] = int(cache.get("samples", 0)) + 1
+    cache["max"] = max(int(cache.get("max", 0)), int(count))
+    cache["last"] = int(count)
+
+def _finalize_concurrency_cache(room_id: int, session_id: Optional[int]) -> tuple[Optional[float], Optional[int]]:
+    cache = CONCURRENCY_CACHE.get(room_id)
+    if not cache or session_id is None or cache.get("session_id") != session_id:
+        return None, None
+    samples = int(cache.get("samples", 0))
+    total = int(cache.get("total", 0))
+    max_val = int(cache.get("max", 0)) if samples > 0 else None
+    avg_val = (total / samples) if samples > 0 else None
+    return avg_val, max_val
 
 def ensure_room_state(room_id: int) -> None:
     LAST_STATUS.setdefault(room_id, 0)
@@ -1078,6 +1140,13 @@ async def delete_room_async(room_id: int) -> Tuple[bool, str]:
         _split_and_record(room_id, st, end_dt)
         sid = CURRENT_SESSIONS.pop(room_id, None)
         LiveSession.close_session_by_id(sid, end_dt)
+        avg_concurrency, max_concurrency = _finalize_concurrency_cache(room_id, sid)
+        LiveSession.update_concurrency_by_id(
+            sid,
+            avg_concurrency=avg_concurrency,
+            max_concurrency=max_concurrency,
+        )
+        CONCURRENCY_CACHE.pop(room_id, None)
 
     ROOM_UIDS.pop(room_id, None)
     LAST_STATUS.pop(room_id, None)
@@ -1086,6 +1155,7 @@ async def delete_room_async(room_id: int) -> Tuple[bool, str]:
     DANMAKU_PENDING.pop(room_id, None)
     FANS_COUNT.pop(room_id, None)
     GUARD_COUNTS.pop(room_id, None)
+    CONCURRENCY_CACHE.pop(room_id, None)
     return True, "房间已删除并停止任务"
 
 def _split_and_record(room_id: int, start: datetime.datetime, end: datetime.datetime):
@@ -1354,6 +1424,52 @@ async def _fetch_fans_count(uid: int, room_id: int) -> Optional[int]:
     logging.info(f"[Fans] room_id={room_id} 粉丝团数量={num}")
     return num
 
+async def _fetch_contribution_count(uid: int, room_id: int) -> Optional[int]:
+    """
+    调用贡献榜接口，返回 data.count 作为同接统计基数。
+    """
+    if aiohttp_session is None:
+        logging.error("[Concurrency] aiohttp_session 未初始化")
+        return None
+
+    params = {
+        "ruid": str(uid),
+        "room_id": str(room_id),
+        "page": "1",
+        "page_size": "1",
+    }
+    try:
+        async with aiohttp_session.get(
+            CONTRIBUTION_RANK_API,
+            params=params,
+            timeout=10,
+            headers={"User-Agent": USER_AGENT, "Referer": "https://live.bilibili.com"},
+        ) as resp:
+            if resp.status != 200:
+                logging.warning(f"[Concurrency] room_id={room_id} HTTP {resp.status}")
+                return None
+            try:
+                payload = await resp.json(content_type=None)
+            except ContentTypeError:
+                text = (await resp.text())[:200]
+                logging.warning(f"[Concurrency] room_id={room_id} 返回非 JSON，前 200 字：{text}")
+                return None
+    except Exception as e:
+        logging.error(f"[Concurrency] room_id={room_id} 请求异常: {e}")
+        return None
+
+    if payload.get("code") != 0:
+        logging.warning(f"[Concurrency] room_id={room_id} 接口返回异常: {payload}")
+        return None
+
+    data = payload.get("data") or {}
+    count_raw = data.get("count", 0)
+    try:
+        count = int(count_raw)
+    except (TypeError, ValueError):
+        count = 0
+    return count
+
 
 async def guard_fans_worker():
     """
@@ -1505,6 +1621,33 @@ async def guard_fans_refresh_scheduler():
                 await asyncio.sleep(0.1)
         logging.info("[Guard/Fans] 本轮未开播房间刷新任务结束")
 
+async def concurrency_poll_scheduler():
+    """
+    开播房间每 15 秒轮询贡献榜 count，用于同接统计。
+    """
+    # 等待 UID 初始化完成
+    while not ROOM_UIDS:
+        logging.info("[Concurrency] 等待 UID 初始化...")
+        await asyncio.sleep(1)
+
+    while True:
+        for room_id in get_room_ids():
+            if LAST_STATUS.get(room_id, 0) != 1:
+                continue
+            uid = ROOM_UIDS.get(room_id)
+            session_id = CURRENT_SESSIONS.get(room_id)
+            if uid is None or session_id is None:
+                continue
+            count = await _fetch_contribution_count(uid, room_id)
+            if count is None:
+                continue
+            _update_concurrency_cache(room_id, session_id, count)
+            logging.debug(
+                f"[Concurrency] room_id={room_id} session_id={session_id} count={count}"
+            )
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(15)
+
 async def monitor_all_rooms_status():
     """
     使用新 API：get_status_info_by_uids?uids[]=... 批量查询所有房间的直播状态。
@@ -1600,6 +1743,7 @@ async def monitor_all_rooms_status():
                         sid = LiveSession.start_session(room_id, start_dt, raw_title)
                         if sid:
                             CURRENT_SESSIONS[room_id] = sid
+                            _init_concurrency_cache(room_id, sid)
                             # 开播瞬间：立刻刷新守护数量 + 粉丝团数量，并记录到本场 live_session 中
                             try:
                                 GUARD_FANS_QUEUE.put_nowait((room_id, sid, "start"))
@@ -1620,7 +1764,14 @@ async def monitor_all_rooms_status():
                         _split_and_record(room_id, st, end_dt)
                         # 关闭该场会话
                         sid = CURRENT_SESSIONS.pop(room_id, None)
+                        avg_concurrency, max_concurrency = _finalize_concurrency_cache(room_id, sid)
                         LiveSession.close_session_by_id(sid, end_dt)
+                        LiveSession.update_concurrency_by_id(
+                            sid,
+                            avg_concurrency=avg_concurrency,
+                            max_concurrency=max_concurrency,
+                        )
+                        CONCURRENCY_CACHE.pop(room_id, None)
                         duration_str = _seconds_to_hms(int((end_dt - st).total_seconds()))
                         logging.info(f"[{room_id}] 下播，时长 {duration_str}")
 
@@ -1731,6 +1882,7 @@ async def main():
             guard_fans_refresh_scheduler(),  # 未开播房间每小时刷新守护 + 粉丝团
             bili_ticket_scheduler(),         # 每日 5:00 刷新 bili_ticket
             danmaku_flush_scheduler(),
+            concurrency_poll_scheduler(),    # 开播房间每 15 秒轮询同接
         )
     finally:
         if aiohttp_session:
@@ -1953,6 +2105,17 @@ def get_live_sessions_by_room_month():
         )
         out = []
         for r in rows:
+            avg_concurrency = r.avg_concurrency
+            max_concurrency = r.max_concurrency
+            current_concurrency = None
+            if r.end_time is None:
+                cache = CONCURRENCY_CACHE.get(room_id)
+                if cache and cache.get("session_id") == r.id:
+                    samples = int(cache.get("samples", 0))
+                    total = int(cache.get("total", 0))
+                    avg_concurrency = (total / samples) if samples > 0 else None
+                    max_concurrency = int(cache.get("max", 0)) if samples > 0 else None
+                    current_concurrency = int(cache.get("last", 0)) if samples > 0 else None
             out.append({
                 "start_time": r.start_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "end_time":   (r.end_time.strftime("%Y-%m-%d %H:%M:%S") if r.end_time else None),
@@ -1973,6 +2136,10 @@ def get_live_sessions_by_room_month():
                 "end_guard_2": r.end_guard_2,
                 "end_guard_3": r.end_guard_3,
                 "end_fans_count": r.end_fans_count,
+
+                "avg_concurrency": avg_concurrency,
+                "max_concurrency": max_concurrency,
+                "current_concurrency": current_concurrency,
             })
         return jsonify({"room_id": room_id, "month": m, "sessions": out})
     except SQLAlchemyError as e:
