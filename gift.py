@@ -1954,6 +1954,7 @@ def get_stats_current_month():
       - room_stats_monthly 当月 gift/guard/super_chat
       - room_live_stats 聚合当月直播时长与有效天数
       - 当前月返回实时 live_time/title/status；历史月置空
+      - 当前月开播时返回即时同接（current_concurrency），未开播返回 null
     """
     results = []
     session = Session()
@@ -1976,6 +1977,14 @@ def get_stats_current_month():
             live_time_val = info.get("live_time", "0000-00-00 00:00:00")
             title_val     = info.get("title", "")
             status_val    = LAST_STATUS.get(room_id, 0)
+            current_concurrency = None
+            if status_val == 1:
+                session_id = CURRENT_SESSIONS.get(room_id)
+                cache = CONCURRENCY_CACHE.get(room_id)
+                if cache and cache.get("session_id") == session_id:
+                    samples = int(cache.get("samples", 0))
+                    if samples > 0:
+                        current_concurrency = int(cache.get("last", 0))
 
             # 当前守护数量 / 粉丝团数量（最新状态）
             guard_info  = GUARD_COUNTS.get(room_id, {}) or {}
@@ -2001,6 +2010,7 @@ def get_stats_current_month():
                 "guard_2": guard_2,       # 提督
                 "guard_3": guard_3,       # 总督
                 "fans_count": fans_count, # 粉丝团数量
+                "current_concurrency": current_concurrency,
             })
         return jsonify(results)
     except SQLAlchemyError as e:
