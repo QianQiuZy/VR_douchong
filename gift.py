@@ -152,6 +152,12 @@ def normalize_month_code(raw: Optional[str]) -> Optional[str]:
 def sc_log_table_name(month_code: str) -> str:
     return f"super_chat_log_{month_code}"
 
+def live_session_table_name(month_code: str) -> str:
+    return f"live_session_{month_code}"
+
+def room_live_stats_table_name(month_code: str) -> str:
+    return f"room_live_stats_{month_code}"
+
 def is_current_month(month_code: str) -> bool:
     return month_code == month_str()
 
@@ -172,6 +178,30 @@ def ensure_sc_archive_table(month_code: str) -> str:
         logging.info(f"[SuperChatLog] 已确保归档表存在: {table_name}")
     except SQLAlchemyError as e:
         logging.error(f"[SuperChatLog] 创建归档表失败 {table_name}: {e}")
+    return table_name
+
+def ensure_live_session_archive_table(month_code: str) -> str:
+    table_name = live_session_table_name(month_code)
+    if sc_log_table_exists(table_name):
+        return table_name
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE TABLE IF NOT EXISTS `{table_name}` LIKE `live_session`"))
+        logging.info(f"[LiveSession] 已确保归档表存在: {table_name}")
+    except SQLAlchemyError as e:
+        logging.error(f"[LiveSession] 创建归档表失败 {table_name}: {e}")
+    return table_name
+
+def ensure_room_live_stats_archive_table(month_code: str) -> str:
+    table_name = room_live_stats_table_name(month_code)
+    if sc_log_table_exists(table_name):
+        return table_name
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE TABLE IF NOT EXISTS `{table_name}` LIKE `room_live_stats`"))
+        logging.info(f"[RoomLiveStats] 已确保归档表存在: {table_name}")
+    except SQLAlchemyError as e:
+        logging.error(f"[RoomLiveStats] 创建归档表失败 {table_name}: {e}")
     return table_name
 
 def archive_super_chat_log(target_month: Optional[str] = None) -> int:
@@ -259,6 +289,173 @@ def archive_super_chat_log(target_month: Optional[str] = None) -> int:
             logging.error(f"[SuperChatLog] 归档失败 {month_code}: {e}")
     return moved_total
 
+def archive_live_session(target_month: Optional[str] = None) -> int:
+    """
+    将 live_session 中历史月份数据迁移到归档表。
+    - target_month: 指定归档月份（YYYYMM）；None 表示归档所有早于当前月的数据
+    返回迁移的记录数（预估）。
+    """
+    current_month = month_str()
+    months: list[str] = []
+    if target_month:
+        normalized = normalize_month_code(target_month)
+        if not normalized:
+            logging.error(f"[LiveSession] 归档月份格式非法: {target_month}")
+            return 0
+        if normalized == current_month:
+            logging.info("[LiveSession] 当前月不归档，跳过")
+            return 0
+        months = [normalized]
+    else:
+        session = Session()
+        try:
+            rows = session.execute(
+                text(
+                    "SELECT DISTINCT month "
+                    "FROM live_session "
+                    "WHERE month < :current_month"
+                ),
+                {"current_month": current_month},
+            ).fetchall()
+            for (m,) in rows:
+                normalized = normalize_month_code(m)
+                if normalized and normalized != current_month:
+                    months.append(normalized)
+        except SQLAlchemyError as e:
+            logging.error(f"[LiveSession] 读取待归档月份失败: {e}")
+            return 0
+        finally:
+            session.close()
+
+    if not months:
+        return 0
+
+    moved_total = 0
+    for month_code in sorted(set(months)):
+        table_name = ensure_live_session_archive_table(month_code)
+        try:
+            with engine.begin() as conn:
+                count = conn.execute(
+                    text(
+                        "SELECT COUNT(1) FROM `live_session` "
+                        "WHERE month = :month"
+                    ),
+                    {"month": month_code},
+                ).scalar()
+                if not count:
+                    continue
+                conn.execute(
+                    text(
+                        f"INSERT IGNORE INTO `{table_name}` "
+                        "(id, room_id, start_time, end_time, title, gift, guard, super_chat, month, "
+                        "danmaku_count, start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
+                        "end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
+                        "avg_concurrency, max_concurrency) "
+                        "SELECT id, room_id, start_time, end_time, title, gift, guard, super_chat, month, "
+                        "danmaku_count, start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
+                        "end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
+                        "avg_concurrency, max_concurrency "
+                        "FROM `live_session` "
+                        "WHERE month = :month"
+                    ),
+                    {"month": month_code},
+                )
+                conn.execute(
+                    text(
+                        "DELETE FROM `live_session` WHERE month = :month"
+                    ),
+                    {"month": month_code},
+                )
+                moved_total += int(count or 0)
+            logging.info(f"[LiveSession] 已归档 {month_code}，记录数 ~{count}")
+        except SQLAlchemyError as e:
+            logging.error(f"[LiveSession] 归档失败 {month_code}: {e}")
+    return moved_total
+
+def archive_room_live_stats(target_month: Optional[str] = None) -> int:
+    """
+    将 room_live_stats 中历史月份数据迁移到归档表。
+    - target_month: 指定归档月份（YYYYMM）；None 表示归档所有早于当前月的数据
+    返回迁移的记录数（预估）。
+    """
+    current_month = month_str()
+    start_current, _ = month_range(current_month)
+    cutoff_dt = datetime.datetime.combine(start_current, datetime.time.min)
+
+    months: list[str] = []
+    if target_month:
+        normalized = normalize_month_code(target_month)
+        if not normalized:
+            logging.error(f"[RoomLiveStats] 归档月份格式非法: {target_month}")
+            return 0
+        if normalized == current_month:
+            logging.info("[RoomLiveStats] 当前月不归档，跳过")
+            return 0
+        months = [normalized]
+    else:
+        session = Session()
+        try:
+            rows = session.execute(
+                text(
+                    "SELECT DATE_FORMAT(date, '%Y%m') AS m "
+                    "FROM room_live_stats "
+                    "WHERE date < :cutoff "
+                    "GROUP BY m"
+                ),
+                {"cutoff": cutoff_dt},
+            ).fetchall()
+            for (m,) in rows:
+                normalized = normalize_month_code(m)
+                if normalized and normalized != current_month:
+                    months.append(normalized)
+        except SQLAlchemyError as e:
+            logging.error(f"[RoomLiveStats] 读取待归档月份失败: {e}")
+            return 0
+        finally:
+            session.close()
+
+    if not months:
+        return 0
+
+    moved_total = 0
+    for month_code in sorted(set(months)):
+        start_date, end_date = month_range(month_code)
+        start_dt = datetime.datetime.combine(start_date, datetime.time.min)
+        end_dt = datetime.datetime.combine(end_date, datetime.time.min)
+        table_name = ensure_room_live_stats_archive_table(month_code)
+        try:
+            with engine.begin() as conn:
+                count = conn.execute(
+                    text(
+                        "SELECT COUNT(1) FROM `room_live_stats` "
+                        "WHERE date >= :start AND date < :end"
+                    ),
+                    {"start": start_dt, "end": end_dt},
+                ).scalar()
+                if not count:
+                    continue
+                conn.execute(
+                    text(
+                        f"INSERT IGNORE INTO `{table_name}` "
+                        "(room_id, date, duration) "
+                        "SELECT room_id, date, duration "
+                        "FROM `room_live_stats` "
+                        "WHERE date >= :start AND date < :end"
+                    ),
+                    {"start": start_dt, "end": end_dt},
+                )
+                conn.execute(
+                    text(
+                        "DELETE FROM `room_live_stats` "
+                        "WHERE date >= :start AND date < :end"
+                    ),
+                    {"start": start_dt, "end": end_dt},
+                )
+                moved_total += int(count or 0)
+            logging.info(f"[RoomLiveStats] 已归档 {month_code}，记录数 ~{count}")
+        except SQLAlchemyError as e:
+            logging.error(f"[RoomLiveStats] 归档失败 {month_code}: {e}")
+    return moved_total
 def send_cookie_invalid_email_async(log_line: str):
     """
     检测到 uid=0 时发送一次告警邮件（进程生命周期内只发一次）。
@@ -387,25 +584,50 @@ class RoomLiveStats(Base):
 
     @classmethod
     def add_duration(cls, room_id: int, date_: datetime.date, seconds: int):
-        for i in range(3):
-            session = Session()
-            try:
-                row = session.query(cls).filter_by(room_id=room_id, date=date_).first()
-                if row:
-                    row.duration += seconds
-                else:
-                    row = cls(room_id=room_id, date=date_, duration=seconds)
-                    session.add(row)
-                session.commit()
-                return
-            except SQLAlchemyError as e:
-                session.rollback()
-                logging.warning(f"[RoomLiveStats] 第 {i+1} 次尝试 add_duration 失败: {e}")
-            finally:
+        month_code = month_str(datetime.datetime.combine(date_, datetime.time.min))
+        if is_current_month(month_code):
+            for i in range(3):
+                session = Session()
                 try:
-                    session.close()
-                except Exception:
-                    pass
+                    row = session.query(cls).filter_by(room_id=room_id, date=date_).first()
+                    if row:
+                        row.duration += seconds
+                    else:
+                        row = cls(room_id=room_id, date=date_, duration=seconds)
+                        session.add(row)
+                    session.commit()
+                    return
+                except SQLAlchemyError as e:
+                    session.rollback()
+                    logging.warning(f"[RoomLiveStats] 第 {i+1} 次尝试 add_duration 失败: {e}")
+                finally:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
+        else:
+            table_name = ensure_room_live_stats_archive_table(month_code)
+            for i in range(3):
+                session = Session()
+                try:
+                    session.execute(
+                        text(
+                            f"INSERT INTO `{table_name}` (room_id, date, duration) "
+                            "VALUES (:room_id, :date, :duration) "
+                            "ON DUPLICATE KEY UPDATE duration = duration + :duration"
+                        ),
+                        {"room_id": room_id, "date": date_, "duration": seconds},
+                    )
+                    session.commit()
+                    return
+                except SQLAlchemyError as e:
+                    session.rollback()
+                    logging.warning(f"[RoomLiveStats] 第 {i+1} 次尝试 add_duration 失败: {e}")
+                finally:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
         logging.error("[RoomLiveStats] add_duration 最终失败，数据可能不完整。")
 
     @classmethod
@@ -413,6 +635,29 @@ class RoomLiveStats(Base):
         session = Session()
         try:
             start, end = month_range(month)
+            if is_current_month(month):
+                from sqlalchemy import func, case
+                total_sec, eff_days = (session.query(
+                        func.coalesce(func.sum(cls.duration), 0),
+                        func.coalesce(func.sum(case((cls.duration >= 7200, 1), else_=0)), 0),
+                    )
+                    .filter(and_(cls.room_id == room_id, cls.date >= start, cls.date < end))
+                    .one())
+                return int(total_sec), int(eff_days)
+
+            table_name = room_live_stats_table_name(month)
+            if sc_log_table_exists(table_name):
+                total_sec, eff_days = session.execute(
+                    text(
+                        f"SELECT COALESCE(SUM(duration), 0) AS total_sec, "
+                        "COALESCE(SUM(CASE WHEN duration >= 7200 THEN 1 ELSE 0 END), 0) AS eff_days "
+                        f"FROM `{table_name}` "
+                        "WHERE room_id = :room_id AND date >= :start AND date < :end"
+                    ),
+                    {"room_id": room_id, "start": start, "end": end},
+                ).one()
+                return int(total_sec or 0), int(eff_days or 0)
+
             from sqlalchemy import func, case
             total_sec, eff_days = (session.query(
                     func.coalesce(func.sum(cls.duration), 0),
@@ -841,15 +1086,45 @@ def _room_ids_for_month(m: str, include_config: bool = True) -> list[int]:
         ids.update(rid for (rid,) in q1)
 
         # live_session 以开播月归档的房间
-        q2 = session.query(LiveSession.room_id).filter_by(month=m).all()
-        ids.update(rid for (rid,) in q2)
+        if is_current_month(m):
+            q2 = session.query(LiveSession.room_id).filter_by(month=m).all()
+            ids.update(rid for (rid,) in q2)
+        else:
+            table_name = live_session_table_name(m)
+            if sc_log_table_exists(table_name):
+                rows = session.execute(
+                    text(f"SELECT DISTINCT room_id FROM `{table_name}` WHERE month = :month"),
+                    {"month": m},
+                ).fetchall()
+                ids.update(rid for (rid,) in rows)
+            else:
+                q2 = session.query(LiveSession.room_id).filter_by(month=m).all()
+                ids.update(rid for (rid,) in q2)
 
         # room_live_stats 在该月有天级时长记录的房间
-        q3 = (session.query(RoomLiveStats.room_id)
-              .filter(RoomLiveStats.date >= start, RoomLiveStats.date < end)
-              .distinct()
-              .all())
-        ids.update(rid for (rid,) in q3)
+        if is_current_month(m):
+            q3 = (session.query(RoomLiveStats.room_id)
+                  .filter(RoomLiveStats.date >= start, RoomLiveStats.date < end)
+                  .distinct()
+                  .all())
+            ids.update(rid for (rid,) in q3)
+        else:
+            table_name = room_live_stats_table_name(m)
+            if sc_log_table_exists(table_name):
+                rows = session.execute(
+                    text(
+                        f"SELECT DISTINCT room_id FROM `{table_name}` "
+                        "WHERE date >= :start AND date < :end"
+                    ),
+                    {"start": start, "end": end},
+                ).fetchall()
+                ids.update(rid for (rid,) in rows)
+            else:
+                q3 = (session.query(RoomLiveStats.room_id)
+                      .filter(RoomLiveStats.date >= start, RoomLiveStats.date < end)
+                      .distinct()
+                      .all())
+                ids.update(rid for (rid,) in q3)
 
         return sorted(ids)
     finally:
@@ -2002,8 +2277,12 @@ async def monthly_reset_scheduler():
         if last_month is None:
             last_month = current_month
             await asyncio.to_thread(archive_super_chat_log)
+            await asyncio.to_thread(archive_live_session)
+            await asyncio.to_thread(archive_room_live_stats)
         elif current_month != last_month:
             await asyncio.to_thread(archive_super_chat_log, last_month)
+            await asyncio.to_thread(archive_live_session, last_month)
+            await asyncio.to_thread(archive_room_live_stats, last_month)
             last_month = current_month
         await asyncio.sleep(60)
 
@@ -2272,50 +2551,121 @@ def get_live_sessions_by_room_month():
     m = request.args.get("month") or month_str()
     session = Session()
     try:
-        rows = (
-            session.query(LiveSession)
-            .filter(and_(LiveSession.room_id == room_id, LiveSession.month == m))
-            .order_by(LiveSession.start_time.asc())
-            .all()
-        )
         out = []
-        for r in rows:
-            avg_concurrency = r.avg_concurrency
-            max_concurrency = r.max_concurrency
-            current_concurrency = None
-            if r.end_time is None:
-                cache = CONCURRENCY_CACHE.get(room_id)
-                if cache and cache.get("session_id") == r.id:
-                    samples = int(cache.get("samples", 0))
-                    total = int(cache.get("total", 0))
-                    avg_concurrency = (total / samples) if samples > 0 else None
-                    max_concurrency = int(cache.get("max", 0)) if samples > 0 else None
-                    current_concurrency = int(cache.get("last", 0)) if samples > 0 else None
-            out.append({
-                "start_time": r.start_time.strftime("%Y-%m-%d %H:%M:%S"),
-                "end_time":   (r.end_time.strftime("%Y-%m-%d %H:%M:%S") if r.end_time else None),
-                "title":      r.title,
-                "gift":       r.gift,
-                "guard":      r.guard,
-                "super_chat": r.super_chat,
-                "danmaku_count": r.danmaku_count or 0,
+        if is_current_month(m):
+            rows = (
+                session.query(LiveSession)
+                .filter(and_(LiveSession.room_id == room_id, LiveSession.month == m))
+                .order_by(LiveSession.start_time.asc())
+                .all()
+            )
+            for r in rows:
+                avg_concurrency = r.avg_concurrency
+                max_concurrency = r.max_concurrency
+                current_concurrency = None
+                if r.end_time is None:
+                    cache = CONCURRENCY_CACHE.get(room_id)
+                    if cache and cache.get("session_id") == r.id:
+                        samples = int(cache.get("samples", 0))
+                        total = int(cache.get("total", 0))
+                        avg_concurrency = (total / samples) if samples > 0 else None
+                        max_concurrency = int(cache.get("max", 0)) if samples > 0 else None
+                        current_concurrency = int(cache.get("last", 0)) if samples > 0 else None
+                out.append({
+                    "start_time": r.start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "end_time":   (r.end_time.strftime("%Y-%m-%d %H:%M:%S") if r.end_time else None),
+                    "title":      r.title,
+                    "gift":       r.gift,
+                    "guard":      r.guard,
+                    "super_chat": r.super_chat,
+                    "danmaku_count": r.danmaku_count or 0,
 
-                # 开播时快照（旧数据为 None -> JSON null）
-                "start_guard_1": r.start_guard_1,     # 舰长
-                "start_guard_2": r.start_guard_2,     # 提督
-                "start_guard_3": r.start_guard_3,     # 总督
-                "start_fans_count": r.start_fans_count,
+                    # 开播时快照（旧数据为 None -> JSON null）
+                    "start_guard_1": r.start_guard_1,     # 舰长
+                    "start_guard_2": r.start_guard_2,     # 提督
+                    "start_guard_3": r.start_guard_3,     # 总督
+                    "start_fans_count": r.start_fans_count,
 
-                # 下播时快照（旧数据为 None -> JSON null）
-                "end_guard_1": r.end_guard_1,
-                "end_guard_2": r.end_guard_2,
-                "end_guard_3": r.end_guard_3,
-                "end_fans_count": r.end_fans_count,
+                    # 下播时快照（旧数据为 None -> JSON null）
+                    "end_guard_1": r.end_guard_1,
+                    "end_guard_2": r.end_guard_2,
+                    "end_guard_3": r.end_guard_3,
+                    "end_fans_count": r.end_fans_count,
 
-                "avg_concurrency": avg_concurrency,
-                "max_concurrency": max_concurrency,
-                "current_concurrency": current_concurrency,
-            })
+                    "avg_concurrency": avg_concurrency,
+                    "max_concurrency": max_concurrency,
+                    "current_concurrency": current_concurrency,
+                })
+        else:
+            table_name = live_session_table_name(m)
+            if sc_log_table_exists(table_name):
+                rows = session.execute(
+                    text(
+                        f"SELECT id, start_time, end_time, title, gift, guard, super_chat, "
+                        "danmaku_count, start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
+                        "end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
+                        "avg_concurrency, max_concurrency "
+                        f"FROM `{table_name}` "
+                        "WHERE room_id = :room_id AND month = :month "
+                        "ORDER BY start_time ASC"
+                    ),
+                    {"room_id": room_id, "month": m},
+                ).fetchall()
+                for row in rows:
+                    out.append({
+                        "start_time": row[1].strftime("%Y-%m-%d %H:%M:%S"),
+                        "end_time":   (row[2].strftime("%Y-%m-%d %H:%M:%S") if row[2] else None),
+                        "title":      row[3],
+                        "gift":       row[4],
+                        "guard":      row[5],
+                        "super_chat": row[6],
+                        "danmaku_count": row[7] or 0,
+
+                        "start_guard_1": row[8],
+                        "start_guard_2": row[9],
+                        "start_guard_3": row[10],
+                        "start_fans_count": row[11],
+
+                        "end_guard_1": row[12],
+                        "end_guard_2": row[13],
+                        "end_guard_3": row[14],
+                        "end_fans_count": row[15],
+
+                        "avg_concurrency": row[16],
+                        "max_concurrency": row[17],
+                        "current_concurrency": None,
+                    })
+            else:
+                rows = (
+                    session.query(LiveSession)
+                    .filter(and_(LiveSession.room_id == room_id, LiveSession.month == m))
+                    .order_by(LiveSession.start_time.asc())
+                    .all()
+                )
+                for r in rows:
+                    out.append({
+                        "start_time": r.start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "end_time":   (r.end_time.strftime("%Y-%m-%d %H:%M:%S") if r.end_time else None),
+                        "title":      r.title,
+                        "gift":       r.gift,
+                        "guard":      r.guard,
+                        "super_chat": r.super_chat,
+                        "danmaku_count": r.danmaku_count or 0,
+
+                        "start_guard_1": r.start_guard_1,
+                        "start_guard_2": r.start_guard_2,
+                        "start_guard_3": r.start_guard_3,
+                        "start_fans_count": r.start_fans_count,
+
+                        "end_guard_1": r.end_guard_1,
+                        "end_guard_2": r.end_guard_2,
+                        "end_guard_3": r.end_guard_3,
+                        "end_fans_count": r.end_fans_count,
+
+                        "avg_concurrency": r.avg_concurrency,
+                        "max_concurrency": r.max_concurrency,
+                        "current_concurrency": None,
+                    })
         return jsonify({"room_id": room_id, "month": m, "sessions": out})
     except SQLAlchemyError as e:
         session.rollback()
