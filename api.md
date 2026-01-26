@@ -20,6 +20,13 @@
 | --- | --- | --- | --- |
 | room_id | int | 是 | 房间号，必须为正整数。 |
 | room_anchors | string 或 object | 是 | 主播名或映射。支持：`"主播名"` 或 `{ "<room_id>": "主播名" }`。 |
+| api_key | string | 否 | API 密钥（也可通过请求头传递，见下）。 |
+
+**认证方式（必填其一）**
+
+- 请求头 `X-API-Key: <API_SECRET>`
+- 请求头 `Authorization: Bearer <API_SECRET>`
+- 请求体 `api_key`
 
 **响应字段**（成功时）
 
@@ -35,6 +42,7 @@
 | --- | --- |
 | 400 | 参数校验失败。 |
 | 409 | 房间已存在或添加冲突。 |
+| 401 | API 密钥缺失或无效。 |
 | 500 | 服务器内部错误。 |
 
 ## 2. POST /delete/room
@@ -49,6 +57,13 @@
 | --- | --- | --- | --- |
 | room_id | int | 是 | 房间号，必须为正整数。 |
 | room_anchors | string 或 object | 是 | 主播名或映射（同 `/add/room`）。 |
+| api_key | string | 否 | API 密钥（也可通过请求头传递，见下）。 |
+
+**认证方式（必填其一）**
+
+- 请求头 `X-API-Key: <API_SECRET>`
+- 请求头 `Authorization: Bearer <API_SECRET>`
+- 请求体 `api_key`
 
 **响应字段**（成功时）
 
@@ -64,6 +79,7 @@
 | --- | --- |
 | 400 | 参数校验失败。 |
 | 404 | 房间不存在。 |
+| 401 | API 密钥缺失或无效。 |
 | 500 | 服务器内部错误。 |
 
 ## 3. GET /gift

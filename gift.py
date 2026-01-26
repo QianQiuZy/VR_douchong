@@ -96,6 +96,7 @@ EMAIL_FROM = os.getenv("EMAIL_FROM", "")
 EMAIL_TO   = os.getenv("EMAIL_TO", "")
 APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
 APP_PORT = _get_env_int("APP_PORT", 4666)
+API_SECRET = os.getenv("API_SECRET", "").strip()
 
 COOKIE_ALERT_SENT = False  # 防止同一次失效被疯狂刷邮件
 
@@ -1919,9 +1920,26 @@ def _parse_room_payload(payload: dict) -> Tuple[Optional[int], Optional[str], st
         return room_id, None, "room_anchors 必须为非空字符串"
     return room_id, name.strip(), ""
 
+def _check_api_secret(payload: dict) -> Tuple[bool, str]:
+    if not API_SECRET:
+        return False, "API_SECRET 未配置"
+    provided = (
+        request.headers.get("X-API-Key")
+        or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        or payload.get("api_key")
+    )
+    if not provided:
+        return False, "缺少 API 密钥"
+    if provided != API_SECRET:
+        return False, "API 密钥无效"
+    return True, ""
+
 @app.route("/add/room", methods=["POST"])
 def add_room_api():
     payload = request.get_json(silent=True) or {}
+    ok, error = _check_api_secret(payload)
+    if not ok:
+        return jsonify({"error": error}), 401
     room_id, anchor_name, error = _parse_room_payload(payload)
     if error:
         return jsonify({"error": error}), 400
@@ -1936,6 +1954,9 @@ def add_room_api():
 @app.route("/delete/room", methods=["POST"])
 def delete_room_api():
     payload = request.get_json(silent=True) or {}
+    ok, error = _check_api_secret(payload)
+    if not ok:
+        return jsonify({"error": error}), 401
     room_id, anchor_name, error = _parse_room_payload(payload)
     if error:
         return jsonify({"error": error}), 400
