@@ -31,6 +31,7 @@ from sqlalchemy import (
     Index,
     text,
     BigInteger,
+    inspect,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
@@ -147,6 +148,116 @@ def normalize_month_code(raw: Optional[str]) -> Optional[str]:
     except Exception:
         return None
     return None
+
+def sc_log_table_name(month_code: str) -> str:
+    return f"super_chat_log_{month_code}"
+
+def is_current_month(month_code: str) -> bool:
+    return month_code == month_str()
+
+def sc_log_table_exists(table_name: str) -> bool:
+    try:
+        return inspect(engine).has_table(table_name)
+    except SQLAlchemyError as e:
+        logging.error(f"[SuperChatLog] 检查表存在失败: {e}")
+        return False
+
+def ensure_sc_archive_table(month_code: str) -> str:
+    table_name = sc_log_table_name(month_code)
+    if sc_log_table_exists(table_name):
+        return table_name
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE TABLE IF NOT EXISTS `{table_name}` LIKE `super_chat_log`"))
+        logging.info(f"[SuperChatLog] 已确保归档表存在: {table_name}")
+    except SQLAlchemyError as e:
+        logging.error(f"[SuperChatLog] 创建归档表失败 {table_name}: {e}")
+    return table_name
+
+def archive_super_chat_log(target_month: Optional[str] = None) -> int:
+    """
+    将 super_chat_log 中历史月份数据迁移到归档表。
+    - target_month: 指定归档月份（YYYYMM）；None 表示归档所有早于当前月的数据
+    返回迁移的记录数（预估）。
+    """
+    current_month = month_str()
+    start_current, _ = month_range(current_month)
+    cutoff_dt = datetime.datetime.combine(start_current, datetime.time.min)
+
+    months: list[str] = []
+    if target_month:
+        normalized = normalize_month_code(target_month)
+        if not normalized:
+            logging.error(f"[SuperChatLog] 归档月份格式非法: {target_month}")
+            return 0
+        if normalized == current_month:
+            logging.info("[SuperChatLog] 当前月不归档，跳过")
+            return 0
+        months = [normalized]
+    else:
+        session = Session()
+        try:
+            rows = session.execute(
+                text(
+                    "SELECT DATE_FORMAT(send_time, '%Y%m') AS m "
+                    "FROM super_chat_log "
+                    "WHERE send_time < :cutoff "
+                    "GROUP BY m"
+                ),
+                {"cutoff": cutoff_dt},
+            ).fetchall()
+            for (m,) in rows:
+                normalized = normalize_month_code(m)
+                if normalized and normalized != current_month:
+                    months.append(normalized)
+        except SQLAlchemyError as e:
+            logging.error(f"[SuperChatLog] 读取待归档月份失败: {e}")
+            return 0
+        finally:
+            session.close()
+
+    if not months:
+        return 0
+
+    moved_total = 0
+    for month_code in sorted(set(months)):
+        start_date, end_date = month_range(month_code)
+        start_dt = datetime.datetime.combine(start_date, datetime.time.min)
+        end_dt = datetime.datetime.combine(end_date, datetime.time.min)
+        table_name = ensure_sc_archive_table(month_code)
+        try:
+            with engine.begin() as conn:
+                count = conn.execute(
+                    text(
+                        "SELECT COUNT(1) FROM `super_chat_log` "
+                        "WHERE send_time >= :start AND send_time < :end"
+                    ),
+                    {"start": start_dt, "end": end_dt},
+                ).scalar()
+                if not count:
+                    continue
+                conn.execute(
+                    text(
+                        f"INSERT IGNORE INTO `{table_name}` "
+                        "(id, room_id, uname, uid, send_time, price, message) "
+                        "SELECT id, room_id, uname, uid, send_time, price, message "
+                        "FROM `super_chat_log` "
+                        "WHERE send_time >= :start AND send_time < :end"
+                    ),
+                    {"start": start_dt, "end": end_dt},
+                )
+                conn.execute(
+                    text(
+                        "DELETE FROM `super_chat_log` "
+                        "WHERE send_time >= :start AND send_time < :end"
+                    ),
+                    {"start": start_dt, "end": end_dt},
+                )
+                moved_total += int(count or 0)
+            logging.info(f"[SuperChatLog] 已归档 {month_code}，记录数 ~{count}")
+        except SQLAlchemyError as e:
+            logging.error(f"[SuperChatLog] 归档失败 {month_code}: {e}")
+    return moved_total
 
 def send_cookie_invalid_email_async(log_line: str):
     """
@@ -601,15 +712,34 @@ class SuperChatLog(Base):
             if final_time.year < 2000:
                 final_time = datetime.datetime.now()
 
-            row = cls(
-                room_id=room_id,
-                uname=uname or "",
-                uid=int(uid or 0),
-                price=float(price or 0.0),
-                message=content or "",
-                send_time=final_time,
-            )
-            session.add(row)
+            month_code = month_str(final_time)
+            if is_current_month(month_code):
+                row = cls(
+                    room_id=room_id,
+                    uname=uname or "",
+                    uid=int(uid or 0),
+                    price=float(price or 0.0),
+                    message=content or "",
+                    send_time=final_time,
+                )
+                session.add(row)
+            else:
+                table_name = ensure_sc_archive_table(month_code)
+                session.execute(
+                    text(
+                        f"INSERT INTO `{table_name}` "
+                        "(room_id, uname, uid, send_time, price, message) "
+                        "VALUES (:room_id, :uname, :uid, :send_time, :price, :message)"
+                    ),
+                    {
+                        "room_id": room_id,
+                        "uname": uname or "",
+                        "uid": int(uid or 0),
+                        "send_time": final_time,
+                        "price": float(price or 0.0),
+                        "message": content or "",
+                    },
+                )
             session.commit()
         except SQLAlchemyError as e:
             session.rollback()
@@ -1865,7 +1995,16 @@ async def bili_ticket_scheduler():
 
 # ------------------ 月底清零（无操作以保留全部历史） ------------------
 async def monthly_reset_scheduler():
+    last_month = None
     while True:
+        now = _now()
+        current_month = month_str(now)
+        if last_month is None:
+            last_month = current_month
+            await asyncio.to_thread(archive_super_chat_log)
+        elif current_month != last_month:
+            await asyncio.to_thread(archive_super_chat_log, last_month)
+            last_month = current_month
         await asyncio.sleep(60)
 
 # 主入口
@@ -2219,26 +2358,67 @@ def get_sc_logs():
 
     session = Session()
     try:
-        rows = (
-            session.query(SuperChatLog)
-            .filter(
-                SuperChatLog.room_id == room_id,
-                SuperChatLog.send_time >= start_dt,
-                SuperChatLog.send_time < end_dt,
-            )
-            .order_by(SuperChatLog.send_time.asc())
-            .all()
-        )
-
         out = []
-        for r in rows:
-            out.append({
-                "send_time": r.send_time.strftime("%Y-%m-%d %H:%M:%S"),
-                "uname": r.uname,
-                "uid": r.uid,
-                "price": r.price,
-                "message": r.message,
-            })
+        if is_current_month(month_code):
+            rows = (
+                session.query(SuperChatLog)
+                .filter(
+                    SuperChatLog.room_id == room_id,
+                    SuperChatLog.send_time >= start_dt,
+                    SuperChatLog.send_time < end_dt,
+                )
+                .order_by(SuperChatLog.send_time.asc())
+                .all()
+            )
+            for r in rows:
+                out.append({
+                    "send_time": r.send_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "uname": r.uname,
+                    "uid": r.uid,
+                    "price": r.price,
+                    "message": r.message,
+                })
+        else:
+            table_name = sc_log_table_name(month_code)
+            if sc_log_table_exists(table_name):
+                rows = session.execute(
+                    text(
+                        f"SELECT send_time, uname, uid, price, message "
+                        f"FROM `{table_name}` "
+                        "WHERE room_id = :room_id "
+                        "AND send_time >= :start_dt AND send_time < :end_dt "
+                        "ORDER BY send_time ASC"
+                    ),
+                    {"room_id": room_id, "start_dt": start_dt, "end_dt": end_dt},
+                ).fetchall()
+                for row in rows:
+                    send_time = row[0]
+                    out.append({
+                        "send_time": send_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "uname": row[1],
+                        "uid": row[2],
+                        "price": row[3],
+                        "message": row[4],
+                    })
+            else:
+                rows = (
+                    session.query(SuperChatLog)
+                    .filter(
+                        SuperChatLog.room_id == room_id,
+                        SuperChatLog.send_time >= start_dt,
+                        SuperChatLog.send_time < end_dt,
+                    )
+                    .order_by(SuperChatLog.send_time.asc())
+                    .all()
+                )
+                for r in rows:
+                    out.append({
+                        "send_time": r.send_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "uname": r.uname,
+                        "uid": r.uid,
+                        "price": r.price,
+                        "message": r.message,
+                    })
 
         return jsonify({
             "room_id": room_id,
