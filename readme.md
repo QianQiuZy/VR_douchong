@@ -50,7 +50,7 @@ VR斗虫排行耪，每月最后一天24点清零
    
    房间列表与主播映射统一存放在 `rooms.json`（字段：`room_ids`、`room_anchors`）。
    
-   也可以通过 API 动态新增或删除房间：
+   也可以通过 API 动态新增或删除房间（FastAPI + Uvicorn）：
    - `POST /add/room`：payload 需包含 `room_id` 与 `room_anchors`
    - `POST /delete/room`：payload 需包含 `room_id` 与 `room_anchors`
 
@@ -58,3 +58,4 @@ VR斗虫排行耪，每月最后一天24点清零
    ```bash
    python gift.py
    ```
+   运行后 FastAPI 会通过 Uvicorn 在 `APP_HOST:APP_PORT` 对外提供接口。
