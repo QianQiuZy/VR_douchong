@@ -331,6 +331,11 @@ class LiveSession(Base):
     
     danmaku_count = Column(Integer, default=0, nullable=False)
 
+    __table_args__ = (
+        Index("idx_ls_room_month", "room_id", "month"),
+        Index("idx_ls_room_month_start", "room_id", "month", "start_time"),
+    )
+
     # 新增：开播/下播时的守护快照 + 粉丝团快照
     # guard_1 = 舰长数量；guard_2 = 提督数量；guard_3 = 总督数量
     start_guard_1   = Column(Integer, nullable=True)
