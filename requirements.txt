@@ -1,4 +1,5 @@
-Flask
+fastapi
+uvicorn
 SQLAlchemy
 PyMySQL
 requests

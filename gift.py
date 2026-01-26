@@ -17,7 +17,8 @@ import aiohttp
 import blivedm
 import blivedm.models.web as web_models  # 保留以兼容 blivedm
 from sqlalchemy.dialects.mysql import insert
-from flask import Flask, jsonify, request
+from fastapi import Body, FastAPI, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import (
     create_engine,
     Column,
@@ -2312,8 +2313,8 @@ async def main():
         if aiohttp_session:
             await aiohttp_session.close()
 
-# ------------------ Flask API ------------------
-app = Flask(__name__)
+# ------------------ FastAPI ------------------
+app = FastAPI()
 MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
 def _run_in_main_loop(coro: asyncio.Future, timeout: int = 30):
@@ -2343,7 +2344,7 @@ def _parse_room_payload(payload: dict) -> Tuple[Optional[int], Optional[str], st
         return room_id, None, "room_anchors 必须为非空字符串"
     return room_id, name.strip(), ""
 
-def _check_api_secret(payload: dict) -> Tuple[bool, str]:
+def _check_api_secret(request: Request, payload: dict) -> Tuple[bool, str]:
     if not API_SECRET:
         return False, "API_SECRET 未配置"
     provided = (
@@ -2357,41 +2358,39 @@ def _check_api_secret(payload: dict) -> Tuple[bool, str]:
         return False, "API 密钥无效"
     return True, ""
 
-@app.route("/add/room", methods=["POST"])
-def add_room_api():
-    payload = request.get_json(silent=True) or {}
-    ok, error = _check_api_secret(payload)
+@app.post("/add/room")
+def add_room_api(request: Request, payload: dict = Body(default={})):
+    ok, error = _check_api_secret(request, payload)
     if not ok:
-        return jsonify({"error": error}), 401
+        return JSONResponse({"error": error}, status_code=401)
     room_id, anchor_name, error = _parse_room_payload(payload)
     if error:
-        return jsonify({"error": error}), 400
+        return JSONResponse({"error": error}, status_code=400)
     try:
         ok, message = _run_in_main_loop(add_room_async(room_id, anchor_name))
     except Exception as exc:
         logging.error(f"[API] /add/room 执行失败: {exc}")
-        return jsonify({"error": "添加房间失败"}), 500
+        return JSONResponse({"error": "添加房间失败"}, status_code=500)
     status = 200 if ok else 409
-    return jsonify({"ok": ok, "room_id": room_id, "message": message}), status
+    return JSONResponse({"ok": ok, "room_id": room_id, "message": message}, status_code=status)
 
-@app.route("/delete/room", methods=["POST"])
-def delete_room_api():
-    payload = request.get_json(silent=True) or {}
-    ok, error = _check_api_secret(payload)
+@app.post("/delete/room")
+def delete_room_api(request: Request, payload: dict = Body(default={})):
+    ok, error = _check_api_secret(request, payload)
     if not ok:
-        return jsonify({"error": error}), 401
+        return JSONResponse({"error": error}, status_code=401)
     room_id, anchor_name, error = _parse_room_payload(payload)
     if error:
-        return jsonify({"error": error}), 400
+        return JSONResponse({"error": error}, status_code=400)
     try:
         ok, message = _run_in_main_loop(delete_room_async(room_id))
     except Exception as exc:
         logging.error(f"[API] /delete/room 执行失败: {exc}")
-        return jsonify({"error": "删除房间失败"}), 500
+        return JSONResponse({"error": "删除房间失败"}, status_code=500)
     status = 200 if ok else 404
-    return jsonify({"ok": ok, "room_id": room_id, "message": message}), status
+    return JSONResponse({"ok": ok, "room_id": room_id, "message": message}, status_code=status)
 
-@app.route("/gift", methods=["GET"])
+@app.get("/gift")
 def get_stats_current_month():
     """
     当月汇总：
@@ -2456,22 +2455,22 @@ def get_stats_current_month():
                 "fans_count": fans_count, # 粉丝团数量
                 "current_concurrency": current_concurrency,
             })
-        return jsonify(results)
+        return JSONResponse(results)
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_stats_current_month] 数据库查询出错: {e}")
-        return jsonify({"error": "数据库查询失败"}), 500
+        return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
         session.close()
 
-@app.route("/gift/by_month", methods=["GET"])
-def get_stats_by_month():
+@app.get("/gift/by_month")
+def get_stats_by_month(request: Request):
     """
     指定月份汇总：
     GET ?month=YYYYMM
     历史月不返回实时 live_time/title/status（置空/0）
     """
-    m = request.args.get("month") or month_str()
+    m = request.query_params.get("month") or month_str()
     results = []
     session = Session()
     try:
@@ -2527,28 +2526,28 @@ def get_stats_by_month():
                 "guard_3": guard_3,
                 "fans_count": fans_count,
             })
-        return jsonify(results)
+        return JSONResponse(results)
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_stats_by_month] 数据库查询出错: {e}")
-        return jsonify({"error": "数据库查询失败"}), 500
+        return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
         session.close()
 
-@app.route("/gift/live_sessions", methods=["GET"])
-def get_live_sessions_by_room_month():
+@app.get("/gift/live_sessions")
+def get_live_sessions_by_room_month(request: Request):
     """
     指定房间 + 月份的单场直播清单：
     GET ?room_id=xxx&month=YYYYMM
     """
     try:
-        room_id = int(request.args.get("room_id", "0"))
+        room_id = int(request.query_params.get("room_id", "0"))
     except ValueError:
-        return jsonify({"error": "room_id 参数无效"}), 400
+        return JSONResponse({"error": "room_id 参数无效"}, status_code=400)
     if room_id <= 0:
-        return jsonify({"error": "room_id 必填且需为正整数"}), 400
+        return JSONResponse({"error": "room_id 必填且需为正整数"}, status_code=400)
 
-    m = request.args.get("month") or month_str()
+    m = request.query_params.get("month") or month_str()
     session = Session()
     try:
         out = []
@@ -2666,16 +2665,16 @@ def get_live_sessions_by_room_month():
                         "max_concurrency": r.max_concurrency,
                         "current_concurrency": None,
                     })
-        return jsonify({"room_id": room_id, "month": m, "sessions": out})
+        return JSONResponse({"room_id": room_id, "month": m, "sessions": out})
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_live_sessions_by_room_month] 查询失败: {e}")
-        return jsonify({"error": "数据库查询失败"}), 500
+        return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
         session.close()
         
-@app.route("/gift/sc", methods=["GET"])
-def get_sc_logs():
+@app.get("/gift/sc")
+def get_sc_logs(request: Request):
     """
     SC 日志查询：
       GET /gift/sc?room_id=1111&month=202511
@@ -2683,21 +2682,21 @@ def get_sc_logs():
       - month 可选，默认当前月；支持 YYYYMM 或 YYYY-MM
       返回：发送时间、发送人名称、UID、价格、内容
     """
-    room_id_str = request.args.get("room_id")
+    room_id_str = request.query_params.get("room_id")
     if not room_id_str:
-        return jsonify({"error": "room_id 参数必填"}), 400
+        return JSONResponse({"error": "room_id 参数必填"}, status_code=400)
     try:
         room_id = int(room_id_str)
     except ValueError:
-        return jsonify({"error": "room_id 参数无效"}), 400
+        return JSONResponse({"error": "room_id 参数无效"}, status_code=400)
     if room_id <= 0:
-        return jsonify({"error": "room_id 必须为正整数"}), 400
+        return JSONResponse({"error": "room_id 必须为正整数"}, status_code=400)
 
-    month_raw = request.args.get("month")
+    month_raw = request.query_params.get("month")
     if month_raw:
         month_code = normalize_month_code(month_raw)
         if not month_code:
-            return jsonify({"error": "month 格式不正确，应为 YYYYMM 或 YYYY-MM"}), 400
+            return JSONResponse({"error": "month 格式不正确，应为 YYYYMM 或 YYYY-MM"}, status_code=400)
     else:
         month_code = month_str()
 
@@ -2770,7 +2769,7 @@ def get_sc_logs():
                         "message": r.message,
                     })
 
-        return jsonify({
+        return JSONResponse({
             "room_id": room_id,
             "month": month_code,
             "list": out,
@@ -2778,10 +2777,17 @@ def get_sc_logs():
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_sc_logs] 查询失败: {e}")
-        return jsonify({"error": "数据库查询失败"}), 500
+        return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
         session.close()
 
+def _run_api_server():
+    import uvicorn
+
+    config = uvicorn.Config(app, host=APP_HOST, port=APP_PORT, log_level="info")
+    server = uvicorn.Server(config)
+    server.run()
+
 if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host=APP_HOST, port=APP_PORT), daemon=True).start()
+    threading.Thread(target=_run_api_server, daemon=True).start()
     asyncio.run(main())
