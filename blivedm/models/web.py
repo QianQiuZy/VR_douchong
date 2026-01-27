@@ -287,6 +287,8 @@ class GiftMessage:
     """瓜子类型，'silver'或'gold'，1000金瓜子 = 1元"""
     total_coin: int = 0
     """总瓜子数"""
+    total_price: int = 0
+    """转义后的总价：盲盒用 price*num；非盲盒等于 total_coin"""
     tid: str = ''
     """可能是事务ID，有时和rnd相同"""
     medal_level: int = 0
@@ -312,6 +314,27 @@ class GiftMessage:
             medal_room_id = 0
             medal_ruid = 0
 
+        def _to_int(v, default=0) -> int:
+            try:
+                return int(v)
+            except Exception:
+                return default
+
+        price = _to_int(data.get('price'), 0)
+        num = _to_int(data.get('num'), 0)
+        total_coin = _to_int(data.get('total_coin'), 0)
+
+        blind_gift = data.get('blind_gift') or (data.get('batch_combo_send') or {}).get('blind_gift')
+        is_blind_box = bool(blind_gift)
+
+        if is_blind_box:
+            gift_tip_price = _to_int((blind_gift or {}).get('gift_tip_price'), 0)
+            unit_price = gift_tip_price or price
+
+            total_price = unit_price * num if (unit_price > 0 and num > 0) else total_coin
+        else:
+            total_price = total_coin
+
         return cls(
             gift_name=data['giftName'],
             num=data['num'],
@@ -328,6 +351,7 @@ class GiftMessage:
             rnd=data['rnd'],
             coin_type=data['coin_type'],
             total_coin=data['total_coin'],
+            total_price=total_price,
             tid=data['tid'],
             medal_level=medal_level,
             medal_name=medal_name,

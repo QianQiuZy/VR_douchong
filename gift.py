@@ -1293,11 +1293,12 @@ class MyHandler(blivedm.BaseHandler):
 
     def _on_gift(self, client, message):  # noqa: N802
         try:
+            stat_total_coin = message.total_price
             self._record_gift(
                 client=client,
                 gift_name=message.gift_name,
                 num=message.num,
-                total_coin=message.total_coin,
+                total_coin=stat_total_coin,
                 uname=message.uname,
                 uid=message.uid,
                 trigger_cookie_alert=True,
