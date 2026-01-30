@@ -12,6 +12,7 @@ from aiohttp import ContentTypeError
 import random, math, time, os, hmac, hashlib
 import smtplib
 from email.mime.text import MIMEText
+from decimal import Decimal, ROUND_HALF_UP
 
 import aiohttp
 import blivedm
@@ -572,6 +573,59 @@ class RoomStatsMonthly(Base):
                     pass
         logging.error("[RoomStatsMonthly] 多次重试仍失败，数据可能不完整。")
 
+class RoomBlindBoxMonthly(Base):
+    """按月累计盲盒数量/盈亏；主键：room_id + month"""
+    __tablename__ = "room_blind_box_monthly"
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    room_id          = Column(Integer, nullable=False)
+    month            = Column(String(6), nullable=False)  # YYYYMM
+    blind_box_count  = Column(Integer, default=0, nullable=False)
+    blind_box_profit = Column(Integer, default=0, nullable=False)
+    __table_args__ = (
+        Index("idx_rbbm_month", "month"),
+        Index("idx_rbbm_room_month", "room_id", "month", unique=True),
+    )
+
+    @classmethod
+    def add_amounts(cls, room_id: int, month: str, count: int = 0, profit: int = 0):
+        if not count and not profit:
+            return
+
+        max_tries = 6
+        base_sleep = 0.05
+        for attempt in range(1, max_tries + 1):
+            session = Session()
+            try:
+                stmt = insert(cls).values(
+                    room_id=room_id,
+                    month=month,
+                    blind_box_count=count,
+                    blind_box_profit=profit,
+                ).on_duplicate_key_update(
+                    blind_box_count=cls.blind_box_count + count,
+                    blind_box_profit=cls.blind_box_profit + profit,
+                )
+                session.execute(stmt)
+                session.commit()
+                return
+            except SQLAlchemyError as e:
+                session.rollback()
+                err = getattr(e, "orig", None)
+                code = getattr(err, "args", [None])[0] if err else None
+                if code in (1205, 1213):
+                    sleep = base_sleep * (2 ** (attempt - 1)) + random.uniform(0, 0.1)
+                    logging.warning(f"[RoomBlindBoxMonthly] 死锁/锁超时，第 {attempt} 次退避 {sleep:.3f}s；code={code}")
+                    time.sleep(sleep)
+                    continue
+                logging.error(f"[RoomBlindBoxMonthly] 写入失败（非可重试）: {repr(e)} orig={repr(err)}")
+                return
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+        logging.error("[RoomBlindBoxMonthly] 多次重试仍失败，数据可能不完整。")
+
 class RoomLiveStats(Base):
     """按自然日累计当日直播秒数"""
     __tablename__ = "room_live_stats"
@@ -685,6 +739,8 @@ class LiveSession(Base):
     guard       = Column(Float, default=0.0, nullable=False)
     super_chat  = Column(Float, default=0.0, nullable=False)
     month       = Column(String(6), nullable=False, index=True)  # 以开播月份为准
+    blind_box_count  = Column(Integer, default=0, nullable=False)
+    blind_box_profit = Column(Integer, default=0, nullable=False)
     
     danmaku_count = Column(Integer, default=0, nullable=False)
 
@@ -731,7 +787,15 @@ class LiveSession(Base):
             session.close()
 
     @classmethod
-    def add_values_by_id(cls, session_id: int, gift: float = 0.0, guard: float = 0.0, super_chat: float = 0.0):
+    def add_values_by_id(
+        cls,
+        session_id: int,
+        gift: float = 0.0,
+        guard: float = 0.0,
+        super_chat: float = 0.0,
+        blind_box_count: int = 0,
+        blind_box_profit: int = 0,
+    ):
         if not session_id:
             return
         session = Session()
@@ -742,6 +806,10 @@ class LiveSession(Base):
             row.gift += gift
             row.guard += guard
             row.super_chat += super_chat
+            if blind_box_count:
+                row.blind_box_count += int(blind_box_count)
+            if blind_box_profit:
+                row.blind_box_profit += int(blind_box_profit)
             session.commit()
         except SQLAlchemyError as e:
             session.rollback()
@@ -750,7 +818,15 @@ class LiveSession(Base):
             session.close()
 
     @classmethod
-    def add_values_by_room_open(cls, room_id: int, gift: float = 0.0, guard: float = 0.0, super_chat: float = 0.0):
+    def add_values_by_room_open(
+        cls,
+        room_id: int,
+        gift: float = 0.0,
+        guard: float = 0.0,
+        super_chat: float = 0.0,
+        blind_box_count: int = 0,
+        blind_box_profit: int = 0,
+    ):
         """找该房当前未结束的会话并累加（兜底，用于进程重启后仍在播的场次）。"""
         session = Session()
         try:
@@ -765,6 +841,10 @@ class LiveSession(Base):
             row.gift += gift
             row.guard += guard
             row.super_chat += super_chat
+            if blind_box_count:
+                row.blind_box_count += int(blind_box_count)
+            if blind_box_profit:
+                row.blind_box_profit += int(blind_box_profit)
             session.commit()
         except SQLAlchemyError as e:
             session.rollback()
@@ -1199,6 +1279,30 @@ def _seconds_to_hms(sec: int) -> str:
     m, s = divmod(r, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
 
+def _profit_to_tenths(total_price: int, total_coin: int) -> int:
+    profit_coin = int(total_price) - int(total_coin)
+    profit_rmb = (Decimal(profit_coin) / Decimal(1000)).quantize(
+        Decimal("0.1"), rounding=ROUND_HALF_UP
+    )
+    return int(profit_rmb * 10)
+
+def _tenths_to_decimal(value: Optional[float]) -> Decimal:
+    if value is None:
+        return Decimal("0.0")
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0.0")
+
+def _profit_display(value: Optional[float]) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, int):
+        decimal_value = Decimal(value) / Decimal(10)
+    else:
+        decimal_value = _tenths_to_decimal(value)
+    return float(decimal_value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
 async def _start_client(room_id: int):
     """启动单个房间连接，并登记到全局表"""
     client = blivedm.BLiveClient(room_id, session=aiohttp_session)
@@ -1234,6 +1338,36 @@ async def _reconnect_one(room_id: int):
     logging.info(f"[reconnect] 房间 {room_id} 重连完成")
 
 class MyHandler(blivedm.BaseHandler):
+    def _record_blind_box(
+        self,
+        client,
+        num: int,
+        total_price: int,
+        total_coin: int,
+    ):
+        if num <= 0:
+            return
+        profit = _profit_to_tenths(total_price, total_coin)
+        RoomBlindBoxMonthly.add_amounts(
+            client.room_id,
+            month_str(),
+            count=num,
+            profit=profit,
+        )
+        sid = CURRENT_SESSIONS.get(client.room_id)
+        if sid:
+            LiveSession.add_values_by_id(
+                sid,
+                blind_box_count=num,
+                blind_box_profit=profit,
+            )
+        else:
+            LiveSession.add_values_by_room_open(
+                client.room_id,
+                blind_box_count=num,
+                blind_box_profit=profit,
+            )
+
     def _record_gift(
         self,
         client,
@@ -1294,6 +1428,7 @@ class MyHandler(blivedm.BaseHandler):
     def _on_gift(self, client, message):  # noqa: N802
         try:
             stat_total_coin = message.total_price
+            total_coin = message.total_coin
             self._record_gift(
                 client=client,
                 gift_name=message.gift_name,
@@ -1303,6 +1438,13 @@ class MyHandler(blivedm.BaseHandler):
                 uid=message.uid,
                 trigger_cookie_alert=True,
             )
+            if message.total_price != total_coin:
+                self._record_blind_box(
+                    client=client,
+                    num=int(message.num or 0),
+                    total_price=int(message.total_price or 0),
+                    total_coin=int(total_coin or 0),
+                )
         except Exception as e:
             logging.error(f"处理礼物记录时出错: {e}")
 
@@ -2410,6 +2552,9 @@ def get_stats_current_month():
             g  = rsm.gift if rsm else 0.0
             gd = rsm.guard if rsm else 0.0
             sc = rsm.super_chat if rsm else 0.0
+            rbm = session.query(RoomBlindBoxMonthly).filter_by(room_id=room_id, month=m).first()
+            bb_count = rbm.blind_box_count if rbm else 0
+            bb_profit = _profit_display(rbm.blind_box_profit) if rbm else 0.0
 
             anchor_name = (session.query(RoomInfo.anchor_name).filter_by(room_id=room_id).scalar()) or get_room_anchor_name(room_id)
             attention   = (session.query(RoomInfo.attention).filter_by(room_id=room_id).scalar()) or 0
@@ -2445,6 +2590,8 @@ def get_stats_current_month():
                 "gift": g,
                 "guard": gd,
                 "super_chat": sc,
+                "blind_box_count": bb_count,
+                "blind_box_profit": bb_profit,
                 "live_duration": live_dur_str,
                 "effective_days": eff_days,
                 "live_time": live_time_val,
@@ -2481,6 +2628,9 @@ def get_stats_by_month(request: Request):
             g  = rsm.gift if rsm else 0.0
             gd = rsm.guard if rsm else 0.0
             sc = rsm.super_chat if rsm else 0.0
+            rbm = session.query(RoomBlindBoxMonthly).filter_by(room_id=room_id, month=m).first()
+            bb_count = rbm.blind_box_count if rbm else 0
+            bb_profit = _profit_display(rbm.blind_box_profit) if rbm else 0.0
 
             anchor_name = (session.query(RoomInfo.anchor_name).filter_by(room_id=room_id).scalar()) or get_room_anchor_name(room_id)
             attention   = (session.query(RoomInfo.attention).filter_by(room_id=room_id).scalar()) or 0
@@ -2517,6 +2667,8 @@ def get_stats_by_month(request: Request):
                 "gift": g,
                 "guard": gd,
                 "super_chat": sc,
+                "blind_box_count": bb_count,
+                "blind_box_profit": bb_profit,
                 "live_duration": live_dur_str,
                 "effective_days": eff_days,
                 "live_time": live_time_val,
@@ -2578,6 +2730,8 @@ def get_live_sessions_by_room_month(request: Request):
                     "gift":       r.gift,
                     "guard":      r.guard,
                     "super_chat": r.super_chat,
+                    "blind_box_count": r.blind_box_count,
+                    "blind_box_profit": _profit_display(r.blind_box_profit),
                     "danmaku_count": r.danmaku_count or 0,
 
                     # 开播时快照（旧数据为 None -> JSON null）
@@ -2602,7 +2756,8 @@ def get_live_sessions_by_room_month(request: Request):
                 rows = session.execute(
                     text(
                         f"SELECT id, start_time, end_time, title, gift, guard, super_chat, "
-                        "danmaku_count, start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
+                        "blind_box_count, blind_box_profit, danmaku_count, "
+                        "start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
                         "end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
                         "avg_concurrency, max_concurrency "
                         f"FROM `{table_name}` "
@@ -2619,20 +2774,22 @@ def get_live_sessions_by_room_month(request: Request):
                         "gift":       row[4],
                         "guard":      row[5],
                         "super_chat": row[6],
-                        "danmaku_count": row[7] or 0,
+                        "blind_box_count": row[7],
+                        "blind_box_profit": _profit_display(row[8]),
+                        "danmaku_count": row[9] or 0,
 
-                        "start_guard_1": row[8],
-                        "start_guard_2": row[9],
-                        "start_guard_3": row[10],
-                        "start_fans_count": row[11],
+                        "start_guard_1": row[10],
+                        "start_guard_2": row[11],
+                        "start_guard_3": row[12],
+                        "start_fans_count": row[13],
 
-                        "end_guard_1": row[12],
-                        "end_guard_2": row[13],
-                        "end_guard_3": row[14],
-                        "end_fans_count": row[15],
+                        "end_guard_1": row[14],
+                        "end_guard_2": row[15],
+                        "end_guard_3": row[16],
+                        "end_fans_count": row[17],
 
-                        "avg_concurrency": row[16],
-                        "max_concurrency": row[17],
+                        "avg_concurrency": row[18],
+                        "max_concurrency": row[19],
                         "current_concurrency": None,
                     })
             else:
@@ -2650,6 +2807,8 @@ def get_live_sessions_by_room_month(request: Request):
                         "gift":       r.gift,
                         "guard":      r.guard,
                         "super_chat": r.super_chat,
+                        "blind_box_count": r.blind_box_count,
+                        "blind_box_profit": _profit_display(r.blind_box_profit),
                         "danmaku_count": r.danmaku_count or 0,
 
                         "start_guard_1": r.start_guard_1,

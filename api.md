@@ -101,6 +101,8 @@
 | gift | float | 礼物收入累计。 |
 | guard | float | 守护收入累计。 |
 | super_chat | float | SC 收入累计。 |
+| blind_box_count | int | 盲盒数量累计。 |
+| blind_box_profit | float | 盲盒盈亏累计（正负均可能，最小单位 0.1）。 |
 | live_duration | string | 当月直播时长（`HH:MM:SS`）。 |
 | effective_days | int | 当月有效开播天数。 |
 | live_time | string | 当前月直播开始时间（历史月为默认值）。 |
@@ -177,6 +179,8 @@
 | gift | float | 单场礼物收入。 |
 | guard | float | 单场守护收入。 |
 | super_chat | float | 单场 SC 收入。 |
+| blind_box_count | int | 单场盲盒数量。 |
+| blind_box_profit | float | 单场盲盒盈亏（正负均可能，最小单位 0.1）。 |
 | danmaku_count | int | 弹幕数量。 |
 | start_guard_1 | int 或 null | 开播时舰长数量。 |
 | start_guard_2 | int 或 null | 开播时提督数量。 |
