@@ -19,6 +19,7 @@ import blivedm
 import blivedm.models.web as web_models  # 保留以兼容 blivedm
 from sqlalchemy.dialects.mysql import insert
 from fastapi import Body, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy import (
     create_engine,
@@ -2825,7 +2826,8 @@ def get_live_sessions_by_room_month(request: Request):
                         "max_concurrency": r.max_concurrency,
                         "current_concurrency": None,
                     })
-        return JSONResponse({"room_id": room_id, "month": m, "sessions": out})
+        payload = {"room_id": room_id, "month": m, "sessions": out}
+        return JSONResponse(content=jsonable_encoder(payload))
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_live_sessions_by_room_month] 查询失败: {e}")
