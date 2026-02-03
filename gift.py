@@ -341,7 +341,7 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
                 count = conn.execute(
                     text(
                         "SELECT COUNT(1) FROM `live_session` "
-                        "WHERE month = :month"
+                        "WHERE month = :month AND end_time IS NOT NULL"
                     ),
                     {"month": month_code},
                 ).scalar()
@@ -359,13 +359,14 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
                         "end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
                         "avg_concurrency, max_concurrency "
                         "FROM `live_session` "
-                        "WHERE month = :month"
+                        "WHERE month = :month AND end_time IS NOT NULL"
                     ),
                     {"month": month_code},
                 )
                 conn.execute(
                     text(
-                        "DELETE FROM `live_session` WHERE month = :month"
+                        "DELETE FROM `live_session` "
+                        "WHERE month = :month AND end_time IS NOT NULL"
                     ),
                     {"month": month_code},
                 )
@@ -2429,6 +2430,8 @@ async def monthly_reset_scheduler():
             await asyncio.to_thread(archive_live_session, last_month)
             await asyncio.to_thread(archive_room_live_stats, last_month)
             last_month = current_month
+        else:
+            await asyncio.to_thread(archive_live_session)
         await asyncio.sleep(60)
 
 # 主入口
