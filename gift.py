@@ -1420,6 +1420,9 @@ class MyHandler(blivedm.BaseHandler):
         """
         try:
             room_id = client.room_id
+            # 忽略跨房弹幕，只统计本房弹幕
+            if getattr(message, "is_mirror", False):
+                return
             # 只在当前判定为“在播”时统计，避免误计
             if LAST_STATUS.get(room_id, 0) != 1:
                 return

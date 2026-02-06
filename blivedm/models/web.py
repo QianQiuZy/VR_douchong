@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
+import base64
 import dataclasses
 import json
 from typing import *
+
+from . import pb
 
 __all__ = (
     'HeartbeatMessage',
@@ -60,6 +63,8 @@ class DanmakuMessage:
     """语音参数"""
     mode_info: dict = dataclasses.field(default_factory=dict)
     """一些附加参数"""
+    is_mirror: bool = False
+    """是否跨房弹幕"""
 
     msg: str = ''
     """弹幕内容"""
@@ -470,9 +475,9 @@ class UserToastV2Message:
     end_time: int = 0
     """结束时间戳，和开始时间戳相同"""
     source: int = 0
-    """猜测0是自己买的，2是别人送的，这个只影响是否播动画"""
+    """猜测0是付费买的，2是赠送的。现在上舰时会先发一条0的消息再发一条2的消息，官方的评论栏不会显示2的消息"""
     toast_msg: str = ''
-    """提示信息（"<%XXX%> 在主播XXX的直播间续费了舰长，今天是TA陪伴主播的第XXX天"）"""
+    """提示信息（"<%XXX%> 在主播XXX的直播间开通了舰长，今天是TA陪伴主播的第XXX天"）"""
 
     @classmethod
     def from_command(cls, data: dict):
@@ -607,7 +612,7 @@ class SuperChatDeleteMessage:
 
 
 @dataclasses.dataclass
-class InteractWordMessage:
+class InteractWordV2Message:
     """
     进入房间、关注主播等互动消息
     """
@@ -625,12 +630,11 @@ class InteractWordMessage:
 
     @classmethod
     def from_command(cls, data: dict):
-        user_info = data['uinfo']
-        user_base_info = user_info['base']
+        proto = pb.InteractWordV2.loads(base64.b64decode(data['pb']))
         return cls(
-            uid=user_info['uid'],
-            username=user_base_info['name'],
-            face=user_base_info['face'],
-            timestamp=data['timestamp'],
-            msg_type=data['msg_type'],
+            uid=proto.uid,
+            username=proto.uname,
+            face=proto.uinfo.base.face,
+            timestamp=proto.timestamp,
+            msg_type=proto.msg_type,
         )
