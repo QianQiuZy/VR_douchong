@@ -3,8 +3,27 @@ import dataclasses
 import enum
 from typing import *
 
-import pure_protobuf.annotations as pb_anno
-import pure_protobuf.message as pb_msg
+try:
+    import pure_protobuf.annotations as pb_anno
+    import pure_protobuf.message as pb_msg
+except ModuleNotFoundError:  # pragma: no cover - 兼容缺少可选依赖的环境
+    class _DummyField:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class _DummyAnnotations:
+        Field = _DummyField
+
+    class _DummyBaseMessage:
+        @classmethod
+        def loads(cls, _data: bytes):
+            raise RuntimeError('pure_protobuf is not installed')
+
+    class _DummyMessage:
+        BaseMessage = _DummyBaseMessage
+
+    pb_anno = _DummyAnnotations()
+    pb_msg = _DummyMessage()
 
 try:
     Annotated

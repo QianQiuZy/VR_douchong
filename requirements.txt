@@ -4,3 +4,4 @@ SQLAlchemy
 PyMySQL
 requests
 aiohttp
+pure-protobuf
