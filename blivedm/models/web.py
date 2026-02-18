@@ -13,6 +13,8 @@ __all__ = (
     'GuardBuyMessage',
     'SuperChatMessage',
     'SuperChatDeleteMessage',
+    'InteractWordMessage',
+    'InteractWordV2Message',
     'CommonNoticeDanmakuMessage',
 )
 
@@ -612,6 +614,36 @@ class SuperChatDeleteMessage:
 
 
 @dataclasses.dataclass
+class InteractWordMessage:
+    """
+    进入房间、关注主播等互动消息（旧版）
+    """
+
+    uid: int = 0
+    """用户ID"""
+    uname: str = ''
+    """用户名"""
+    face: str = ''
+    """用户头像URL"""
+    timestamp: int = 0
+    """时间戳"""
+    msg_type: int = 0
+    """互动类型"""
+
+    @classmethod
+    def from_command(cls, data: dict):
+        uinfo = data.get('uinfo') or {}
+        base = uinfo.get('base') or {}
+        return cls(
+            uid=data.get('uid', 0),
+            uname=data.get('uname') or data.get('username', ''),
+            face=base.get('face', '') or data.get('face', ''),
+            timestamp=data.get('timestamp', 0),
+            msg_type=data.get('msg_type', 0),
+        )
+
+
+@dataclasses.dataclass
 class InteractWordV2Message:
     """
     进入房间、关注主播等互动消息
@@ -630,7 +662,16 @@ class InteractWordV2Message:
 
     @classmethod
     def from_command(cls, data: dict):
-        proto = pb.InteractWordV2.loads(base64.b64decode(data['pb']))
+        try:
+            proto = pb.InteractWordV2.loads(base64.b64decode(data['pb']))
+        except Exception:
+            return cls(
+                uid=data.get('uid', 0),
+                username=data.get('uname') or data.get('username', ''),
+                face=data.get('face', ''),
+                timestamp=data.get('timestamp', 0),
+                msg_type=data.get('msg_type', 0),
+            )
         return cls(
             uid=proto.uid,
             username=proto.uname,

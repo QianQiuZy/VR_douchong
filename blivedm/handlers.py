@@ -175,6 +175,9 @@ class BaseHandler(HandlerInterface):
     def _on_super_chat_delete(self, client: ws_base.WebSocketClientBase, message: web_models.SuperChatDeleteMessage):
         """删除醒目留言"""
 
+    def _on_interact_word(self, client: ws_base.WebSocketClientBase, message: web_models.InteractWordMessage):
+        """进入房间、关注主播等互动消息（旧版）"""
+
     def _on_interact_word_v2(self, client: ws_base.WebSocketClientBase, message: web_models.InteractWordV2Message):
         """进入房间、关注主播等互动消息"""
 
