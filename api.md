@@ -4,7 +4,7 @@
 
 ## 通用约定
 
-- 基础地址：与服务运行地址一致（默认 `http://<host>:<port>`）。
+- 基础地址：`https://vr.qianqiuzy.cn` `https://psp.qianqiuzy.cn`
 - 返回格式：`application/json`。
 - 错误响应：统一返回 `{"error": "错误信息"}`，并配合相应的 HTTP 状态码（常见为 400/404/409/500）。
 
