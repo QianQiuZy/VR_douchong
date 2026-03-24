@@ -1,6 +1,8 @@
 # VR斗虫自搭版
 
-VR斗虫排行耪，每月最后一天24点清零
+VR斗虫排行榜，每月最后一天24点归档
+
+> host：`https://vr.qianqiuzy.cn` `https://psp.qianqiuzy.cn`
 
 ## 准备工作
 
