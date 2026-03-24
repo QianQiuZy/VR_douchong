@@ -101,6 +101,7 @@ EMAIL_TO   = os.getenv("EMAIL_TO", "")
 APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
 APP_PORT = _get_env_int("APP_PORT", 4666)
 API_SECRET = os.getenv("API_SECRET", "").strip()
+ATTENTION_DAILY_ROOM_SLEEP_SECONDS = float(os.getenv("ATTENTION_DAILY_ROOM_SLEEP_SECONDS", "1"))
 
 COOKIE_ALERT_SENT = False  # 防止同一次失效被疯狂刷邮件
 
@@ -161,6 +162,9 @@ def live_session_table_name(month_code: str) -> str:
 def room_live_stats_table_name(month_code: str) -> str:
     return f"room_live_stats_{month_code}"
 
+def attention_table_name(month_code: str) -> str:
+    return f"attention_{month_code}"
+
 def is_current_month(month_code: str) -> bool:
     return month_code == month_str()
 
@@ -205,6 +209,18 @@ def ensure_room_live_stats_archive_table(month_code: str) -> str:
         logging.info(f"[RoomLiveStats] 已确保归档表存在: {table_name}")
     except SQLAlchemyError as e:
         logging.error(f"[RoomLiveStats] 创建归档表失败 {table_name}: {e}")
+    return table_name
+
+def ensure_attention_archive_table(month_code: str) -> str:
+    table_name = attention_table_name(month_code)
+    if sc_log_table_exists(table_name):
+        return table_name
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE TABLE IF NOT EXISTS `{table_name}` LIKE `attention`"))
+        logging.info(f"[Attention] 已确保归档表存在: {table_name}")
+    except SQLAlchemyError as e:
+        logging.error(f"[Attention] 创建归档表失败 {table_name}: {e}")
     return table_name
 
 def archive_super_chat_log(target_month: Optional[str] = None) -> int:
@@ -352,11 +368,13 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
                         f"INSERT IGNORE INTO `{table_name}` "
                         "(id, room_id, start_time, end_time, title, gift, guard, super_chat, month, "
                         "danmaku_count, start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
-                        "end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
+                        "start_attention, end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
+                        "end_attention, "
                         "avg_concurrency, max_concurrency) "
                         "SELECT id, room_id, start_time, end_time, title, gift, guard, super_chat, month, "
                         "danmaku_count, start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
-                        "end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
+                        "start_attention, end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
+                        "end_attention, "
                         "avg_concurrency, max_concurrency "
                         "FROM `live_session` "
                         "WHERE month = :month AND end_time IS NOT NULL"
@@ -460,6 +478,84 @@ def archive_room_live_stats(target_month: Optional[str] = None) -> int:
         except SQLAlchemyError as e:
             logging.error(f"[RoomLiveStats] 归档失败 {month_code}: {e}")
     return moved_total
+
+def archive_attention(target_month: Optional[str] = None) -> int:
+    """
+    将 attention 中历史月份数据迁移到归档表。
+    - target_month: 指定归档月份（YYYYMM）；None 表示归档所有早于当前月的数据
+    返回迁移的记录数（预估）。
+    """
+    current_month = month_str()
+    months: list[str] = []
+    if target_month:
+        normalized = normalize_month_code(target_month)
+        if not normalized:
+            logging.error(f"[Attention] 归档月份格式非法: {target_month}")
+            return 0
+        if normalized == current_month:
+            logging.info("[Attention] 当前月不归档，跳过")
+            return 0
+        months = [normalized]
+    else:
+        session = Session()
+        try:
+            rows = session.execute(
+                text(
+                    "SELECT DATE_FORMAT(`date`, '%Y%m') AS m "
+                    "FROM attention "
+                    "WHERE `date` < DATE_FORMAT(CURDATE(), '%Y-%m-01') "
+                    "GROUP BY m"
+                )
+            ).fetchall()
+            for (m,) in rows:
+                normalized = normalize_month_code(m)
+                if normalized and normalized != current_month:
+                    months.append(normalized)
+        except SQLAlchemyError as e:
+            logging.error(f"[Attention] 读取待归档月份失败: {e}")
+            return 0
+        finally:
+            session.close()
+
+    if not months:
+        return 0
+
+    moved_total = 0
+    for month_code in sorted(set(months)):
+        start_date, end_date = month_range(month_code)
+        table_name = ensure_attention_archive_table(month_code)
+        try:
+            with engine.begin() as conn:
+                count = conn.execute(
+                    text(
+                        "SELECT COUNT(1) FROM `attention` "
+                        "WHERE `date` >= :start_date AND `date` < :end_date"
+                    ),
+                    {"start_date": start_date, "end_date": end_date},
+                ).scalar()
+                if not count:
+                    continue
+                conn.execute(
+                    text(
+                        f"INSERT IGNORE INTO `{table_name}` (room_id, `date`, attention) "
+                        "SELECT room_id, `date`, attention "
+                        "FROM `attention` "
+                        "WHERE `date` >= :start_date AND `date` < :end_date"
+                    ),
+                    {"start_date": start_date, "end_date": end_date},
+                )
+                conn.execute(
+                    text(
+                        "DELETE FROM `attention` "
+                        "WHERE `date` >= :start_date AND `date` < :end_date"
+                    ),
+                    {"start_date": start_date, "end_date": end_date},
+                )
+                moved_total += int(count or 0)
+            logging.info(f"[Attention] 已归档 {month_code}，记录数 ~{count}")
+        except SQLAlchemyError as e:
+            logging.error(f"[Attention] 归档失败 {month_code}: {e}")
+    return moved_total
 def send_cookie_invalid_email_async(log_line: str):
     """
     检测到 uid=0 时发送一次告警邮件（进程生命周期内只发一次）。
@@ -518,6 +614,36 @@ class RoomInfo(Base):
         except SQLAlchemyError as e:
             session.rollback()
             logging.error(f"[RoomInfo] upsert 失败: {e}")
+        finally:
+            session.close()
+
+class Attention(Base):
+    """每日粉丝数快照；主键：room_id + date"""
+    __tablename__ = "attention"
+    room_id = Column(Integer, nullable=False)
+    date = Column(Date, nullable=False)
+    attention = Column(Integer, default=0, nullable=False)
+    __table_args__ = (
+        PrimaryKeyConstraint("room_id", "date", name="pk_attention_room_date"),
+        Index("idx_attention_date", "date"),
+    )
+
+    @classmethod
+    def upsert_daily(cls, room_id: int, date_value: datetime.date, attention_value: int):
+        session = Session()
+        try:
+            stmt = insert(cls).values(
+                room_id=room_id,
+                date=date_value,
+                attention=int(attention_value),
+            ).on_duplicate_key_update(
+                attention=int(attention_value),
+            )
+            session.execute(stmt)
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[Attention] upsert_daily 失败: {e}")
         finally:
             session.close()
 
@@ -757,11 +883,13 @@ class LiveSession(Base):
     start_guard_2   = Column(Integer, nullable=True)
     start_guard_3   = Column(Integer, nullable=True)
     start_fans_count = Column(Integer, nullable=True)
+    start_attention = Column(Integer, nullable=True)
 
     end_guard_1     = Column(Integer, nullable=True)
     end_guard_2     = Column(Integer, nullable=True)
     end_guard_3     = Column(Integer, nullable=True)
     end_fans_count  = Column(Integer, nullable=True)
+    end_attention   = Column(Integer, nullable=True)
 
     # 新增：同接统计（开播期间轮询贡献榜 count）
     avg_concurrency = Column(Float, nullable=True)
@@ -956,6 +1084,40 @@ class LiveSession(Base):
         except SQLAlchemyError as e:
             session.rollback()
             logging.error(f"[LiveSession] update_end_counts 失败: {e}")
+        finally:
+            session.close()
+
+    @classmethod
+    def update_start_attention(cls, session_id: int, attention: Optional[int] = None):
+        if not session_id or attention is None:
+            return
+        session = Session()
+        try:
+            row = session.query(cls).filter_by(id=session_id).first()
+            if not row:
+                return
+            row.start_attention = int(attention)
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[LiveSession] update_start_attention 失败: {e}")
+        finally:
+            session.close()
+
+    @classmethod
+    def update_end_attention(cls, session_id: int, attention: Optional[int] = None):
+        if not session_id or attention is None:
+            return
+        session = Session()
+        try:
+            row = session.query(cls).filter_by(id=session_id).first()
+            if not row:
+                return
+            row.end_attention = int(attention)
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[LiveSession] update_end_attention 失败: {e}")
         finally:
             session.close()
             
@@ -1215,6 +1377,29 @@ def _room_ids_for_month(m: str, include_config: bool = True) -> list[int]:
 
 # 确保所有表存在（不会删除既有数据）
 Base.metadata.create_all(engine)
+
+def ensure_runtime_schema():
+    """兼容存量库：补齐 live_session 新增列。"""
+    required_columns = {
+        "start_attention": "INT NULL",
+        "end_attention": "INT NULL",
+    }
+    try:
+        existing_cols = {col.get("name") for col in inspect(engine).get_columns("live_session")}
+    except SQLAlchemyError as e:
+        logging.error(f"[schema] 读取 live_session 列失败: {e}")
+        return
+    for col_name, ddl in required_columns.items():
+        if col_name in existing_cols:
+            continue
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE `live_session` ADD COLUMN `{col_name}` {ddl}"))
+            logging.info(f"[schema] 已补齐 live_session.{col_name}")
+        except SQLAlchemyError as e:
+            logging.error(f"[schema] 新增 live_session.{col_name} 失败: {e}")
+
+ensure_runtime_schema()
 
 # ------------------ 直播间配置 ------------------
 SESSDATA_VALUE = os.getenv("SESSDATA_VALUE", "")
@@ -1593,6 +1778,8 @@ CONCURRENCY_CACHE: Dict[int, Dict[str, int]] = {}
 
 # 粉丝团 & 守护 信息获取任务队列：元素为 (room_id, session_id)，session_id 为 None 表示只更新当前状态
 GUARD_FANS_QUEUE: "asyncio.Queue[tuple[int, Optional[int], Optional[str]]]" = asyncio.Queue()
+# 粉丝数获取任务队列：phase in (None, "start", "end")
+ATTENTION_QUEUE: "asyncio.Queue[tuple[int, Optional[int], Optional[str], datetime.date]]" = asyncio.Queue()
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1868,6 +2055,40 @@ async def _fetch_room_info_and_update(room_id: int, update_uid: bool) -> bool:
         logging.debug(f"[RoomInfo] room_id={room_id} 刷新 attention={attention}（不更新 uid）")
 
     return True
+
+def _read_room_attention(room_id: int) -> int:
+    session = Session()
+    try:
+        val = session.query(RoomInfo.attention).filter_by(room_id=room_id).scalar()
+        return int(val or 0)
+    except SQLAlchemyError as e:
+        logging.error(f"[Attention] 读取 room_id={room_id} 当前粉丝数失败: {e}")
+        return 0
+    finally:
+        session.close()
+
+async def attention_worker():
+    """
+    统一串行处理粉丝数拉取任务：
+    - phase=None：仅写 attention 日快照；
+    - phase=start/end：写 live_session 的开播/下播粉丝数快照。
+    """
+    while True:
+        room_id, session_id, phase, target_date = await ATTENTION_QUEUE.get()
+        try:
+            await _fetch_room_info_and_update(room_id, update_uid=False)
+            latest_attention = _read_room_attention(room_id)
+
+            if phase == "start" and session_id:
+                LiveSession.update_start_attention(session_id, latest_attention)
+            elif phase == "end" and session_id:
+                LiveSession.update_end_attention(session_id, latest_attention)
+            else:
+                Attention.upsert_daily(room_id, target_date, latest_attention)
+        except Exception as e:
+            logging.error(f"[Attention] room_id={room_id} phase={phase} 处理失败: {e}")
+        finally:
+            ATTENTION_QUEUE.task_done()
 
 async def init_uids_and_attention_once(max_rounds: int = 5):
     """
@@ -2145,6 +2366,27 @@ async def refresh_attention_scheduler():
             await asyncio.sleep(0.3)
         logging.info("[RoomInfo] 本轮粉丝数刷新任务完成")
 
+async def attention_daily_scheduler():
+    """
+    每天 00:01:00 记录所有房间粉丝数到 attention 表（按 room_id + date 幂等覆盖）。
+    """
+    while True:
+        now = _now()
+        target = now.replace(hour=0, minute=1, second=0, microsecond=0)
+        if now >= target:
+            target += datetime.timedelta(days=1)
+        sleep_sec = max(1.0, (target - now).total_seconds())
+        await asyncio.sleep(sleep_sec)
+
+        snapshot_date = target.date()
+        logging.info(f"[Attention] 开始每日快照任务，date={snapshot_date}")
+        for room_id in get_room_ids():
+            try:
+                await ATTENTION_QUEUE.put((room_id, None, None, snapshot_date))
+            except Exception as e:
+                logging.error(f"[Attention] 每日快照投递失败 room_id={room_id}: {e}")
+            await asyncio.sleep(max(0.0, ATTENTION_DAILY_ROOM_SLEEP_SECONDS))
+
 async def guard_fans_refresh_scheduler():
     """
     未开播房间每小时刷新一次守护数量 + 粉丝团数量。
@@ -2309,6 +2551,10 @@ async def monitor_all_rooms_status():
                                 GUARD_FANS_QUEUE.put_nowait((room_id, sid, "start"))
                             except Exception as e:
                                 logging.error(f"[Guard/Fans] 开播投递任务 room_id={room_id} 失败: {e}")
+                            try:
+                                ATTENTION_QUEUE.put_nowait((room_id, sid, "start", _now().date()))
+                            except Exception as e:
+                                logging.error(f"[Attention] 开播投递任务 room_id={room_id} 失败: {e}")
                         logging.info(f"[{room_id}] 上播，开始时间 {start_dt:%F %T}")
 
                     LIVE_INFO.setdefault(room_id, {})
@@ -2341,6 +2587,10 @@ async def monitor_all_rooms_status():
                                 GUARD_FANS_QUEUE.put_nowait((room_id, sid, "end"))
                             except Exception as e:
                                 logging.error(f"[Guard/Fans] 下播投递任务 room_id={room_id} 失败: {e}")
+                            try:
+                                ATTENTION_QUEUE.put_nowait((room_id, sid, "end", _now().date()))
+                            except Exception as e:
+                                logging.error(f"[Attention] 下播投递任务 room_id={room_id} 失败: {e}")
 
                     LIVE_INFO.setdefault(room_id, {})
                     LIVE_INFO[room_id]["live_time"] = "0000-00-00 00:00:00"
@@ -2428,13 +2678,16 @@ async def monthly_reset_scheduler():
             await asyncio.to_thread(archive_super_chat_log)
             await asyncio.to_thread(archive_live_session)
             await asyncio.to_thread(archive_room_live_stats)
+            await asyncio.to_thread(archive_attention)
         elif current_month != last_month:
             await asyncio.to_thread(archive_super_chat_log, last_month)
             await asyncio.to_thread(archive_live_session, last_month)
             await asyncio.to_thread(archive_room_live_stats, last_month)
+            await asyncio.to_thread(archive_attention, last_month)
             last_month = current_month
         else:
             await asyncio.to_thread(archive_live_session)
+            await asyncio.to_thread(archive_attention)
         await asyncio.sleep(60)
 
 # 主入口
@@ -2453,6 +2706,8 @@ async def main():
             monthly_reset_scheduler(),
             reconnect_scheduler(),           # 每日 6:00 全量重连
             refresh_attention_scheduler(),   # 每 3 小时刷新关注数（attention）
+            attention_worker(),             # 粉丝数任务 worker（开播/下播+每日快照）
+            attention_daily_scheduler(),    # 每日 00:01 粉丝数快照
             guard_fans_worker(),             # 守护 + 粉丝团队列 worker
             guard_fans_refresh_scheduler(),  # 未开播房间每小时刷新守护 + 粉丝团
             bili_ticket_scheduler(),         # 每日 5:00 刷新 bili_ticket
@@ -2746,12 +3001,14 @@ def get_live_sessions_by_room_month(request: Request):
                     "start_guard_2": r.start_guard_2,     # 提督
                     "start_guard_3": r.start_guard_3,     # 总督
                     "start_fans_count": r.start_fans_count,
+                    "start_attention": r.start_attention,
 
                     # 下播时快照（旧数据为 None -> JSON null）
                     "end_guard_1": r.end_guard_1,
                     "end_guard_2": r.end_guard_2,
                     "end_guard_3": r.end_guard_3,
                     "end_fans_count": r.end_fans_count,
+                    "end_attention": r.end_attention,
 
                     "avg_concurrency": avg_concurrency,
                     "max_concurrency": max_concurrency,
@@ -2765,7 +3022,8 @@ def get_live_sessions_by_room_month(request: Request):
                         f"SELECT id, start_time, end_time, title, gift, guard, super_chat, "
                         "blind_box_count, blind_box_profit, danmaku_count, "
                         "start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
-                        "end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
+                        "start_attention, end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
+                        "end_attention, "
                         "avg_concurrency, max_concurrency "
                         f"FROM `{table_name}` "
                         "WHERE room_id = :room_id AND month = :month "
@@ -2789,14 +3047,16 @@ def get_live_sessions_by_room_month(request: Request):
                         "start_guard_2": row[11],
                         "start_guard_3": row[12],
                         "start_fans_count": row[13],
+                        "start_attention": row[14],
 
-                        "end_guard_1": row[14],
-                        "end_guard_2": row[15],
-                        "end_guard_3": row[16],
-                        "end_fans_count": row[17],
+                        "end_guard_1": row[15],
+                        "end_guard_2": row[16],
+                        "end_guard_3": row[17],
+                        "end_fans_count": row[18],
+                        "end_attention": row[19],
 
-                        "avg_concurrency": row[18],
-                        "max_concurrency": row[19],
+                        "avg_concurrency": row[20],
+                        "max_concurrency": row[21],
                         "current_concurrency": None,
                     })
             else:
@@ -2822,11 +3082,13 @@ def get_live_sessions_by_room_month(request: Request):
                         "start_guard_2": r.start_guard_2,
                         "start_guard_3": r.start_guard_3,
                         "start_fans_count": r.start_fans_count,
+                        "start_attention": r.start_attention,
 
                         "end_guard_1": r.end_guard_1,
                         "end_guard_2": r.end_guard_2,
                         "end_guard_3": r.end_guard_3,
                         "end_fans_count": r.end_fans_count,
+                        "end_attention": r.end_attention,
 
                         "avg_concurrency": r.avg_concurrency,
                         "max_concurrency": r.max_concurrency,
@@ -2840,7 +3102,82 @@ def get_live_sessions_by_room_month(request: Request):
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
         session.close()
-        
+
+@app.get("/gift/attention")
+def get_attention_logs(request: Request):
+    """
+    粉丝数日快照查询：
+      GET /gift/attention?room_id=1111&month=202603
+    month 为空时返回当前月数据；无数据返回 attention: []
+    """
+    try:
+        room_id = int(request.query_params.get("room_id", "0"))
+    except ValueError:
+        return JSONResponse({"error": "room_id 参数无效"}, status_code=400)
+    if room_id <= 0:
+        return JSONResponse({"error": "room_id 必填且需为正整数"}, status_code=400)
+
+    month_param = request.query_params.get("month")
+    if month_param:
+        m = normalize_month_code(month_param)
+        if not m:
+            return JSONResponse({"error": "month 参数无效，支持 YYYYMM 或 YYYY-MM"}, status_code=400)
+    else:
+        m = month_str()
+
+    start_date, end_date = month_range(m)
+    out: list[dict[str, str]] = []
+    session = Session()
+    try:
+        if is_current_month(m):
+            rows = (
+                session.query(Attention.date, Attention.attention)
+                .filter(
+                    and_(
+                        Attention.room_id == room_id,
+                        Attention.date >= start_date,
+                        Attention.date < end_date,
+                    )
+                )
+                .order_by(Attention.date.asc())
+                .all()
+            )
+            out.extend({d.strftime("%Y%m%d"): str(int(v or 0))} for d, v in rows)
+        else:
+            table_name = attention_table_name(m)
+            if sc_log_table_exists(table_name):
+                rows = session.execute(
+                    text(
+                        f"SELECT `date`, attention FROM `{table_name}` "
+                        "WHERE room_id = :room_id AND `date` >= :start_date AND `date` < :end_date "
+                        "ORDER BY `date` ASC"
+                    ),
+                    {"room_id": room_id, "start_date": start_date, "end_date": end_date},
+                ).fetchall()
+                out.extend({row[0].strftime("%Y%m%d"): str(int(row[1] or 0))} for row in rows)
+            else:
+                rows = (
+                    session.query(Attention.date, Attention.attention)
+                    .filter(
+                        and_(
+                            Attention.room_id == room_id,
+                            Attention.date >= start_date,
+                            Attention.date < end_date,
+                        )
+                    )
+                    .order_by(Attention.date.asc())
+                    .all()
+                )
+                out.extend({d.strftime("%Y%m%d"): str(int(v or 0))} for d, v in rows)
+        payload = {"room_id": room_id, "month": m, "attention": out}
+        return JSONResponse(content=jsonable_encoder(payload))
+    except SQLAlchemyError as e:
+        session.rollback()
+        logging.error(f"[get_attention_logs] 查询失败: {e}")
+        return JSONResponse({"error": "数据库查询失败"}, status_code=500)
+    finally:
+        session.close()
+
 @app.get("/gift/sc")
 def get_sc_logs(request: Request):
     """
