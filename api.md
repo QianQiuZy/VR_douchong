@@ -186,10 +186,12 @@
 | start_guard_2 | int 或 null | 开播时提督数量。 |
 | start_guard_3 | int 或 null | 开播时总督数量。 |
 | start_fans_count | int 或 null | 开播时粉丝团数量。 |
+| start_attention | int 或 null | 开播时粉丝数（attention）。 |
 | end_guard_1 | int 或 null | 下播时舰长数量。 |
 | end_guard_2 | int 或 null | 下播时提督数量。 |
 | end_guard_3 | int 或 null | 下播时总督数量。 |
 | end_fans_count | int 或 null | 下播时粉丝团数量。 |
+| end_attention | int 或 null | 下播时粉丝数（attention）。 |
 | avg_concurrency | float 或 null | 平均同接（若未采样则为 null）。 |
 | max_concurrency | int 或 null | 最大同接（若未采样则为 null）。 |
 | current_concurrency | int 或 null | 进行中直播的即时同接，历史场次为 null。 |
@@ -201,7 +203,53 @@
 | 400 | 参数错误。 |
 | 500 | 数据库查询失败。 |
 
-## 6. GET /gift/sc
+## 6. GET /gift/attention
+
+**说明**：查询指定房间在某月的每日粉丝数（attention）快照。
+
+**请求方式**：`GET`
+
+**请求参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| room_id | int | 是 | 房间号，必须为正整数。 |
+| month | string | 否 | 月份，支持 `YYYYMM` 或 `YYYY-MM`，默认当前月。 |
+
+**响应字段**
+
+外层对象：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| room_id | int | 房间号。 |
+| month | string | 月份（`YYYYMM`）。 |
+| attention | array | 当月每日粉丝数快照列表。无数据时返回 `[]`。 |
+
+`attention` 元素格式：
+
+- 每个元素是一个对象，键为 `YYYYMMDD`，值为对应日期粉丝数（字符串）。
+- 示例：
+
+```json
+{
+  "room_id": 1820703922,
+  "month": "202603",
+  "attention": [
+    {"20260301": "111"},
+    {"20260302": "112"}
+  ]
+}
+```
+
+**错误响应**
+
+| HTTP 状态码 | 说明 |
+| --- | --- |
+| 400 | 参数错误。 |
+| 500 | 数据库查询失败。 |
+
+## 7. GET /gift/sc
 
 **说明**：查询 SC 日志。
 
