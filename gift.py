@@ -1824,6 +1824,19 @@ def _finalize_concurrency_cache(room_id: int, session_id: Optional[int]) -> tupl
     avg_val = (total / samples) if samples > 0 else None
     return avg_val, max_val
 
+def _flush_pending_danmaku_for_room(room_id: int, session_id: Optional[int] = None) -> None:
+    """
+    立即落库指定房间的弹幕增量，避免在定时 flush 间隔内下播时漏记。
+    """
+    pending = int(DANMAKU_PENDING.pop(room_id, 0) or 0)
+    if pending <= 0:
+        return
+    if session_id:
+        LiveSession.add_danmaku_by_id(session_id, pending)
+    else:
+        LiveSession.add_danmaku_by_room_open(room_id, pending)
+    logging.debug(f"[Danmaku] room_id={room_id} 下播/停用即时落库 +{pending}")
+
 def ensure_room_state(room_id: int) -> None:
     LAST_STATUS.setdefault(room_id, 0)
     LIVE_INFO.setdefault(room_id, {"live_time": "0000-00-00 00:00:00", "title": ""})
@@ -1886,6 +1899,7 @@ async def delete_room_async(room_id: int) -> Tuple[bool, str]:
         end_dt = _now()
         _split_and_record(room_id, st, end_dt)
         sid = CURRENT_SESSIONS.pop(room_id, None)
+        _flush_pending_danmaku_for_room(room_id, sid)
         LiveSession.close_session_by_id(sid, end_dt)
         avg_concurrency, max_concurrency = _finalize_concurrency_cache(room_id, sid)
         LiveSession.update_concurrency_by_id(
@@ -2570,6 +2584,7 @@ async def monitor_all_rooms_status():
                         _split_and_record(room_id, st, end_dt)
                         # 关闭该场会话
                         sid = CURRENT_SESSIONS.pop(room_id, None)
+                        _flush_pending_danmaku_for_room(room_id, sid)
                         avg_concurrency, max_concurrency = _finalize_concurrency_cache(room_id, sid)
                         LiveSession.close_session_by_id(sid, end_dt)
                         LiveSession.update_concurrency_by_id(
