@@ -1789,6 +1789,7 @@ USER_AGENT = (
 
 LIVE_STATUS_API = "https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids"
 ROOM_INFO_API   = "https://api.live.bilibili.com/room/v1/Room/get_info"
+ROOM_INIT_API   = "https://api.live.bilibili.com/room/v1/Room/room_init"
 
 # 新增：粉丝团/舰长 API
 FANS_API  = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getFansMembersRank"
@@ -1836,6 +1837,43 @@ def _flush_pending_danmaku_for_room(room_id: int, session_id: Optional[int] = No
     else:
         LiveSession.add_danmaku_by_room_open(room_id, pending)
     logging.debug(f"[Danmaku] room_id={room_id} 下播/停用即时落库 +{pending}")
+
+def _finish_live_session(room_id: int, end_dt: datetime.datetime) -> Optional[str]:
+    """按现有下播流程关闭房间当前直播，返回本场时长字符串。"""
+    if room_id not in STREAM_STARTS:
+        return None
+
+    st = STREAM_STARTS.pop(room_id)
+    _split_and_record(room_id, st, end_dt)
+    sid = CURRENT_SESSIONS.pop(room_id, None)
+    _flush_pending_danmaku_for_room(room_id, sid)
+    avg_concurrency, max_concurrency = _finalize_concurrency_cache(room_id, sid)
+    LiveSession.close_session_by_id(sid, end_dt)
+    LiveSession.update_concurrency_by_id(
+        sid,
+        avg_concurrency=avg_concurrency,
+        max_concurrency=max_concurrency,
+    )
+    CONCURRENCY_CACHE.pop(room_id, None)
+    duration_str = _seconds_to_hms(int((end_dt - st).total_seconds()))
+
+    if sid:
+        try:
+            GUARD_FANS_QUEUE.put_nowait((room_id, sid, "end"))
+        except Exception as e:
+            logging.error(f"[Guard/Fans] 下播投递任务 room_id={room_id} 失败: {e}")
+        try:
+            ATTENTION_QUEUE.put_nowait((room_id, sid, "end", _now().date()))
+        except Exception as e:
+            logging.error(f"[Attention] 下播投递任务 room_id={room_id} 失败: {e}")
+
+    return duration_str
+
+def _mark_room_offline(room_id: int) -> None:
+    LAST_STATUS[room_id] = 0
+    LIVE_INFO.setdefault(room_id, {})
+    LIVE_INFO[room_id]["live_time"] = "0000-00-00 00:00:00"
+    LIVE_INFO[room_id]["title"] = ""
 
 def ensure_room_state(room_id: int) -> None:
     LAST_STATUS.setdefault(room_id, 0)
@@ -2069,6 +2107,38 @@ async def _fetch_room_info_and_update(room_id: int, update_uid: bool) -> bool:
         logging.debug(f"[RoomInfo] room_id={room_id} 刷新 attention={attention}（不更新 uid）")
 
     return True
+
+async def _fetch_room_init(room_id: int) -> Optional[dict]:
+    """调用 room_init，供直播状态主接口缺失单房间数据时判定封禁/锁定。"""
+    if aiohttp_session is None:
+        logging.error("[RoomInit] aiohttp_session 未初始化")
+        return None
+
+    try:
+        async with aiohttp_session.get(
+            ROOM_INIT_API,
+            params={"id": str(room_id)},
+            timeout=5,
+            headers={"User-Agent": USER_AGENT, "Referer": "https://live.bilibili.com"},
+        ) as resp:
+            if resp.status != 200:
+                logging.warning(f"[RoomInit] room_id={room_id} HTTP {resp.status}")
+                return None
+            try:
+                payload = await resp.json(content_type=None)
+            except ContentTypeError:
+                text = (await resp.text())[:200]
+                logging.warning(f"[RoomInit] room_id={room_id} 返回非 JSON，前 200 字：{text}")
+                return None
+    except Exception as e:
+        logging.error(f"[RoomInit] room_id={room_id} 请求异常: {e}")
+        return None
+
+    if payload.get("code") != 0:
+        logging.warning(f"[RoomInit] room_id={room_id} 接口返回异常: {payload}")
+        return None
+    data = payload.get("data")
+    return data if isinstance(data, dict) else None
 
 def _read_room_attention(room_id: int) -> int:
     session = Session()
@@ -2470,8 +2540,8 @@ async def monitor_all_rooms_status():
     查询周期：每 3 秒。
 
     改进点：
-      - 当本轮结果中缺少某个 UID（或结构异常）时，不再立刻判定下播，
-        而是沿用上一轮状态，等待下一轮。
+      - 当本轮结果中缺少某个 UID（或结构异常）时，先用 room_init 判断房间是否被锁定；
+      - 若 is_locked=true，强制按下播处理；否则沿用上一轮状态，等待下一轮。
     """
     # 等待 UID 初始化
     while not ROOM_UIDS:
@@ -2521,8 +2591,31 @@ async def monitor_all_rooms_status():
                 info = data.get(str(uid)) if uid is not None else None
                 prev = LAST_STATUS.get(room_id, 0)
 
-                # === 关键改动：当本轮没有该 UID 或结构异常时，不判定下播，沿用上一状态 ===
+                # === 主接口缺少该 UID 或结构异常时，降级查 room_init 判定封禁/锁定 ===
                 if not info or "live_status" not in info:
+                    room_init = await _fetch_room_init(room_id)
+                    if room_init and room_init.get("is_locked") is True:
+                        lock_till_raw = room_init.get("lock_till", 0)
+                        try:
+                            lock_till = int(lock_till_raw or 0)
+                        except (TypeError, ValueError):
+                            lock_till = 0
+                        lock_till_text = (
+                            datetime.datetime.fromtimestamp(lock_till).strftime("%Y-%m-%d %H:%M:%S")
+                            if lock_till > 0 else "未知"
+                        )
+                        if prev == 1:
+                            duration_str = _finish_live_session(room_id, now)
+                            logging.info(
+                                f"[{room_id}] room_init 判定直播间被锁定，强制下播，时长 {duration_str or '00:00:00'}，解封时间 {lock_till_text}"
+                            )
+                        else:
+                            logging.warning(
+                                f"[LiveStatus] room_id={room_id} room_init 判定直播间被锁定，保持下播状态，解封时间 {lock_till_text}"
+                            )
+                        _mark_room_offline(room_id)
+                        continue
+
                     if prev == 1:
                         logging.warning(
                             f"[LiveStatus] room_id={room_id} 本轮未返回有效数据，沿用上一轮“在播”状态"
@@ -2577,39 +2670,11 @@ async def monitor_all_rooms_status():
 
                 else:
                     # 已下播/未开播
-                    LAST_STATUS[room_id] = 0
-                    if prev == 1 and room_id in STREAM_STARTS:
-                        st = STREAM_STARTS.pop(room_id)
-                        end_dt = now
-                        _split_and_record(room_id, st, end_dt)
-                        # 关闭该场会话
-                        sid = CURRENT_SESSIONS.pop(room_id, None)
-                        _flush_pending_danmaku_for_room(room_id, sid)
-                        avg_concurrency, max_concurrency = _finalize_concurrency_cache(room_id, sid)
-                        LiveSession.close_session_by_id(sid, end_dt)
-                        LiveSession.update_concurrency_by_id(
-                            sid,
-                            avg_concurrency=avg_concurrency,
-                            max_concurrency=max_concurrency,
-                        )
-                        CONCURRENCY_CACHE.pop(room_id, None)
-                        duration_str = _seconds_to_hms(int((end_dt - st).total_seconds()))
-                        logging.info(f"[{room_id}] 下播，时长 {duration_str}")
-
-                        # 下播瞬间：立刻刷新守护 + 粉丝团并写入本场
-                        if sid:
-                            try:
-                                GUARD_FANS_QUEUE.put_nowait((room_id, sid, "end"))
-                            except Exception as e:
-                                logging.error(f"[Guard/Fans] 下播投递任务 room_id={room_id} 失败: {e}")
-                            try:
-                                ATTENTION_QUEUE.put_nowait((room_id, sid, "end", _now().date()))
-                            except Exception as e:
-                                logging.error(f"[Attention] 下播投递任务 room_id={room_id} 失败: {e}")
-
-                    LIVE_INFO.setdefault(room_id, {})
-                    LIVE_INFO[room_id]["live_time"] = "0000-00-00 00:00:00"
-                    LIVE_INFO[room_id]["title"] = ""
+                    if prev == 1:
+                        duration_str = _finish_live_session(room_id, now)
+                        if duration_str is not None:
+                            logging.info(f"[{room_id}] 下播，时长 {duration_str}")
+                    _mark_room_offline(room_id)
 
         except Exception as e:
             logging.error(f"[LiveStatus] get_status_info_by_uids 调用异常: {e}")
