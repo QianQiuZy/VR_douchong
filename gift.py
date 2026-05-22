@@ -1775,6 +1775,8 @@ GUARD_COUNTS: Dict[int, Dict[str, int]] = {}  # room_id -> {"guard_1": 舰长, "
 # 新增：同接轮询缓存（按房间缓存当前场次统计）
 # 结构：room_id -> {"session_id": int, "total": int, "samples": int, "max": int, "last": int}
 CONCURRENCY_CACHE: Dict[int, Dict[str, int]] = {}
+# 被锁定直播间的解封时间缓存；主状态接口返回空时，未到解封时间不重复请求 room_init
+LOCKED_ROOM_UNTIL: Dict[int, int] = {}
 
 # 粉丝团 & 守护 信息获取任务队列：元素为 (room_id, session_id)，session_id 为 None 表示只更新当前状态
 GUARD_FANS_QUEUE: "asyncio.Queue[tuple[int, Optional[int], Optional[str]]]" = asyncio.Queue()
@@ -1875,6 +1877,12 @@ def _mark_room_offline(room_id: int) -> None:
     LIVE_INFO[room_id]["live_time"] = "0000-00-00 00:00:00"
     LIVE_INFO[room_id]["title"] = ""
 
+def _format_lock_till(lock_till: int) -> str:
+    return (
+        datetime.datetime.fromtimestamp(lock_till).strftime("%Y-%m-%d %H:%M:%S")
+        if lock_till > 0 else "未知"
+    )
+
 def ensure_room_state(room_id: int) -> None:
     LAST_STATUS.setdefault(room_id, 0)
     LIVE_INFO.setdefault(room_id, {"live_time": "0000-00-00 00:00:00", "title": ""})
@@ -1955,6 +1963,7 @@ async def delete_room_async(room_id: int) -> Tuple[bool, str]:
     FANS_COUNT.pop(room_id, None)
     GUARD_COUNTS.pop(room_id, None)
     CONCURRENCY_CACHE.pop(room_id, None)
+    LOCKED_ROOM_UNTIL.pop(room_id, None)
     return True, "房间已删除并停止任务"
 
 def _split_and_record(room_id: int, start: datetime.datetime, end: datetime.datetime):
@@ -2541,7 +2550,8 @@ async def monitor_all_rooms_status():
 
     改进点：
       - 当本轮结果中缺少某个 UID（或结构异常）时，先用 room_init 判断房间是否被锁定；
-      - 若 is_locked=true，强制按下播处理；否则沿用上一轮状态，等待下一轮。
+      - 若 is_locked=true，强制按下播处理，并缓存 lock_till；
+      - lock_till 未到期前主接口继续空值时不重复请求 room_init；否则重新校验。
     """
     # 等待 UID 初始化
     while not ROOM_UIDS:
@@ -2593,6 +2603,17 @@ async def monitor_all_rooms_status():
 
                 # === 主接口缺少该 UID 或结构异常时，降级查 room_init 判定封禁/锁定 ===
                 if not info or "live_status" not in info:
+                    cached_lock_till = LOCKED_ROOM_UNTIL.get(room_id, 0)
+                    now_ts = int(now.timestamp())
+                    if cached_lock_till > now_ts:
+                        _mark_room_offline(room_id)
+                        logging.debug(
+                            f"[LiveStatus] room_id={room_id} 仍在锁定期内，跳过 room_init，解封时间 {_format_lock_till(cached_lock_till)}"
+                        )
+                        continue
+                    if cached_lock_till:
+                        LOCKED_ROOM_UNTIL.pop(room_id, None)
+
                     room_init = await _fetch_room_init(room_id)
                     if room_init and room_init.get("is_locked") is True:
                         lock_till_raw = room_init.get("lock_till", 0)
@@ -2600,10 +2621,9 @@ async def monitor_all_rooms_status():
                             lock_till = int(lock_till_raw or 0)
                         except (TypeError, ValueError):
                             lock_till = 0
-                        lock_till_text = (
-                            datetime.datetime.fromtimestamp(lock_till).strftime("%Y-%m-%d %H:%M:%S")
-                            if lock_till > 0 else "未知"
-                        )
+                        if lock_till > now_ts:
+                            LOCKED_ROOM_UNTIL[room_id] = lock_till
+                        lock_till_text = _format_lock_till(lock_till)
                         if prev == 1:
                             duration_str = _finish_live_session(room_id, now)
                             logging.info(
@@ -2615,6 +2635,8 @@ async def monitor_all_rooms_status():
                             )
                         _mark_room_offline(room_id)
                         continue
+
+                    LOCKED_ROOM_UNTIL.pop(room_id, None)
 
                     if prev == 1:
                         logging.warning(
@@ -2628,6 +2650,7 @@ async def monitor_all_rooms_status():
                     continue
 
                 # === 正常有数据的分支 ===
+                LOCKED_ROOM_UNTIL.pop(room_id, None)
                 raw_status = int(info.get("live_status", 0))
                 # B 站约定：2 为轮播，视作未开播
                 status = 0 if raw_status == 2 else raw_status
