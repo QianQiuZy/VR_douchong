@@ -1666,8 +1666,10 @@ class MyHandler(blivedm.BaseHandler):
 
     def _on_user_toast_v2(self, client, message):  # noqa: N802
         try:
+            is_red_pack = False
             total_coins = message.price * message.num
             if message.price == 1900:  # 修正
+                is_red_pack = True
                 total_coins = 198000
             if message.num != 1:
                 if message.guard_level == 3:
@@ -1689,7 +1691,7 @@ class MyHandler(blivedm.BaseHandler):
                 LiveSession.add_values_by_room_open(client.room_id, guard=value)
             logging.info(
                 f"[{client.room_id}] {message.username} {message.uid} 上舰 lvl={message.guard_level} "
-                f"num={message.num} 修正后={value:.1f} RMB"
+                f"num={message.num} 修正后={value:.1f} RMB {'(红包上舰)' if is_red_pack else ''}"
             )
         except Exception as e:
             logging.error(f"处理舰长记录时出错: {e}")
