@@ -899,6 +899,20 @@ class LiveSession(Base):
     def start_session(cls, room_id: int, start_dt: datetime.datetime, title: str) -> Optional[int]:
         session = Session()
         try:
+            open_row = (
+                session.query(cls)
+                .filter(and_(cls.room_id == room_id, cls.end_time.is_(None)))
+                .order_by(cls.start_time.desc())
+                .first()
+            )
+            if open_row:
+                logging.info(
+                    "[LiveSession] 恢复未结束场次 room_id=%s session_id=%s",
+                    room_id,
+                    open_row.id,
+                )
+                return open_row.id
+
             row = cls(
                 room_id=room_id,
                 start_time=start_dt,
