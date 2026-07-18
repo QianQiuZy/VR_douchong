@@ -2824,7 +2824,7 @@ async def main():
             await aiohttp_session.close()
 
 # ------------------ FastAPI ------------------
-app = FastAPI()
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
 def _run_in_main_loop(coro: asyncio.Future, timeout: int = 30):
