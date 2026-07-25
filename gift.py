@@ -1783,6 +1783,8 @@ async def run_clients_loop():
 LAST_STATUS: Dict[int, int] = {}
 STREAM_STARTS: Dict[int, datetime.datetime] = {}
 LIVE_INFO: Dict[int, Dict[str, str]] = {}
+LIVE_SESSION_GRACE_SECONDS = 180
+PENDING_SESSION_ENDS: Dict[int, datetime.datetime] = {}
 
 DANMAKU_PENDING: Dict[int, int] = {}
 # 新增：当前粉丝团数量 / 当前守护数量（非按场次，是“最新状态”）
@@ -1856,13 +1858,19 @@ def _flush_pending_danmaku_for_room(room_id: int, session_id: Optional[int] = No
         LiveSession.add_danmaku_by_room_open(room_id, pending)
     logging.debug(f"[Danmaku] room_id={room_id} 下播/停用即时落库 +{pending}")
 
-def _finish_live_session(room_id: int, end_dt: datetime.datetime) -> Optional[str]:
-    """按现有下播流程关闭房间当前直播，返回本场时长字符串。"""
+def _record_stream_segment(room_id: int, end_dt: datetime.datetime) -> Optional[str]:
     if room_id not in STREAM_STARTS:
         return None
 
     st = STREAM_STARTS.pop(room_id)
     _split_and_record(room_id, st, end_dt)
+    sid = CURRENT_SESSIONS.get(room_id)
+    _flush_pending_danmaku_for_room(room_id, sid)
+    return _seconds_to_hms(int((end_dt - st).total_seconds()))
+
+def _finish_live_session(room_id: int, end_dt: datetime.datetime) -> Optional[str]:
+    duration_str = _record_stream_segment(room_id, end_dt)
+    PENDING_SESSION_ENDS.pop(room_id, None)
     sid = CURRENT_SESSIONS.pop(room_id, None)
     _flush_pending_danmaku_for_room(room_id, sid)
     avg_concurrency, max_concurrency = _finalize_concurrency_cache(room_id, sid)
@@ -1873,7 +1881,6 @@ def _finish_live_session(room_id: int, end_dt: datetime.datetime) -> Optional[st
         max_concurrency=max_concurrency,
     )
     CONCURRENCY_CACHE.pop(room_id, None)
-    duration_str = _seconds_to_hms(int((end_dt - st).total_seconds()))
 
     if sid:
         try:
@@ -1886,6 +1893,44 @@ def _finish_live_session(room_id: int, end_dt: datetime.datetime) -> Optional[st
             logging.error(f"[Attention] 下播投递任务 room_id={room_id} 失败: {e}")
 
     return duration_str
+
+def _defer_live_session_finish(room_id: int, end_dt: datetime.datetime) -> Optional[str]:
+    duration_str = _record_stream_segment(room_id, end_dt)
+    if duration_str is not None:
+        PENDING_SESSION_ENDS[room_id] = end_dt
+    return duration_str
+
+def _resume_interrupted_session(
+    room_id: int,
+    start_dt: datetime.datetime,
+    now: datetime.datetime,
+) -> Optional[int]:
+    interrupted_at = PENDING_SESSION_ENDS.get(room_id)
+    if interrupted_at is None:
+        return None
+    if (now - interrupted_at).total_seconds() > LIVE_SESSION_GRACE_SECONDS:
+        return None
+    sid = CURRENT_SESSIONS.get(room_id)
+    if sid is None:
+        return None
+    PENDING_SESSION_ENDS.pop(room_id, None)
+    STREAM_STARTS[room_id] = start_dt if interrupted_at < start_dt <= now else now
+    return sid
+
+def _finish_expired_live_sessions(now: datetime.datetime) -> None:
+    expired = [
+        (room_id, end_dt)
+        for room_id, end_dt in PENDING_SESSION_ENDS.items()
+        if (now - end_dt).total_seconds() > LIVE_SESSION_GRACE_SECONDS
+    ]
+    for room_id, end_dt in expired:
+        sid = CURRENT_SESSIONS.get(room_id)
+        _finish_live_session(room_id, end_dt)
+        logging.info(
+            "[%s] 下播宽限期结束，已确认关闭 session_id=%s",
+            room_id,
+            sid,
+        )
 
 def _mark_room_offline(room_id: int) -> None:
     LAST_STATUS[room_id] = 0
@@ -1956,10 +2001,10 @@ async def delete_room_async(room_id: int) -> Tuple[bool, str]:
         except Exception as e:
             logging.warning(f"[delete] room={room_id} stop_and_close 异常: {e}")
 
-    if room_id in STREAM_STARTS:
-        st = STREAM_STARTS.pop(room_id)
-        end_dt = _now()
-        _split_and_record(room_id, st, end_dt)
+    if room_id in STREAM_STARTS or room_id in PENDING_SESSION_ENDS:
+        end_dt = PENDING_SESSION_ENDS.get(room_id) or _now()
+        _record_stream_segment(room_id, end_dt)
+        PENDING_SESSION_ENDS.pop(room_id, None)
         sid = CURRENT_SESSIONS.pop(room_id, None)
         _flush_pending_danmaku_for_room(room_id, sid)
         LiveSession.close_session_by_id(sid, end_dt)
@@ -1980,6 +2025,7 @@ async def delete_room_async(room_id: int) -> Tuple[bool, str]:
     GUARD_COUNTS.pop(room_id, None)
     CONCURRENCY_CACHE.pop(room_id, None)
     LOCKED_ROOM_UNTIL.pop(room_id, None)
+    PENDING_SESSION_ENDS.pop(room_id, None)
     return True, "房间已删除并停止任务"
 
 def _split_and_record(room_id: int, start: datetime.datetime, end: datetime.datetime):
@@ -2610,6 +2656,7 @@ async def monitor_all_rooms_status():
 
             data = payload.get("data") or {}
             now = _now()
+            _finish_expired_live_sessions(now)
 
             # 逐房间处理
             for room_id in get_room_ids():
@@ -2622,6 +2669,9 @@ async def monitor_all_rooms_status():
                     cached_lock_till = LOCKED_ROOM_UNTIL.get(room_id, 0)
                     now_ts = int(now.timestamp())
                     if cached_lock_till > now_ts:
+                        if prev == 1 or room_id in PENDING_SESSION_ENDS:
+                            end_dt = PENDING_SESSION_ENDS.get(room_id, now)
+                            _finish_live_session(room_id, end_dt)
                         _mark_room_offline(room_id)
                         logging.debug(
                             f"[LiveStatus] room_id={room_id} 仍在锁定期内，跳过 room_init，解封时间 {_format_lock_till(cached_lock_till)}"
@@ -2640,8 +2690,9 @@ async def monitor_all_rooms_status():
                         if lock_till > now_ts:
                             LOCKED_ROOM_UNTIL[room_id] = lock_till
                         lock_till_text = _format_lock_till(lock_till)
-                        if prev == 1:
-                            duration_str = _finish_live_session(room_id, now)
+                        if prev == 1 or room_id in PENDING_SESSION_ENDS:
+                            end_dt = PENDING_SESSION_ENDS.get(room_id, now)
+                            duration_str = _finish_live_session(room_id, end_dt)
                             logging.info(
                                 f"[{room_id}] room_init 判定直播间被锁定，强制下播，时长 {duration_str or '00:00:00'}，解封时间 {lock_till_text}"
                             )
@@ -2687,21 +2738,29 @@ async def monitor_all_rooms_status():
 
                     # 从未播 -> 开播：认为是上播
                     if prev == 0:
-                        STREAM_STARTS[room_id] = start_dt
-                        sid = LiveSession.start_session(room_id, start_dt, raw_title)
-                        if sid:
-                            CURRENT_SESSIONS[room_id] = sid
-                            _init_concurrency_cache(room_id, sid)
-                            # 开播瞬间：立刻刷新守护数量 + 粉丝团数量，并记录到本场 live_session 中
-                            try:
-                                GUARD_FANS_QUEUE.put_nowait((room_id, sid, "start"))
-                            except Exception as e:
-                                logging.error(f"[Guard/Fans] 开播投递任务 room_id={room_id} 失败: {e}")
-                            try:
-                                ATTENTION_QUEUE.put_nowait((room_id, sid, "start", _now().date()))
-                            except Exception as e:
-                                logging.error(f"[Attention] 开播投递任务 room_id={room_id} 失败: {e}")
-                        logging.info(f"[{room_id}] 上播，开始时间 {start_dt:%F %T}")
+                        sid = _resume_interrupted_session(room_id, start_dt, now)
+                        if sid is not None:
+                            logging.info(
+                                "[%s] 三分钟内恢复直播，继续 session_id=%s",
+                                room_id,
+                                sid,
+                            )
+                        else:
+                            STREAM_STARTS[room_id] = start_dt
+                            sid = LiveSession.start_session(room_id, start_dt, raw_title)
+                            if sid:
+                                CURRENT_SESSIONS[room_id] = sid
+                                _init_concurrency_cache(room_id, sid)
+                                # 开播瞬间：立刻刷新守护数量 + 粉丝团数量，并记录到本场 live_session 中
+                                try:
+                                    GUARD_FANS_QUEUE.put_nowait((room_id, sid, "start"))
+                                except Exception as e:
+                                    logging.error(f"[Guard/Fans] 开播投递任务 room_id={room_id} 失败: {e}")
+                                try:
+                                    ATTENTION_QUEUE.put_nowait((room_id, sid, "start", _now().date()))
+                                except Exception as e:
+                                    logging.error(f"[Attention] 开播投递任务 room_id={room_id} 失败: {e}")
+                            logging.info(f"[{room_id}] 上播，开始时间 {start_dt:%F %T}")
 
                     LIVE_INFO.setdefault(room_id, {})
                     LIVE_INFO[room_id]["live_time"] = start_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -2710,9 +2769,13 @@ async def monitor_all_rooms_status():
                 else:
                     # 已下播/未开播
                     if prev == 1:
-                        duration_str = _finish_live_session(room_id, now)
+                        duration_str = _defer_live_session_finish(room_id, now)
                         if duration_str is not None:
-                            logging.info(f"[{room_id}] 下播，时长 {duration_str}")
+                            logging.info(
+                                "[%s] 检测到下播，进入三分钟宽限期，本段时长 %s",
+                                room_id,
+                                duration_str,
+                            )
                     _mark_room_offline(room_id)
 
         except Exception as e:
@@ -3103,7 +3166,8 @@ def get_live_sessions_by_room_month(request: Request):
                         total = int(cache.get("total", 0))
                         avg_concurrency = (total / samples) if samples > 0 else None
                         max_concurrency = int(cache.get("max", 0)) if samples > 0 else None
-                        current_concurrency = int(cache.get("last", 0)) if samples > 0 else None
+                        if LAST_STATUS.get(room_id, 0) == 1 and samples > 0:
+                            current_concurrency = int(cache.get("last", 0))
                 out.append({
                     "start_time": r.start_time.strftime("%Y-%m-%d %H:%M:%S"),
                     "end_time":   (r.end_time.strftime("%Y-%m-%d %H:%M:%S") if r.end_time else None),
