@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 import logging
 from typing import *
 
 from .clients import ws_base
-from .models import web as web_models, open_live as open_models
+from .models import open_live as open_models
+from .models import send_gift_v2, web as web_models
 
 __all__ = (
     'HandlerInterface',
@@ -11,6 +14,10 @@ __all__ = (
 )
 
 logger = logging.getLogger('blivedm')
+
+_interact_word_message_cls = getattr(web_models, 'InteractWordMessage', None)
+if _interact_word_message_cls is None:
+    logger.warning('legacy INTERACT_WORD model is unavailable; handler disabled')
 
 logged_unknown_cmds = {
     'COMBO_SEND',
@@ -79,6 +86,14 @@ class BaseHandler(HandlerInterface):
         message.is_mirror = True
         return self._on_open_live_danmaku(client, message)
 
+    def __send_gift_v2_callback(self, client: ws_base.WebSocketClientBase, command):
+        try:
+            message = send_gift_v2.SendGiftV2Message.from_command(command['data'])
+        except send_gift_v2.SendGiftV2DecodeError:
+            logger.warning('room=%d invalid SEND_GIFT_V2 payload', client.room_id)
+            return
+        return self._on_gift(client, message)
+
     _CMD_CALLBACK_DICT: Dict[
         str,
         Optional[Callable[
@@ -96,6 +111,7 @@ class BaseHandler(HandlerInterface):
         'DANMU_MSG_MIRROR': __danmu_msg_mirror_callback,
         # 礼物
         'SEND_GIFT': _make_msg_callback('_on_gift', web_models.GiftMessage),
+        'SEND_GIFT_V2': __send_gift_v2_callback,
         # 上舰
         'GUARD_BUY': _make_msg_callback('_on_buy_guard', web_models.GuardBuyMessage),
         # 另一个上舰消息
@@ -104,7 +120,11 @@ class BaseHandler(HandlerInterface):
         'SUPER_CHAT_MESSAGE': _make_msg_callback('_on_super_chat', web_models.SuperChatMessage),
         # 删除醒目留言
         'SUPER_CHAT_MESSAGE_DELETE': _make_msg_callback('_on_super_chat_delete', web_models.SuperChatDeleteMessage),
-        'INTERACT_WORD': _make_msg_callback('_on_interact_word', web_models.InteractWordMessage),
+        'INTERACT_WORD': (
+            _make_msg_callback('_on_interact_word', _interact_word_message_cls)
+            if _interact_word_message_cls is not None
+            else None
+        ),
         # 通知类弹幕（如特殊礼物）
         'COMMON_NOTICE_DANMAKU': _make_msg_callback('_on_common_notice_danmaku', web_models.CommonNoticeDanmakuMessage),
         # 进入房间、关注主播等互动消息
