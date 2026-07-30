@@ -6,7 +6,7 @@ from typing import *
 
 from .clients import ws_base
 from .models import open_live as open_models
-from .models import send_gift_v2, web as web_models
+from .models import web as web_models
 
 __all__ = (
     'HandlerInterface',
@@ -88,8 +88,8 @@ class BaseHandler(HandlerInterface):
 
     def __send_gift_v2_callback(self, client: ws_base.WebSocketClientBase, command):
         try:
-            message = send_gift_v2.SendGiftV2Message.from_command(command['data'])
-        except send_gift_v2.SendGiftV2DecodeError:
+            message = web_models.SendGiftV2Message.from_command(command['data'])
+        except web_models.SendGiftV2DecodeError:
             logger.warning('room=%d invalid SEND_GIFT_V2 payload', client.room_id)
             return
         return self._on_gift(client, message)
