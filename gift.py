@@ -525,6 +525,31 @@ def archive_attention(target_month: Optional[str] = None) -> int:
         start_date, end_date = month_range(month_code)
         table_name = ensure_attention_archive_table(month_code)
         try:
+            source_columns = {
+                col.get("name") for col in inspect(engine).get_columns("attention")
+            }
+            archive_columns = {
+                col.get("name") for col in inspect(engine).get_columns(table_name)
+            }
+            copy_columns = [
+                name
+                for name in (
+                    "room_id",
+                    "date",
+                    "attention",
+                    "guard_1",
+                    "guard_2",
+                    "guard_3",
+                    "fans_count",
+                )
+                if name in source_columns and name in archive_columns
+            ]
+            quoted_columns = ", ".join(f"`{name}`" for name in copy_columns)
+            update_clause = ", ".join(
+                f"`{name}` = VALUES(`{name}`)"
+                for name in copy_columns
+                if name not in ("room_id", "date")
+            )
             with engine.begin() as conn:
                 count = conn.execute(
                     text(
@@ -537,10 +562,11 @@ def archive_attention(target_month: Optional[str] = None) -> int:
                     continue
                 conn.execute(
                     text(
-                        f"INSERT IGNORE INTO `{table_name}` (room_id, `date`, attention) "
-                        "SELECT room_id, `date`, attention "
+                        f"INSERT INTO `{table_name}` ({quoted_columns}) "
+                        f"SELECT {quoted_columns} "
                         "FROM `attention` "
-                        "WHERE `date` >= :start_date AND `date` < :end_date"
+                        "WHERE `date` >= :start_date AND `date` < :end_date "
+                        f"ON DUPLICATE KEY UPDATE {update_clause}"
                     ),
                     {"start_date": start_date, "end_date": end_date},
                 )
@@ -618,11 +644,15 @@ class RoomInfo(Base):
             session.close()
 
 class Attention(Base):
-    """每日粉丝数快照；主键：room_id + date"""
+    """每日粉丝数、守护与粉丝团快照；主键：room_id + date"""
     __tablename__ = "attention"
     room_id = Column(Integer, nullable=False)
     date = Column(Date, nullable=False)
     attention = Column(Integer, default=0, nullable=False)
+    guard_1 = Column(Integer, default=0, nullable=False)
+    guard_2 = Column(Integer, default=0, nullable=False)
+    guard_3 = Column(Integer, default=0, nullable=False)
+    fans_count = Column(Integer, default=0, nullable=False)
     __table_args__ = (
         PrimaryKeyConstraint("room_id", "date", name="pk_attention_room_date"),
         Index("idx_attention_date", "date"),
@@ -644,6 +674,54 @@ class Attention(Base):
         except SQLAlchemyError as e:
             session.rollback()
             logging.error(f"[Attention] upsert_daily 失败: {e}")
+        finally:
+            session.close()
+
+    @classmethod
+    def upsert_daily_guards(
+        cls,
+        room_id: int,
+        date_value: datetime.date,
+        guard_values: tuple[int, int, int],
+    ):
+        guard_1, guard_2, guard_3 = guard_values
+        session = Session()
+        try:
+            stmt = insert(cls).values(
+                room_id=room_id,
+                date=date_value,
+                guard_1=guard_1,
+                guard_2=guard_2,
+                guard_3=guard_3,
+            ).on_duplicate_key_update(
+                guard_1=guard_1,
+                guard_2=guard_2,
+                guard_3=guard_3,
+            )
+            session.execute(stmt)
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[Attention] upsert_daily_guards 失败: {e}")
+        finally:
+            session.close()
+
+    @classmethod
+    def upsert_daily_fans(cls, room_id: int, date_value: datetime.date, fans_count: int):
+        session = Session()
+        try:
+            stmt = insert(cls).values(
+                room_id=room_id,
+                date=date_value,
+                fans_count=int(fans_count),
+            ).on_duplicate_key_update(
+                fans_count=int(fans_count),
+            )
+            session.execute(stmt)
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"[Attention] upsert_daily_fans 失败: {e}")
         finally:
             session.close()
 
@@ -1475,6 +1553,19 @@ RECONNECT_DAILY_STATE = {"date": None, "done": set()}  # 保留占位，不再�
 def _now():
     return datetime.datetime.now()
 
+def _next_daily_target(now: datetime.datetime, hour: int, minute: int) -> datetime.datetime:
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now >= target:
+        target += datetime.timedelta(days=1)
+    return target
+
+async def _sleep_until(target: datetime.datetime):
+    while True:
+        remaining = (target - _now()).total_seconds()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(remaining)
+
 def _seconds_to_hms(sec: int) -> str:
     h, r = divmod(sec, 3600)
     m, s = divmod(r, 60)
@@ -1800,6 +1891,9 @@ LOCKED_ROOM_UNTIL: Dict[int, int] = {}
 GUARD_FANS_QUEUE: "asyncio.Queue[tuple[int, Optional[int], Optional[str]]]" = asyncio.Queue()
 # 粉丝数获取任务队列：phase in (None, "start", "end")
 ATTENTION_QUEUE: "asyncio.Queue[tuple[int, Optional[int], Optional[str], datetime.date]]" = asyncio.Queue()
+DAILY_ATTENTION_QUEUE: "asyncio.Queue[tuple[int, datetime.date]]" = asyncio.Queue()
+DAILY_GUARD_QUEUE: "asyncio.Queue[tuple[int, datetime.date]]" = asyncio.Queue()
+DAILY_FANS_QUEUE: "asyncio.Queue[tuple[int, datetime.date]]" = asyncio.Queue()
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -2245,6 +2339,15 @@ async def attention_worker():
         finally:
             ATTENTION_QUEUE.task_done()
 
+async def daily_attention_worker():
+    while True:
+        room_id, target_date = await DAILY_ATTENTION_QUEUE.get()
+        try:
+            await _fetch_room_info_and_update(room_id, update_uid=False)
+            Attention.upsert_daily(room_id, target_date, _read_room_attention(room_id))
+        finally:
+            DAILY_ATTENTION_QUEUE.task_done()
+
 async def init_uids_and_attention_once(max_rounds: int = 5):
     """
     首次启动时：通过 get_info 拉取所有房间的 uid + 粉丝数。
@@ -2426,7 +2529,6 @@ async def guard_fans_worker():
             continue
 
         try:
-            # 1) 守护数量
             guard_vals = None
             try:
                 guard_vals = await _fetch_guard_counts(uid, room_id)
@@ -2458,7 +2560,6 @@ async def guard_fans_worker():
 
             await asyncio.sleep(1.0)
 
-            # 2) 粉丝团数量
             fans = None
             try:
                 fans = await _fetch_fans_count(uid, room_id)
@@ -2482,6 +2583,43 @@ async def guard_fans_worker():
             await asyncio.sleep(1.0)
         finally:
             GUARD_FANS_QUEUE.task_done()
+
+async def daily_guard_worker():
+    while True:
+        room_id, target_date = await DAILY_GUARD_QUEUE.get()
+        try:
+            uid = ROOM_UIDS.get(room_id)
+            if uid is None:
+                logging.warning(f"[Guard] room_id={room_id} 未找到 uid，跳过每日快照")
+                continue
+            guard_values = await _fetch_guard_counts(uid, room_id)
+            if guard_values is not None:
+                guard_1, guard_2, guard_3 = guard_values
+                GUARD_COUNTS[room_id] = {
+                    "guard_1": guard_1,
+                    "guard_2": guard_2,
+                    "guard_3": guard_3,
+                }
+                Attention.upsert_daily_guards(room_id, target_date, guard_values)
+            await asyncio.sleep(1.0)
+        finally:
+            DAILY_GUARD_QUEUE.task_done()
+
+async def daily_fans_worker():
+    while True:
+        room_id, target_date = await DAILY_FANS_QUEUE.get()
+        try:
+            uid = ROOM_UIDS.get(room_id)
+            if uid is None:
+                logging.warning(f"[Fans] room_id={room_id} 未找到 uid，跳过每日快照")
+                continue
+            fans_count = await _fetch_fans_count(uid, room_id)
+            if fans_count is not None:
+                FANS_COUNT[room_id] = fans_count
+                Attention.upsert_daily_fans(room_id, target_date, fans_count)
+            await asyncio.sleep(1.0)
+        finally:
+            DAILY_FANS_QUEUE.task_done()
 
 async def danmaku_flush_scheduler():
     """
@@ -2523,24 +2661,39 @@ async def refresh_attention_scheduler():
 
 async def attention_daily_scheduler():
     """
-    每天 00:01:00 记录所有房间粉丝数到 attention 表（按 room_id + date 幂等覆盖）。
+    每天 06:30:00 记录所有房间粉丝数到 attention 表（按 room_id + date 幂等覆盖）。
     """
     while True:
-        now = _now()
-        target = now.replace(hour=0, minute=1, second=0, microsecond=0)
-        if now >= target:
-            target += datetime.timedelta(days=1)
-        sleep_sec = max(1.0, (target - now).total_seconds())
-        await asyncio.sleep(sleep_sec)
+        target = _next_daily_target(_now(), 6, 30)
+        await _sleep_until(target)
 
         snapshot_date = target.date()
         logging.info(f"[Attention] 开始每日快照任务，date={snapshot_date}")
         for room_id in get_room_ids():
-            try:
-                await ATTENTION_QUEUE.put((room_id, None, None, snapshot_date))
-            except Exception as e:
-                logging.error(f"[Attention] 每日快照投递失败 room_id={room_id}: {e}")
+            await DAILY_ATTENTION_QUEUE.put((room_id, snapshot_date))
             await asyncio.sleep(max(0.0, ATTENTION_DAILY_ROOM_SLEEP_SECONDS))
+
+async def guard_daily_scheduler():
+    while True:
+        target = _next_daily_target(_now(), 6, 40)
+        await _sleep_until(target)
+
+        snapshot_date = target.date()
+        logging.info(f"[Attention] 开始每日守护快照任务，date={snapshot_date}")
+        for room_id in get_room_ids():
+            await DAILY_GUARD_QUEUE.put((room_id, snapshot_date))
+            await asyncio.sleep(0.1)
+
+async def fans_daily_scheduler():
+    while True:
+        target = _next_daily_target(_now(), 6, 50)
+        await _sleep_until(target)
+
+        snapshot_date = target.date()
+        logging.info(f"[Attention] 开始每日粉丝团快照任务，date={snapshot_date}")
+        for room_id in get_room_ids():
+            await DAILY_FANS_QUEUE.put((room_id, snapshot_date))
+            await asyncio.sleep(0.1)
 
 async def guard_fans_refresh_scheduler():
     """
@@ -2849,28 +3002,73 @@ async def bili_ticket_scheduler():
         except Exception as e:
             logging.error(f"[bili_ticket] 定时刷新失败: {e}")
 
-# ------------------ 月底清零（无操作以保留全部历史） ------------------
+async def _archive_month(target_month: Optional[str] = None):
+    await asyncio.gather(
+        asyncio.to_thread(archive_super_chat_log, target_month),
+        asyncio.to_thread(archive_live_session, target_month),
+        asyncio.to_thread(archive_room_live_stats, target_month),
+        asyncio.to_thread(archive_attention, target_month),
+    )
+
 async def monthly_reset_scheduler():
-    last_month = None
+    startup_now = _now()
+    startup_month = month_str(startup_now)
+    if startup_now.month == 12:
+        first_target = startup_now.replace(
+            year=startup_now.year + 1,
+            month=1,
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+    else:
+        first_target = startup_now.replace(
+            month=startup_now.month + 1,
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+
+    if (first_target - startup_now).total_seconds() <= 60:
+        await _sleep_until(first_target)
+        await _archive_month(startup_month)
+        await _archive_month()
+    else:
+        await _archive_month()
+        if month_str() != startup_month:
+            await _archive_month(startup_month)
+
     while True:
         now = _now()
-        current_month = month_str(now)
-        if last_month is None:
-            last_month = current_month
-            await asyncio.to_thread(archive_super_chat_log)
-            await asyncio.to_thread(archive_live_session)
-            await asyncio.to_thread(archive_room_live_stats)
-            await asyncio.to_thread(archive_attention)
-        elif current_month != last_month:
-            await asyncio.to_thread(archive_super_chat_log, last_month)
-            await asyncio.to_thread(archive_live_session, last_month)
-            await asyncio.to_thread(archive_room_live_stats, last_month)
-            await asyncio.to_thread(archive_attention, last_month)
-            last_month = current_month
+        if now.month == 12:
+            target = now.replace(
+                year=now.year + 1,
+                month=1,
+                day=1,
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
         else:
-            await asyncio.to_thread(archive_live_session)
-            await asyncio.to_thread(archive_attention)
-        await asyncio.sleep(60)
+            target = now.replace(
+                month=now.month + 1,
+                day=1,
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+
+        await _sleep_until(target)
+        previous_month = month_str(target - datetime.timedelta(days=1))
+        drift_seconds = max(0.0, (_now() - target).total_seconds())
+        logging.info(f"[archive] 月切触发，month={previous_month} drift={drift_seconds:.3f}s")
+        await _archive_month(previous_month)
 
 # 主入口
 async def main():
@@ -2889,8 +3087,13 @@ async def main():
             reconnect_scheduler(),           # 每日 6:00 全量重连
             refresh_attention_scheduler(),   # 每 3 小时刷新关注数（attention）
             attention_worker(),             # 粉丝数任务 worker（开播/下播+每日快照）
-            attention_daily_scheduler(),    # 每日 00:01 粉丝数快照
+            daily_attention_worker(),
+            attention_daily_scheduler(),
+            guard_daily_scheduler(),
+            fans_daily_scheduler(),
             guard_fans_worker(),             # 守护 + 粉丝团队列 worker
+            daily_guard_worker(),
+            daily_fans_worker(),
             guard_fans_refresh_scheduler(),  # 未开播房间每小时刷新守护 + 粉丝团
             bili_ticket_scheduler(),         # 每日 5:00 刷新 bili_ticket
             danmaku_flush_scheduler(),
@@ -3289,7 +3492,7 @@ def get_live_sessions_by_room_month(request: Request):
 @app.get("/gift/attention")
 def get_attention_logs(request: Request):
     """
-    粉丝数日快照查询：
+    粉丝数、守护与粉丝团日快照查询：
       GET /gift/attention?room_id=1111&month=202603
     month 为空时返回当前月数据；无数据返回 attention: []
     """
@@ -3309,12 +3512,18 @@ def get_attention_logs(request: Request):
         m = month_str()
 
     start_date, end_date = month_range(m)
-    out: list[dict[str, str]] = []
     session = Session()
     try:
         if is_current_month(m):
             rows = (
-                session.query(Attention.date, Attention.attention)
+                session.query(
+                    Attention.date,
+                    Attention.attention,
+                    Attention.guard_1,
+                    Attention.guard_2,
+                    Attention.guard_3,
+                    Attention.fans_count,
+                )
                 .filter(
                     and_(
                         Attention.room_id == room_id,
@@ -3325,22 +3534,34 @@ def get_attention_logs(request: Request):
                 .order_by(Attention.date.asc())
                 .all()
             )
-            out.extend({d.strftime("%Y%m%d"): str(int(v or 0))} for d, v in rows)
         else:
             table_name = attention_table_name(m)
             if sc_log_table_exists(table_name):
+                archive_columns = {
+                    col.get("name") for col in inspect(engine).get_columns(table_name)
+                }
+                metric_select = ", ".join(
+                    f"`{name}`" if name in archive_columns else f"NULL AS `{name}`"
+                    for name in ("guard_1", "guard_2", "guard_3", "fans_count")
+                )
                 rows = session.execute(
                     text(
-                        f"SELECT `date`, attention FROM `{table_name}` "
+                        f"SELECT `date`, attention, {metric_select} FROM `{table_name}` "
                         "WHERE room_id = :room_id AND `date` >= :start_date AND `date` < :end_date "
                         "ORDER BY `date` ASC"
                     ),
                     {"room_id": room_id, "start_date": start_date, "end_date": end_date},
                 ).fetchall()
-                out.extend({row[0].strftime("%Y%m%d"): str(int(row[1] or 0))} for row in rows)
             else:
                 rows = (
-                    session.query(Attention.date, Attention.attention)
+                    session.query(
+                        Attention.date,
+                        Attention.attention,
+                        Attention.guard_1,
+                        Attention.guard_2,
+                        Attention.guard_3,
+                        Attention.fans_count,
+                    )
                     .filter(
                         and_(
                             Attention.room_id == room_id,
@@ -3351,7 +3572,17 @@ def get_attention_logs(request: Request):
                     .order_by(Attention.date.asc())
                     .all()
                 )
-                out.extend({d.strftime("%Y%m%d"): str(int(v or 0))} for d, v in rows)
+        out = [
+            {
+                "date": str(row[0]).replace("-", ""),
+                "attention": str(int(row[1] or 0)),
+                "guard_1": None if row[2] in (None, "") else int(row[2]),
+                "guard_2": None if row[3] in (None, "") else int(row[3]),
+                "guard_3": None if row[4] in (None, "") else int(row[4]),
+                "fans_count": None if row[5] in (None, "") else int(row[5]),
+            }
+            for row in rows
+        ]
         payload = {"room_id": room_id, "month": m, "attention": out}
         return JSONResponse(content=jsonable_encoder(payload))
     except SQLAlchemyError as e:

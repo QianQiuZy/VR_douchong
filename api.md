@@ -205,7 +205,7 @@
 
 ## 6. GET /gift/attention
 
-**说明**：查询指定房间在某月的每日粉丝数（attention）快照。
+**说明**：查询指定房间在某月的每日粉丝数、舰长、提督、总督和粉丝团人数快照。
 
 **请求方式**：`GET`
 
@@ -224,20 +224,42 @@
 | --- | --- | --- |
 | room_id | int | 房间号。 |
 | month | string | 月份（`YYYYMM`）。 |
-| attention | array | 当月每日粉丝数快照列表。无数据时返回 `[]`。 |
+| attention | array | 当月每日数据快照列表。无数据时返回 `[]`。 |
 
 `attention` 元素格式：
 
-- 每个元素是一个对象，键为 `YYYYMMDD`，值为对应日期粉丝数（字符串）。
-- 示例：
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| date | string | 日期，格式为 `YYYYMMDD`。 |
+| attention | string | 当日粉丝数。 |
+| guard_1 | int / null | 当日舰长数；历史归档表缺少该字段或字段为空时返回 `null`。 |
+| guard_2 | int / null | 当日提督数；历史归档表缺少该字段或字段为空时返回 `null`。 |
+| guard_3 | int / null | 当日总督数；历史归档表缺少该字段或字段为空时返回 `null`。 |
+| fans_count | int / null | 当日粉丝团人数；历史归档表缺少该字段或字段为空时返回 `null`。 |
+
+示例：
 
 ```json
 {
   "room_id": 1820703922,
   "month": "202603",
   "attention": [
-    {"20260301": "111"},
-    {"20260302": "112"}
+    {
+      "date": "20260301",
+      "attention": "111",
+      "guard_1": 10,
+      "guard_2": 2,
+      "guard_3": 1,
+      "fans_count": 1234
+    },
+    {
+      "date": "20260302",
+      "attention": "112",
+      "guard_1": null,
+      "guard_2": null,
+      "guard_3": null,
+      "fans_count": null
+    }
   ]
 }
 ```
