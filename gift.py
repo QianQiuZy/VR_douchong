@@ -2671,7 +2671,7 @@ async def attention_daily_scheduler():
         logging.info(f"[Attention] 开始每日快照任务，date={snapshot_date}")
         for room_id in get_room_ids():
             await DAILY_ATTENTION_QUEUE.put((room_id, snapshot_date))
-            await asyncio.sleep(max(0.0, ATTENTION_DAILY_ROOM_SLEEP_SECONDS))
+            await asyncio.sleep(ATTENTION_DAILY_ROOM_SLEEP_SECONDS)
 
 async def guard_daily_scheduler():
     while True:
@@ -2682,7 +2682,7 @@ async def guard_daily_scheduler():
         logging.info(f"[Attention] 开始每日守护快照任务，date={snapshot_date}")
         for room_id in get_room_ids():
             await DAILY_GUARD_QUEUE.put((room_id, snapshot_date))
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(ATTENTION_DAILY_ROOM_SLEEP_SECONDS)
 
 async def fans_daily_scheduler():
     while True:
@@ -2693,7 +2693,7 @@ async def fans_daily_scheduler():
         logging.info(f"[Attention] 开始每日粉丝团快照任务，date={snapshot_date}")
         for room_id in get_room_ids():
             await DAILY_FANS_QUEUE.put((room_id, snapshot_date))
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(ATTENTION_DAILY_ROOM_SLEEP_SECONDS)
 
 async def guard_fans_refresh_scheduler():
     """
