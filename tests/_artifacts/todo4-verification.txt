@@ -1,0 +1,77 @@
+Todo 4 physical-extraction verification receipt
+
+Current-tree inventory command:
+  git status --short
+
+Current-tree inventory result:
+  Modified tracked: .env.example, .gitignore, LICENSE, api.md, blivedm/handlers.py,
+  blivedm/models/pb.py, blivedm/models/web.py, gift.py, migrate_sc_archive.py,
+  psp_rooms.json, readme.md, requirements.txt, rooms.json.
+  Untracked: .omo/, bilibili_gateway.py, config.py, database.py, event_ingestion.py,
+  models/, monitoring_jobs.py, repositories/, room_config.py, room_lifecycle.py,
+  runtime_state.py, tests/.
+
+Todo 4 extracted Python module inventory:
+- bilibili_gateway.py
+- event_ingestion.py
+- monitoring_jobs.py
+- config.py
+- database.py
+- runtime_state.py
+- room_config.py
+- room_lifecycle.py
+- models/
+- repositories/
+
+Todo 4 contract/replay test inventory:
+- tests/test_todo4_module_contract.py
+- tests/test_todo4_extraction_contract.py
+- tests/test_todo4_offline_replay.py
+- tests/test_import_contract.py
+- tests/test_room_lifecycle_contract.py
+
+Intentional gift.py ownership after Todo 4:
+- archive and monthly-reset orchestration
+- mail callback wiring
+- FastAPI API routes and authentication
+- launcher/main startup composition
+- room-lifecycle facade and compatibility aliases/re-exports
+No event handler, gateway/session/ticket/fetch, client/reconnect, queue worker,
+monitoring scheduler, or `_legacy_*` implementation remains in gift.py.
+
+1. python3 -m pytest tests/ -q
+   Result: 146 passed, 1 warning in 0.77s
+   Warning: StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated; install httpx2 instead.
+
+2. python3 -m pytest tests/ -q
+   Result: 146 passed, 1 warning in 0.77s
+   Warning: StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated; install httpx2 instead.
+
+3. python3 -m py_compile gift.py migrate_sc_archive.py bilibili_gateway.py event_ingestion.py monitoring_jobs.py room_lifecycle.py
+   Result: command completed with no output and exit status 0.
+
+4. ENV_FILE=tests/_fixtures/empty.env ROOMS_JSON_PATH=tests/_fixtures/rooms.json python3 -c "import sqlalchemy; from sqlalchemy.sql import schema; schema.MetaData.create_all=lambda *args, **kwargs: None; sqlalchemy.inspect=lambda target: (_ for _ in ()).throw(Exception('DDL/network blocked')); import gift; print('controlled import ok')"
+   Result: controlled import ok
+   The command blocks metadata DDL and engine inspection before import.
+
+5. python3 -m pytest tests/test_todo4_offline_replay.py -q
+   Result: 4 passed in 0.15s
+   Coverage: offline gift, guard, super-chat, mapped common-notice, danmaku, malformed/unknown containment, failed HTTP, worker cancellation, and queue cleanup.
+
+6. python3 -c "import ast; from pathlib import Path; root=Path('.'); extracted=('bilibili_gateway.py','event_ingestion.py','monitoring_jobs.py'); assert all('import gift' not in (root / name).read_text(encoding='utf-8') for name in extracted); tree=ast.parse((root / 'gift.py').read_text(encoding='utf-8')); forbidden=[node.name for node in tree.body if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)) and (node.name.startswith('_legacy_') or node.name == '_LegacyMyHandler')]; assert not forbidden, forbidden; print('no import gift in extracted modules; no _LegacyMyHandler or _legacy_* implementations in gift.py')"
+   Result: no import gift in extracted modules; no _LegacyMyHandler or _legacy_* implementations in gift.py
+
+7. LSP error diagnostics:
+   - bilibili_gateway.py: No diagnostics found
+   - event_ingestion.py: No diagnostics found
+   - monitoring_jobs.py: No diagnostics found
+   - room_lifecycle.py: No diagnostics found
+   - tests/test_todo4_offline_replay.py: No diagnostics found
+
+Unrelated legacy diagnostics:
+   gift.py retains pre-existing diagnostics in email callback and FastAPI/archive route code: mutable uppercase globals, unparameterized Future/dict annotations, Optional payload values crossing route boundaries, and SQLAlchemy Column typing. The deleted monitoring/gateway/handler legacy bodies are not present. No extracted module or Todo 4 test has an error diagnostic.
+
+Cleanup receipt:
+   `git status --short` above is the dirty-worktree proof. No commit was created.
+   This receipt update did not modify .env, bundled blivedm, requirements, or the
+   pre-existing tracked documentation/configuration changes listed above.

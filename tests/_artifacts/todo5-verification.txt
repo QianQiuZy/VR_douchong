@@ -1,0 +1,142 @@
+Todo 5 verification record
+==========================
+
+Scope inspected
+---------------
+- `api_app.py` physically owns the seven FastAPI routes:
+  `/add/room`, `/delete/room`, `/gift`, `/gift/by_month`,
+  `/gift/live_sessions`, `/gift/attention`, and `/gift/sc`.
+- `archive_service.py` physically owns `archive_super_chat_log`,
+  `archive_live_session`, `archive_room_live_stats`, and
+  `archive_attention`.
+- `gift.py` only wires/re-exports these symbols; it contains no active
+  route or archive implementation bodies.
+- `migrate_sc_archive.py` continues to import and call exactly
+  `archive_super_chat_log`, `archive_live_session`, and
+  `archive_room_live_stats`; `archive_attention` remains scheduler-only.
+
+Commands and results
+--------------------
+1. Baseline before Todo 5 verification:
+   `python3 -m pytest tests/ -q`
+   Result: `172 passed, 1 warning in 0.92s`.
+
+2. FastAPI fixture QA (all seven routes, malformed auth/query input, and
+   missing archive fallbacks):
+   `python3 -m pytest tests/test_routes_contract.py -q`
+   Result: `36 passed, 1 warning in 0.32s`.
+
+3. Archive and CLI fixture QA:
+   `python3 -m pytest tests/test_archive_cli_contract.py -q`
+   Result: `15 passed in 0.16s`.
+
+4. Physical ownership, compatibility, and circular-import QA:
+   `python3 -m pytest tests/test_todo5_extraction_contract.py tests/test_import_contract.py -q`
+   Result: `49 passed in 0.36s`.
+
+5. Python compile check:
+   `python3 -m py_compile gift.py api_app.py archive_service.py bootstrap.py migrate_sc_archive.py`
+   Result: passed (no output).
+
+6. Controlled fixture import with DDL/reflection/network blocked:
+   `ENV_FILE="tests/_fixtures/empty.env" ROOMS_JSON_PATH="tests/_fixtures/rooms.json" python3 -c "import sqlalchemy; from sqlalchemy.sql import schema; schema.MetaData.create_all=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('DDL blocked')); sqlalchemy.inspect=lambda _target: (_ for _ in ()).throw(AssertionError('network/reflection blocked')); import gift; assert gift.app is not None; print('controlled fixture import passed; DDL/network blocked')"`
+   Result: `controlled fixture import passed; DDL/network blocked`.
+
+7. Static ownership/circular-import check:
+   `python3 -c "import ast; from pathlib import Path; root=Path('.'); extracted=('api_app.py','archive_service.py','bootstrap.py','bilibili_gateway.py','event_ingestion.py','monitoring_jobs.py','room_config.py','room_lifecycle.py'); assert all('import gift' not in (root / name).read_text(encoding='utf-8') for name in extracted); gift=ast.parse((root/'gift.py').read_text(encoding='utf-8')); names={node.name for node in gift.body if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef))}; assert not names & {'archive_super_chat_log','archive_live_session','archive_room_live_stats','archive_attention','add_room_api','delete_room_api','get_stats_current_month','get_stats_by_month','get_live_sessions_by_room_month','get_attention_logs','get_sc_logs'}; print('static ownership/circular-import checks passed')"`
+   Result: `static ownership/circular-import checks passed`.
+
+8. Full suite after verification, run twice:
+   `python3 -m pytest tests/ -q && python3 -m pytest tests/ -q`
+   Result: first run `172 passed, 1 warning in 0.86s`; second run
+   `172 passed, 1 warning in 0.84s`.
+
+9. LSP diagnostics:
+   `lsp_diagnostics /mnt/c/Users/wxy/Documents/github/VR_douchong`
+   Result: attempted twice; both attempts timed out because the external
+   LSP daemon socket `/home/wxy/.codex/codex-lsp/daemon/v0.1.0/daemon.sock`
+   was unreachable. No source diagnostics were returned.
+
+Cleanup
+-------
+- No real `.env` was read, printed, or modified; controlled import used
+  `tests/_fixtures/empty.env`.
+- No network or DDL was allowed during the controlled import.
+- No files under `blivedm`, `requirements.txt`, or unrelated pre-existing
+  dirty tracked files were modified.
+- No commit was created.
+
+Diagnostic repair follow-up
+---------------------------
+The introduced Todo 5 diagnostics were repaired without changing route or
+archive contracts:
+
+- `RoomPayload` now describes the JSON-compatible legacy mutation payload.
+  Route parsing still returns the same validation messages.
+- Add/delete routes narrow parsed nullable values before invoking the
+  main-loop bridge.
+- Response formatting handles SQLAlchemy's class-level `Column` type versus
+  runtime scalar values without casts, ignores, or `Any` additions.
+- The cookie-alert flag has one mutable canonical state in `gift.py`; module
+  `__getattr__` preserves `gift.COOKIE_ALERT_SENT` compatibility without
+  reassigning an uppercase constant.
+
+Commands and results for the repair:
+
+1. Baseline:
+   `python3 -m pytest tests/ -q`
+   Result: `172 passed, 1 warning in 0.87s`.
+
+2. Type diagnostics:
+   `basedpyright api_app.py gift.py`
+   Result: `0 errors, 214 warnings, 0 notes`.
+   `lsp_diagnostics api_app.py` and `lsp_diagnostics gift.py` also reported
+   warnings only, with no error diagnostics. Remaining warnings are existing
+   compatibility-facade imports, legacy `Optional`/`Tuple` annotations,
+   dynamic `gift` compatibility resolution, and untyped legacy SQLAlchemy
+   models; they were outside this diagnostic-only repair scope.
+
+3. Route/import regression QA:
+   `python3 -m pytest tests/test_routes_contract.py tests/test_import_contract.py -q`
+   Result: `59 passed, 1 warning in 0.46s`.
+
+4. Route/archive/ownership regression QA:
+   `python3 -m pytest tests/test_routes_contract.py tests/test_archive_cli_contract.py tests/test_todo5_extraction_contract.py tests/test_import_contract.py -q`
+   Result: `100 passed, 1 warning in 0.72s`.
+
+5. Compile and ownership checks:
+   `python3 -m py_compile api_app.py gift.py archive_service.py bootstrap.py migrate_sc_archive.py`
+   followed by the existing static ownership/circular-import assertion.
+   Result: `compile and static ownership checks passed`.
+
+6. Full suite after repair, run twice:
+   `python3 -m pytest tests/ -q && python3 -m pytest tests/ -q`
+   Result: first run `172 passed, 1 warning in 0.95s`; second run
+   `172 passed, 1 warning in 0.92s`.
+
+AST test diagnostic follow-up
+----------------------------
+`tests/test_todo5_extraction_contract.py` now narrows an `ast.Constant`
+literal to `str` before recording the route tuple. This preserves the
+ownership test's route-only behavior and removes the tuple value type error
+without a cast, ignore, or `Any`.
+
+Commands and results:
+
+1. `basedpyright api_app.py gift.py tests/test_todo5_extraction_contract.py`
+   Result: `0 errors, 324 warnings, 0 notes`. The warnings are the existing
+   compatibility and legacy-model diagnostics recorded above.
+
+2. `python3 -m py_compile api_app.py gift.py tests/test_todo5_extraction_contract.py`
+   Result: passed (no output).
+
+3. `python3 -m pytest tests/test_routes_contract.py tests/test_archive_cli_contract.py tests/test_todo5_extraction_contract.py tests/test_import_contract.py -q`
+   Result: `100 passed, 1 warning in 0.82s`.
+
+4. `python3 -m pytest tests/ -q && python3 -m pytest tests/ -q`
+   Result: first run `172 passed, 1 warning in 1.04s`; second run
+   `172 passed, 1 warning in 0.88s`.
+
+5. LSP diagnostics on `api_app.py`, `gift.py`, and
+   `tests/test_todo5_extraction_contract.py` returned warnings only; no
+   error diagnostics were reported.

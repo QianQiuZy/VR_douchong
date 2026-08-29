@@ -1,0 +1,35 @@
+{
+  "task": "6",
+  "status": "pass",
+  "generated_at": "2026-08-29T14:11:41+08:00",
+  "worktree_fingerprint": "layout worktree: root main.py; production app/; root .env and rooms.json; pre-existing tracked changes preserved",
+  "production_layout": {
+    "root_production_python_surface": ["main.py"],
+    "application_package": "app/",
+    "root_data_files": [".env", "rooms.json"],
+    "module_cli": "python -m app.migrate_sc_archive"
+  },
+  "path_contract": {
+    "default_env_file": "repository-root/.env",
+    "default_rooms_json": "repository-root/rooms.json",
+    "explicit_env_file_override": "preserved",
+    "explicit_rooms_json_path_override": "preserved",
+    "other_cwd_controlled_import": "pass"
+  },
+  "verification": {
+    "baseline_pytest": "172 passed, 1 warning in 0.93s",
+    "pytest_runs": [
+      "173 passed, 1 warning in 0.87s",
+      "173 passed, 1 warning in 0.90s"
+    ],
+    "compileall": "python3 -m compileall -q app main.py: pass",
+    "controlled_import": "python3 -c 'import app': pass; fixture overrides and DDL/network launch hooks blocked",
+    "controlled_main_launcher": "pass; DDL/network launch hooks blocked",
+    "migration_help": "pass",
+    "root_layout_scan": "pass",
+    "stale_import_scan": "pass",
+    "basedpyright": "0 errors, 8 pre-existing runtime_state warnings",
+    "lsp_changed_files": "no diagnostics"
+  },
+  "secrets": "No .env values, credentials, cookies, API secrets, or raw responses were read or persisted."
+}

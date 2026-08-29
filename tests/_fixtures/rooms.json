@@ -1,0 +1,10 @@
+{
+  "room_ids": [
+    111111,
+    222222
+  ],
+  "room_anchors": {
+    "111111": "TestAnchorAlpha",
+    "222222": "TestAnchorBeta"
+  }
+}

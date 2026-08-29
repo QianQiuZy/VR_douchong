@@ -1,0 +1,39 @@
+Todo 6 direct Bilibili gateway smoke (sanitized)
+Overall: BLOCKED
+
+Recency anchor
+- Generated: `2026-08-29T09:54:27+08:00`.
+- Current-worktree reference: `git status --short` at generation returned the 13 pre-existing modified tracked paths `.env.example`, `.gitignore`, `LICENSE`, `api.md`, `blivedm/handlers.py`, `blivedm/models/pb.py`, `blivedm/models/web.py`, `gift.py`, `migrate_sc_archive.py`, `psp_rooms.json`, `readme.md`, `requirements.txt`, and `rooms.json`; and the pre-existing untracked roots `.omo/`, `api_app.py`, `archive_service.py`, `bilibili_gateway.py`, `bootstrap.py`, `config.py`, `database.py`, `event_ingestion.py`, `models/`, `monitoring_jobs.py`, `repositories/`, `room_config.py`, `room_lifecycle.py`, `runtime_state.py`, and `tests/`.
+- This is a path-only, sanitized fingerprint; no file contents or secrets were captured.
+
+Scope and ownership
+- ENV_FILE=.env was used; only readability/non-emptiness was checked. No environment value was read, printed, or persisted.
+- Session initialization was called directly as bilibili_gateway.init_session().
+- Static ownership checks passed: bilibili_gateway.py was the resolved module; init_session, fetch_room_info_and_update, and fetch_room_init are owned by bilibili_gateway; gift was absent from sys.modules.
+- No legacy gift.py entry point was invoked. No database helper or fetch_room_info_and_update() call was used (that helper may upsert RoomInfo).
+
+Live read-only probe
+- Requested room: 80397 (preferred room; no fallback required).
+- Sanitized command: ENV_FILE=.env python - [ephemeral direct aiohttp smoke: init extracted session; GET ROOM_INFO_API(room_id=80397); GET ROOM_INIT_API(id=80397); would GET LIVE_STATUS_API(uids[]=uid derived from room-info); finally close session and reset runtime_state.aiohttp_session].
+- Initial strict JSON parsing stopped at room-info with ContentTypeError. Retry allowing a non-JSON content type stopped with JSONDecodeError. Neither attempt persisted a body, header, cookie, token, or API secret.
+- HTTP-only retry (same extracted session, same read-only endpoints): room_info HTTP 412; room_init HTTP 412.
+- Bilibili response code, payload structural keys, derived uid, room_id/uid consistency, and status-by-uid could not be verified: the HTTP 412 responses were not parseable as Bilibili JSON, so no uid was available for a status-by-uid request.
+- Live result: BLOCKED (not a PASS).
+
+Cleanup
+- Every probe used a finally block: session_closed=true and runtime_session_reset=true.
+- Post-probe project Python process audit: NONE.
+
+Offline and controlled checks
+- python -m pytest -q (run 1): 172 passed, 1 warning, 0.96s.
+- python -m pytest -q (run 2): 172 passed, 1 warning, 0.94s.
+- python -m py_compile gift.py api_app.py archive_service.py bootstrap.py event_ingestion.py monitoring_jobs.py bilibili_gateway.py room_config.py runtime_state.py room_lifecycle.py database.py config.py migrate_sc_archive.py: PASS.
+- python -m pytest tests/test_import_contract.py tests/test_todo5_extraction_contract.py -q: 49 passed, 0.33s. This is the controlled no-DDL import/static-extraction check.
+
+Prior full-service result (separate from this gateway smoke)
+- BLOCKED: service startup did not reach a listener because schema bootstrap hit database authentication failure.
+- Sanitized classes: pymysql.err.OperationalError; authentication-denied; sqlalchemy.exc.OperationalError.
+- This prior full-service DB-auth failure is recorded as BLOCKED, never as live-gateway success.
+
+Secret handling
+- No cookie, API secret, database credential, raw request/response header, raw body, or raw log was saved in this artifact.

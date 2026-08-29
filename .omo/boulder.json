@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "active_work_id": "vr-douchong-modularization-assessment",
+  "works": {
+    "vr-douchong-modularization-assessment": {
+      "work_id": "vr-douchong-modularization-assessment",
+      "active_plan": ".omo/plans/vr-douchong-modularization-assessment.md",
+      "plan_name": "vr-douchong-modularization-assessment",
+      "session_ids": ["codex:vr-douchong-modularization-session"],
+      "status": "active",
+      "worktree_path": null
+    }
+  }
+}

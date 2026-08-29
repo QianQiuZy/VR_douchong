@@ -1,0 +1,1155 @@
+{
+  "task": "1. Lock current behavior and contracts before extraction",
+  "plan": ".omo/plans/vr-douchong-modularization-assessment.md",
+  "verification": {
+    "pytest_summary": "134 passed, 1 warning in ~0.6s (3 consecutive runs, zero flake)",
+    "junit_xml": ".omo/evidence/task-1-junit.xml",
+    "pytest_command": "python3 -m pytest tests/",
+    "python_version": "3.13.13",
+    "toolchain": {
+      "pytest": "9.1.1",
+      "fastapi": "0.136.3",
+      "sqlalchemy": "2.0.51",
+      "aiohttp": "3.14.1",
+      "httpx": "0.28.1"
+    }
+  },
+  "harness_isolation": {
+    "env_file_binding": "ENV_FILE=tests/_fixtures/empty.env (real .env never loaded)",
+    "db_placeholders": {
+      "DB_HOST": "127.0.0.1",
+      "DB_USER": "vr_test",
+      "DB_PASSWORD": "vr_test (test-only placeholder, not a real credential)",
+      "DB_NAME": "vr_test",
+      "DB_PORT": "3306"
+    },
+    "rooms_json_binding": "ROOMS_JSON_PATH=tests/_fixtures/rooms.json (real rooms.json never mutated)",
+    "ddl_neutralisation": "MetaData.create_all patched to record-and-skip; sqlalchemy.inspect patched to return a StubInspector",
+    "bilibili_endpoints": "aiohttp_session=None throughout tests; no live endpoints reached"
+  },
+  "import_time_side_effects": {
+    "create_all_calls": [
+      {
+        "tables": [
+          "attention",
+          "live_session",
+          "room_blind_box_monthly",
+          "room_info",
+          "room_live_stats",
+          "room_stats_monthly",
+          "super_chat_log"
+        ],
+        "checkfirst": true
+      }
+    ],
+    "ensure_runtime_schema": "catches SQLAlchemyError from stub inspector and returns cleanly",
+    "load_rooms_config_result": {
+      "ROOM_IDS": [
+        111111,
+        222222
+      ],
+      "ROOM_ANCHORS": {
+        "111111": "TestAnchorAlpha",
+        "222222": "TestAnchorBeta"
+      }
+    }
+  },
+  "frozen_constants": {
+    "COMMON_NOTICE_GIFT_COIN_MAP": {
+      "干杯之旅": 10000,
+      "启航之旅": 100000,
+      "友谊的小船": 4900,
+      "冲浪": 89900,
+      "海湾之旅": 799900,
+      "鸿运小电视": 1000000
+    },
+    "ATTENTION_DAILY_ROOM_SLEEP_SECONDS": 1.0,
+    "APP_HOST": "0.0.0.0",
+    "APP_PORT": 4666,
+    "BILI_TICKET_KEY": "XgwSnGZ1p",
+    "BILI_TICKET_URL": "https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket",
+    "BILI_TICKET_KEY_ID": "ec02",
+    "BILI_COOKIES_BASE_KEYS": [
+      "DedeUserID",
+      "DedeUserID__ckMd5",
+      "SESSDATA",
+      "bili_jct",
+      "buvid3",
+      "deviceFingerprint",
+      "sid"
+    ],
+    "DB_CONFIG_KEYS": [
+      "db",
+      "host",
+      "password",
+      "port",
+      "user"
+    ]
+  },
+  "schema_snapshot": {
+    "room_info": {
+      "name": "room_info",
+      "columns": [
+        {
+          "name": "room_id",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": true,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "anchor_name",
+          "type": "String",
+          "length": 100,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "attention",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        }
+      ],
+      "primary_key": [
+        "room_id"
+      ],
+      "indexes": []
+    },
+    "attention": {
+      "name": "attention",
+      "columns": [
+        {
+          "name": "room_id",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": true,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "date",
+          "type": "Date",
+          "length": null,
+          "nullable": false,
+          "primary_key": true,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "attention",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        },
+        {
+          "name": "guard_1",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        },
+        {
+          "name": "guard_2",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        },
+        {
+          "name": "guard_3",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        },
+        {
+          "name": "fans_count",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        }
+      ],
+      "primary_key": [
+        "date",
+        "room_id"
+      ],
+      "indexes": [
+        {
+          "name": "idx_attention_date",
+          "columns": [
+            "date"
+          ],
+          "unique": false
+        }
+      ]
+    },
+    "room_stats_monthly": {
+      "name": "room_stats_monthly",
+      "columns": [
+        {
+          "name": "room_id",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": true,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "month",
+          "type": "String",
+          "length": 6,
+          "nullable": false,
+          "primary_key": true,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "gift",
+          "type": "Float",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0.0
+        },
+        {
+          "name": "guard",
+          "type": "Float",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0.0
+        },
+        {
+          "name": "super_chat",
+          "type": "Float",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0.0
+        }
+      ],
+      "primary_key": [
+        "month",
+        "room_id"
+      ],
+      "indexes": [
+        {
+          "name": "idx_rsm_month",
+          "columns": [
+            "month"
+          ],
+          "unique": false
+        }
+      ]
+    },
+    "room_blind_box_monthly": {
+      "name": "room_blind_box_monthly",
+      "columns": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": true,
+          "autoincrement": true,
+          "default": null
+        },
+        {
+          "name": "room_id",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "month",
+          "type": "String",
+          "length": 6,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "blind_box_count",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        },
+        {
+          "name": "blind_box_profit",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "indexes": [
+        {
+          "name": "idx_rbbm_month",
+          "columns": [
+            "month"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_rbbm_room_month",
+          "columns": [
+            "room_id",
+            "month"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    "room_live_stats": {
+      "name": "room_live_stats",
+      "columns": [
+        {
+          "name": "room_id",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": true,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "date",
+          "type": "Date",
+          "length": null,
+          "nullable": false,
+          "primary_key": true,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "duration",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        }
+      ],
+      "primary_key": [
+        "date",
+        "room_id"
+      ],
+      "indexes": [
+        {
+          "name": "idx_rls_date",
+          "columns": [
+            "date"
+          ],
+          "unique": false
+        }
+      ]
+    },
+    "live_session": {
+      "name": "live_session",
+      "columns": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": true,
+          "autoincrement": true,
+          "default": null
+        },
+        {
+          "name": "room_id",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "start_time",
+          "type": "DateTime",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "end_time",
+          "type": "DateTime",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "title",
+          "type": "String",
+          "length": 255,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": ""
+        },
+        {
+          "name": "gift",
+          "type": "Float",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0.0
+        },
+        {
+          "name": "guard",
+          "type": "Float",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0.0
+        },
+        {
+          "name": "super_chat",
+          "type": "Float",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0.0
+        },
+        {
+          "name": "month",
+          "type": "String",
+          "length": 6,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "blind_box_count",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        },
+        {
+          "name": "blind_box_profit",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        },
+        {
+          "name": "danmaku_count",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": 0
+        },
+        {
+          "name": "start_guard_1",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "start_guard_2",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "start_guard_3",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "start_fans_count",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "start_attention",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "end_guard_1",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "end_guard_2",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "end_guard_3",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "end_fans_count",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "end_attention",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "avg_concurrency",
+          "type": "Float",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "max_concurrency",
+          "type": "Integer",
+          "length": null,
+          "nullable": true,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "indexes": [
+        {
+          "name": "idx_ls_room_month",
+          "columns": [
+            "room_id",
+            "month"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_ls_room_month_start",
+          "columns": [
+            "room_id",
+            "month",
+            "start_time"
+          ],
+          "unique": false
+        },
+        {
+          "name": "ix_live_session_month",
+          "columns": [
+            "month"
+          ],
+          "unique": false
+        },
+        {
+          "name": "ix_live_session_room_id",
+          "columns": [
+            "room_id"
+          ],
+          "unique": false
+        }
+      ]
+    },
+    "super_chat_log": {
+      "name": "super_chat_log",
+      "columns": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": true,
+          "autoincrement": true,
+          "default": null
+        },
+        {
+          "name": "room_id",
+          "type": "Integer",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "uname",
+          "type": "String",
+          "length": 100,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "uid",
+          "type": "BigInteger",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "send_time",
+          "type": "DateTime",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "price",
+          "type": "Float",
+          "length": null,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        },
+        {
+          "name": "message",
+          "type": "String",
+          "length": 500,
+          "nullable": false,
+          "primary_key": false,
+          "autoincrement": false,
+          "default": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "indexes": [
+        {
+          "name": "idx_scl_room_time",
+          "columns": [
+            "room_id",
+            "send_time"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_scl_uid_time",
+          "columns": [
+            "uid",
+            "send_time"
+          ],
+          "unique": false
+        },
+        {
+          "name": "ix_super_chat_log_room_id",
+          "columns": [
+            "room_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "ix_super_chat_log_send_time",
+          "columns": [
+            "send_time"
+          ],
+          "unique": false
+        }
+      ]
+    }
+  },
+  "archive_table_naming_rules": {
+    "super_chat_log_202601": "super_chat_log_202601",
+    "live_session_202601": "live_session_202601",
+    "room_live_stats_202601": "room_live_stats_202601",
+    "attention_202601": "attention_202601"
+  },
+  "fastapi_routes": [
+    {
+      "path": "/add/room",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/delete/room",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/gift",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/gift/by_month",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/gift/live_sessions",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/gift/attention",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/gift/sc",
+      "methods": [
+        "GET"
+      ]
+    }
+  ],
+  "route_status_and_shape_contracts": {
+    "POST /add/room": {
+      "401_missing_key": {
+        "body": {
+          "error": "缺少 API 密钥"
+        }
+      },
+      "401_invalid_key": {
+        "body": {
+          "error": "API 密钥无效"
+        }
+      },
+      "400_missing_room_id": {
+        "body": {
+          "error": "room_id 必填"
+        }
+      },
+      "400_non_integer_room_id": {
+        "body": {
+          "error": "room_id 必须为整数"
+        }
+      },
+      "400_negative_room_id": {
+        "body": {
+          "error": "room_id 必须为正整数"
+        }
+      },
+      "400_missing_room_anchors": {
+        "body": {
+          "error": "room_anchors 必填"
+        }
+      },
+      "400_empty_room_anchors": {
+        "body": {
+          "error": "room_anchors 必须为非空字符串"
+        }
+      },
+      "200_success_keys": [
+        "ok",
+        "room_id",
+        "message"
+      ],
+      "409_conflict_keys": [
+        "ok",
+        "room_id",
+        "message"
+      ],
+      "500_internal_failure": {
+        "body": {
+          "error": "添加房间失败"
+        }
+      },
+      "auth_methods_accepted": [
+        "X-API-Key header",
+        "Authorization: Bearer <secret>",
+        "body.api_key"
+      ]
+    },
+    "POST /delete/room": {
+      "401_missing_key": {
+        "body": {
+          "error": "缺少 API 密钥"
+        }
+      },
+      "401_invalid_key": {
+        "body": {
+          "error": "API 密钥无效"
+        }
+      },
+      "400_missing_room_id": {
+        "body": {
+          "error": "room_id 必填"
+        }
+      },
+      "200_success_keys": [
+        "ok",
+        "room_id",
+        "message"
+      ],
+      "404_not_found_keys": [
+        "ok",
+        "room_id",
+        "message"
+      ]
+    },
+    "GET /gift": {
+      "200_shape": "list[room_dict]",
+      "per_room_keys": [
+        "room_id",
+        "anchor_name",
+        "attention",
+        "status",
+        "gift",
+        "guard",
+        "super_chat",
+        "blind_box_count",
+        "blind_box_profit",
+        "live_duration",
+        "effective_days",
+        "live_time",
+        "title",
+        "month",
+        "guard_1",
+        "guard_2",
+        "guard_3",
+        "fans_count",
+        "current_concurrency"
+      ],
+      "distinguishing_field": "current_concurrency (present in /gift only)"
+    },
+    "GET /gift/by_month": {
+      "200_shape": "list[room_dict]",
+      "per_room_keys": [
+        "room_id",
+        "anchor_name",
+        "attention",
+        "status",
+        "gift",
+        "guard",
+        "super_chat",
+        "blind_box_count",
+        "blind_box_profit",
+        "live_duration",
+        "effective_days",
+        "live_time",
+        "title",
+        "month",
+        "guard_1",
+        "guard_2",
+        "guard_3",
+        "fans_count"
+      ],
+      "distinguishing_field": "current_concurrency INTENTIONALLY absent (asymmetry with /gift)",
+      "historical_month_placeholders": {
+        "live_time": "0000-00-00 00:00:00",
+        "title": "",
+        "status": 0,
+        "guard_1/guard_2/guard_3/fans_count": "None (JSON null)"
+      }
+    },
+    "GET /gift/live_sessions": {
+      "400_missing_room_id": {
+        "body": {
+          "error": "room_id 必填且需为正整数"
+        }
+      },
+      "400_non_integer_room_id": {
+        "body": {
+          "error": "room_id 参数无效"
+        }
+      },
+      "200_wrapper_keys": [
+        "room_id",
+        "month",
+        "sessions"
+      ],
+      "per_session_keys": [
+        "start_time",
+        "end_time",
+        "title",
+        "gift",
+        "guard",
+        "super_chat",
+        "blind_box_count",
+        "blind_box_profit",
+        "danmaku_count",
+        "start_guard_1",
+        "start_guard_2",
+        "start_guard_3",
+        "start_fans_count",
+        "start_attention",
+        "end_guard_1",
+        "end_guard_2",
+        "end_guard_3",
+        "end_fans_count",
+        "end_attention",
+        "avg_concurrency",
+        "max_concurrency",
+        "current_concurrency"
+      ]
+    },
+    "GET /gift/attention": {
+      "400_missing_room_id": {
+        "body": {
+          "error": "room_id 必填且需为正整数"
+        }
+      },
+      "400_non_integer_room_id": {
+        "body": {
+          "error": "room_id 参数无效"
+        }
+      },
+      "400_bad_month": {
+        "body": {
+          "error": "month 参数无效，支持 YYYYMM 或 YYYY-MM"
+        }
+      },
+      "200_wrapper_keys": [
+        "room_id",
+        "month",
+        "attention"
+      ],
+      "per_day_keys": [
+        "date",
+        "attention",
+        "guard_1",
+        "guard_2",
+        "guard_3",
+        "fans_count"
+      ],
+      "date_format": "YYYYMMDD (string with dashes stripped)",
+      "attention_value_format": "string of int",
+      "month_normalisation": "YYYY-MM accepted, normalised to YYYYMM in response"
+    },
+    "GET /gift/sc": {
+      "400_missing_room_id": {
+        "body": {
+          "error": "room_id 参数必填"
+        }
+      },
+      "400_non_integer_room_id": {
+        "body": {
+          "error": "room_id 参数无效"
+        }
+      },
+      "400_negative_room_id": {
+        "body": {
+          "error": "room_id 必须为正整数"
+        }
+      },
+      "400_bad_month": {
+        "body": {
+          "error": "month 格式不正确，应为 YYYYMM 或 YYYY-MM"
+        }
+      },
+      "200_wrapper_keys": [
+        "room_id",
+        "month",
+        "list"
+      ],
+      "per_row_keys": [
+        "send_time",
+        "uname",
+        "uid",
+        "price",
+        "message"
+      ]
+    }
+  },
+  "migrate_sc_archive_cli_contract": {
+    "imports_from_gift": [
+      "archive_super_chat_log",
+      "archive_live_session",
+      "archive_room_live_stats",
+      "normalize_month_code"
+    ],
+    "NOT_imported_from_gift": "archive_attention (scheduler-only, per Todo 5 freeze)",
+    "invocations_per_run": 3,
+    "invocation_order": [
+      "archive_super_chat_log(target)",
+      "archive_live_session(target)",
+      "archive_room_live_stats(target)"
+    ],
+    "supported_month_formats": [
+      "YYYYMM",
+      "YYYY-MM",
+      "unspecified => archive all pre-current-month"
+    ],
+    "invalid_month_behaviour": "SystemExit with message 'month 参数格式不正确，应为 YYYYMM 或 YYYY-MM'",
+    "current_month_behaviour": "each archive function returns 0 (skipped internally)"
+  },
+  "rooms_json_contract": {
+    "file_schema": {
+      "room_ids": "sorted deduplicated list[int]",
+      "room_anchors": "dict[str(room_id), str(anchor_name)]"
+    },
+    "load_normalisation": {
+      "room_ids": "non-int entries are silently dropped",
+      "room_anchors": "keys are int-coerced in memory, missing anchors default to empty string"
+    },
+    "save_writes_string_keys": true,
+    "save_preserves_utf8_anchors": "ensure_ascii=False",
+    "malformed_input_is_no_op": true,
+    "missing_file_is_silent": true
+  },
+  "adversarial_probes": {
+    "dirty_worktree_preserved": {
+      "pre_existing_dirty_files": [
+        ".env.example",
+        ".gitignore",
+        "LICENSE",
+        "api.md",
+        "blivedm/handlers.py",
+        "blivedm/models/pb.py",
+        "blivedm/models/web.py",
+        "migrate_sc_archive.py",
+        "psp_rooms.json",
+        "readme.md",
+        "requirements.txt",
+        "rooms.json"
+      ],
+      "files_added_by_this_task": [
+        "tests/",
+        ".omo/"
+      ],
+      "files_modified_by_this_task": [],
+      "prod_files_mtime_unchanged": true
+    },
+    "secrets_untouched": {
+      ".env_mtime_ns": "2026-08-29 01:05 (predates task session)",
+      ".env_content_read_by_tests": false,
+      ".env_content_included_in_evidence": false
+    },
+    "malformed_input_probes": [
+      "POST /add/room room_id=''",
+      "POST /add/room room_id='not-a-number'",
+      "POST /add/room room_id=-1",
+      "POST /add/room room_anchors=''",
+      "POST /add/room room_anchors='   '",
+      "GET /gift/live_sessions no room_id",
+      "GET /gift/live_sessions room_id='abc'",
+      "GET /gift/live_sessions room_id='-5'",
+      "GET /gift/attention no room_id",
+      "GET /gift/attention room_id='abc'",
+      "GET /gift/attention month='not-a-month'",
+      "GET /gift/sc no room_id",
+      "GET /gift/sc room_id='abc'",
+      "GET /gift/sc room_id='-1'",
+      "GET /gift/sc month='not-a-month'"
+    ],
+    "generated_artifacts_excluded_from_commit": {
+      "gitignore_covers": [
+        "__pycache__/",
+        ".pytest_cache/"
+      ],
+      "test_fixtures_should_be_committed": [
+        "tests/_fixtures/empty.env",
+        "tests/_fixtures/rooms.json"
+      ]
+    },
+    "flakiness_check": "134/134 passed across 3 consecutive runs (0.56s, 0.61s, 0.60s wall time)"
+  },
+  "files_written_by_this_task": {
+    "tests/conftest.py": "430de1c571c0cab5270c2e3afb661641",
+    "tests/test_import_contract.py": "030ec3e2aad8cf1b0593abadb3e6b513",
+    "tests/test_schema_contract.py": "d002d7bc556a2d40360b1a889a403117",
+    "tests/test_utils_contract.py": "126c7d36a9cead19942262fa185dcd98",
+    "tests/test_routes_contract.py": "da700a85e674a2e241999c913be9c11f",
+    "tests/test_rooms_json_contract.py": "b557c766b4fdc30432ca302da428eb05",
+    "tests/test_archive_cli_contract.py": "b2fd0da7053caeae848a8c01e1105b0d",
+    "tests/_fixtures/empty.env": "d41d8cd98f00b204e9800998ecf8427e",
+    "tests/_fixtures/rooms.json": "7804a42da6b2cddadce50ca9a801bfb0"
+  },
+  "blockers_and_notes": {
+    "no_live_bilibili_calls": "By design; user QA post-extraction covers real endpoint verification.",
+    "no_live_mysql_dependency": "Characterization runs against stubbed engine; live MySQL round-trip is deferred to Todo 2+ staging DB verification.",
+    "prod_ddl_still_import_time": "Todo 2 will move this into an explicit bootstrap; this harness records the current call site so the move remains behaviour-preserving.",
+    "starlette_httpx_deprecation_warning": "Upstream fastapi warning, non-blocking. Will disappear when tests migrate to httpx2 per fastapi guidance."
+  }
+}

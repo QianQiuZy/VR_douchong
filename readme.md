@@ -58,6 +58,6 @@ VR斗虫排行榜，每月最后一天24点归档
 
 6.**运行**
    ```bash
-   python gift.py
+   python main.py
    ```
    运行后 FastAPI 会通过 Uvicorn 在 `APP_HOST:APP_PORT` 对外提供接口。

@@ -1,0 +1,40 @@
+Todo 3 execution receipt
+
+Repeated test run 1
+Command:
+python3 -m pytest tests/ -q
+Output summary:
+139 passed, 1 warning in 0.63s
+
+Repeated test run 2
+Command:
+python3 -m pytest tests/ -q
+Output summary:
+139 passed, 1 warning in 0.67s
+
+Compile check
+Command:
+python3 -m py_compile gift.py migrate_sc_archive.py
+Output summary:
+exit 0; no output
+
+Controlled fixture import
+Command:
+ENV_FILE="tests/_fixtures/empty.env" ROOMS_JSON_PATH="tests/_fixtures/rooms.json" python3 -c "import gift, runtime_state; names = ('ROOM_IDS', 'ROOM_ANCHORS', 'ROOM_UIDS', 'CURRENT_SESSIONS', 'ROOM_CLIENTS', 'LAST_RECONNECT', 'LAST_STATUS', 'STREAM_STARTS', 'LIVE_INFO', 'PENDING_SESSION_ENDS', 'DANMAKU_PENDING', 'FANS_COUNT', 'GUARD_COUNTS', 'CONCURRENCY_CACHE', 'LOCKED_ROOM_UNTIL', 'GUARD_FANS_QUEUE', 'ATTENTION_QUEUE', 'DAILY_ATTENTION_QUEUE', 'DAILY_GUARD_QUEUE', 'DAILY_FANS_QUEUE', 'ROOM_CONFIG_LOCK'); assert all(getattr(gift, name) is getattr(runtime_state, name) for name in names); print('fixture import passed; no DDL invoked')"
+Output summary:
+fixture import passed; no DDL invoked
+
+Fixture-only manual state/config/lifecycle QA
+Command:
+ENV_FILE="tests/_fixtures/empty.env" ROOMS_JSON_PATH="tests/_fixtures/rooms.json" python3 -c 'import asyncio, datetime, os, tempfile; from types import SimpleNamespace; import room_config, room_lifecycle, runtime_state; room_config.load_rooms_config(); room_config.save_rooms_config(); room_lifecycle.RoomInfo = SimpleNamespace(upsert=lambda *_args, **_kwargs: None); now = datetime.datetime(2026, 8, 29, 12, 5, 0); calls = []; dependencies = room_lifecycle.LifecycleDependencies(record_stream_segment=lambda *_args: calls.append("record") or "00:00:01", flush_pending_danmaku=lambda *_args: calls.append("flush"), finalize_concurrency=lambda *_args: calls.append("finalize") or (1.0, 2), now=lambda: now, initialize_room=lambda _room_id: asyncio.sleep(0), start_client=lambda _room_id: asyncio.sleep(0)); added = asyncio.run(room_lifecycle.add_room_async(333333, "FixtureAnchor", dependencies)); duplicate = asyncio.run(room_lifecycle.add_room_async(333333, "FixtureAnchor", dependencies)); missing = asyncio.run(room_lifecycle.delete_room_async(444444, dependencies)); deleted = asyncio.run(room_lifecycle.delete_room_async(333333, dependencies)); assert added == (False, "aiohttp_session 未初始化") and duplicate == (False, "房间已存在") and missing == (False, "房间不存在") and deleted == (True, "房间已删除并停止任务"); original_ids, original_anchors, original_path = list(runtime_state.ROOM_IDS), dict(runtime_state.ROOM_ANCHORS), runtime_state.ROOMS_JSON_PATH; malformed = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False); malformed.write("{"); malformed_path = malformed.name; malformed.close(); runtime_state.ROOMS_JSON_PATH = malformed_path; room_config.load_rooms_config(); assert runtime_state.ROOM_IDS == original_ids and runtime_state.ROOM_ANCHORS == original_anchors; runtime_state.ROOMS_JSON_PATH = original_path; os.unlink(malformed_path); runtime_state.PENDING_SESSION_ENDS[333333] = now - datetime.timedelta(seconds=181); runtime_state.CURRENT_SESSIONS[333333] = 99; runtime_state.CONCURRENCY_CACHE[333333] = {"session_id": 99, "total": 0, "samples": 0, "max": 0, "last": 0}; room_lifecycle.LiveSession = SimpleNamespace(close_session_by_id=lambda *_args: calls.append("close"), update_concurrency_by_id=lambda *_args, **_kwargs: calls.append("update")); room_lifecycle.finish_expired_live_sessions(now, dependencies); assert calls == ["record", "flush", "finalize", "close", "update"] and 333333 not in runtime_state.CURRENT_SESSIONS and 333333 not in runtime_state.PENDING_SESSION_ENDS and 333333 not in runtime_state.CONCURRENCY_CACHE; runtime_state.GUARD_FANS_QUEUE.get_nowait(); runtime_state.GUARD_FANS_QUEUE.task_done(); runtime_state.ATTENTION_QUEUE.get_nowait(); runtime_state.ATTENTION_QUEUE.task_done(); print("fixture-only manual QA passed")'
+Output summary:
+ERROR:root:[rooms] 读取配置失败: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+fixture-only manual QA passed
+The logged JSON error is the expected malformed-config probe; the assertion confirms it leaves the room registry unchanged. The command uses fake RoomInfo and no aiohttp/Bilibili client, verifies load/save/add/delete, duplicate/missing room responses, no-client/session cleanup, interrupted-session expiry cleanup order, and both queued end tasks with task_done(). The temporary malformed-config file is unlinked within the command.
+
+LSP record
+Commands previously run through lsp_diagnostics:
+runtime_state.py, room_config.py, room_lifecycle.py, tests/test_runtime_state_contract.py, and tests/test_room_lifecycle_contract.py with severity=error
+Output summary:
+No diagnostics found for each extracted module/test at error severity. Warning-level diagnostics may remain.
+gift.py was queried at severity=all and reported legacy diagnostics. A clean historical baseline cannot be established from the current worktree because gift.py was already modified before this task; no suppressions or unrelated legacy fixes were applied.

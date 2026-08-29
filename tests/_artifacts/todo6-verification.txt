@@ -1,0 +1,135 @@
+Todo 6 verification record
+==========================
+
+Recency anchor
+--------------
+Generated: `2026-08-29T09:54:27+08:00`.
+Current-worktree reference: `git status --short` at generation returned the
+13 pre-existing modified tracked paths `.env.example`, `.gitignore`, `LICENSE`,
+`api.md`, `blivedm/handlers.py`, `blivedm/models/pb.py`,
+`blivedm/models/web.py`, `gift.py`, `migrate_sc_archive.py`,
+`psp_rooms.json`, `readme.md`, `requirements.txt`, and `rooms.json`; and the
+pre-existing untracked roots `.omo/`, `api_app.py`, `archive_service.py`,
+`bilibili_gateway.py`, `bootstrap.py`, `config.py`, `database.py`,
+`event_ingestion.py`, `models/`, `monitoring_jobs.py`, `repositories/`,
+`room_config.py`, `room_lifecycle.py`, `runtime_state.py`, and `tests/`.
+This is a path-only, sanitized fingerprint; no file contents or secrets were
+captured.
+
+Status
+------
+BLOCKED: offline regression and cleanup gates passed, but the requested
+live-room FastAPI smoke test could not reach a local listener. The populated
+`.env` was selected only for the bounded service process; no environment
+values, cookies, API secrets, raw service output, or response bodies were
+printed, persisted, or included here. Todo 6 and final-verification plan boxes
+remain unchecked.
+
+Preflight
+---------
+1. `python3 -m pytest tests/ -q && python3 -m py_compile gift.py migrate_sc_archive.py`
+   Result: `172 passed, 1 warning in 0.87s`; compilation passed with no output.
+
+Live-room smoke attempt
+-----------------------
+1. A temporary one-room JSON was derived from `rooms.json`, preferring room
+   `80397`; `ROOMS_JSON_PATH` pointed at that temporary file. An unused
+   loopback port was selected. The bounded launcher was equivalent to:
+   `ENV_FILE=.env ROOMS_JSON_PATH=<temporary-one-room-json>
+   APP_HOST=127.0.0.1 APP_PORT=<unused-ephemeral-port> setsid python3 gift.py`
+   with service stdout/stderr discarded so potentially sensitive content could
+   not be stored.
+   Result: `LIVE_RESULT=BLOCKED; room_id=80397; api_tcp_ready=no;
+   sanitized_reason=startup-exited-or-port-not-ready`.
+
+2. A second bounded startup passed output only through a classifier that
+   emitted fixed labels and discarded every original log line. It reported:
+   `startup=traceback-observed`, `exception=pymysql.err.OperationalError`,
+   `connectivity=authentication-denied`, and
+   `exception=sqlalchemy.exc.OperationalError`.
+   Result: the process exited during database schema bootstrap before Uvicorn
+   could bind. This is the exact available sanitized failure class; neither a
+   database host, account, password, cookie, API secret, nor raw error text was
+   retained.
+
+3. Read-only endpoint probe plan (no mutation endpoint was called):
+   `curl /gift`, `curl /gift/by_month`,
+   `curl /gift/live_sessions?room_id=80397`,
+   `curl /gift/attention?room_id=80397`, and
+   `curl /gift/sc?room_id=80397`.
+   Result: not executed because the isolated local FastAPI port never became
+   ready; therefore no HTTP status, response count, or key set is claimed.
+   The planned malformed probe
+   `curl /gift/live_sessions?room_id=not-an-integer` was likewise not run on
+   the unavailable live listener.
+
+4. Cleanup trap receipts:
+   `CLEANUP=PASS; temp_config_removed=yes; service_logs=not-captured` and
+   `DIAGNOSTIC_CLEANUP=PASS; temporary_config_and_sanitized_log_removed=yes`.
+   Each trap sent a process-group termination signal if needed, waited with a
+   bound, checked the group with `pgrep -g`, removed its temporary config/log,
+   and found no remaining service process group. Interrupted-running-service
+   behavior is BLOCKED rather than passed because startup exited before it
+   could be interrupted.
+
+Offline regression and safety checks
+------------------------------------
+1. `python3 -m pytest tests/ -q && python3 -m pytest tests/ -q`
+   Result: first run `172 passed, 1 warning in 0.83s`; second run
+   `172 passed, 1 warning in 0.84s`.
+
+2. `python3 -m pytest tests/test_routes_contract.py -q`
+   Result: `36 passed, 1 warning in 0.32s`. This fixture-backed route suite
+   includes malformed `room_id` cases for the read-only routes; no live
+   malformed-input success is claimed.
+
+3. `python3 -m py_compile gift.py migrate_sc_archive.py api_app.py
+   archive_service.py bilibili_gateway.py bootstrap.py config.py database.py
+   event_ingestion.py monitoring_jobs.py room_config.py room_lifecycle.py
+   runtime_state.py repositories/*.py models/*.py
+   tests/test_todo5_extraction_contract.py`
+   Result: passed with no output.
+
+4. `ENV_FILE=tests/_fixtures/empty.env
+   ROOMS_JSON_PATH=tests/_fixtures/rooms.json python3 -c <DDL/reflection/socket
+   blocked import assertion>`
+   Result: `controlled fixture import passed; DDL/network blocked`.
+
+5. `python3 -c <AST ownership and persistence-boundary assertion>`
+   Result: `static ownership and persistence-boundary checks passed`.
+   The assertion verified that persistence modules import none of
+   `api_app`, `bilibili_gateway`, `blivedm`, `event_ingestion`,
+   `monitoring_jobs`, `bootstrap`, or `gift`; extracted modules do not import
+   `gift`; and the compatibility facade owns no extracted route/archive body.
+
+Diagnostics
+-----------
+1. `basedpyright api_app.py archive_service.py bilibili_gateway.py bootstrap.py
+   config.py database.py event_ingestion.py monitoring_jobs.py room_config.py
+   room_lifecycle.py runtime_state.py models repositories tests`
+   Result: `0 errors, 2072 warnings, 0 notes`.
+
+2. `lsp_diagnostics` was run for the extracted top-level modules and
+   `tests/test_todo5_extraction_contract.py`. It reported warnings only for
+   legacy compatibility/dynamic SQLAlchemy typing; `config.py` reported no
+   diagnostics. No error diagnostic was returned. The static type warnings
+   pre-date this verification-only work and were not modified because the
+   requested scope forbids changing pre-existing dirty tracked files.
+
+Scope and artifact hygiene
+--------------------------
+- No source, room config, production configuration, mutation endpoint, or
+  `psp_rooms.json` write was performed by this verification.
+- Temporary live config and the only sanitized temporary log were removed by
+  cleanup traps. No raw logs or HTTP bodies were saved.
+- Existing `__pycache__` and `.pytest_cache` directories were present before
+  verification. Final `git status --short` and tracked diff file names match
+  the initially observed 13 pre-existing tracked modifications; this verifier
+  did not alter a tracked file. The intentional receipt/evidence additions are
+  inside pre-existing untracked `tests/` and `.omo/` trees.
+- `git ls-files -- '*.pyc'` found no tracked bytecode artifact. A final
+  process check using `pgrep -af '[p]ython3 gift.py'` found no running service.
+- `psp_rooms.json` remains present and dirty only as it was at entry; its final
+  SHA-256 was `2e9ccccd1823b19a3c6f4a808ce5a2e8c7ec472d323ba8f3ba177fb5833c7691`.
+  No verifier command writes that file.
+- Evidence: `.omo/evidence/task-6-vr-douchong-modularization-assessment.json`.

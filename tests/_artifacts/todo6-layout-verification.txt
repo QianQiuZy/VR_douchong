@@ -1,0 +1,47 @@
+Layout verification (controlled fixture environment; no secrets)
+Generated: 2026-08-29T14:11:41+08:00
+
+Current production layout:
+- root production Python surface: main.py only (`python main.py`)
+- app/: all production modules/packages, including config.py, runtime_state.py,
+  migrate_sc_archive.py, models/, repositories/, and blivedm/
+- repository-root data/config: .env and rooms.json
+
+$ python3 -m pytest tests/ -q
+173 passed, 1 warning in 0.87s
+
+$ python3 -m pytest tests/ -q
+173 passed, 1 warning in 0.90s
+
+$ python3 -m compileall -q app main.py
+compileall: PASS
+
+$ ENV_FILE=tests/_fixtures/empty.env ROOMS_JSON_PATH=tests/_fixtures/rooms.json python3 -c "import app"
+import app: PASS
+
+$ controlled import from another cwd with fixture overrides
+other-cwd defaults: PASS
+
+$ controlled python3 main.py (schema, thread, and event-loop launch hooks blocked before import)
+main.py controlled startup: PASS
+
+$ ENV_FILE=tests/_fixtures/empty.env ROOMS_JSON_PATH=tests/_fixtures/rooms.json python3 -m app.migrate_sc_archive --help
+usage: migrate_sc_archive.py [-h] [--month MONTH]
+
+归档 super_chat_log 历史数据
+
+options:
+  -h, --help     show this help message and exit
+  --month MONTH  指定月份（YYYYMM 或 YYYY-MM）
+
+$ static root-import scan
+stale root imports: PASS
+
+$ static root-layout scan
+root layout: PASS
+
+$ basedpyright app/config.py app/runtime_state.py tests/test_repository_path_contract.py
+0 errors, 8 pre-existing runtime_state warnings
+
+$ lsp_diagnostics(app/config.py, app/runtime_state.py, tests/test_repository_path_contract.py)
+No diagnostics found

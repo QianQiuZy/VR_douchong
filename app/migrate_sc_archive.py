@@ -1,14 +1,14 @@
 """历史数据归档脚本（SC / Live Session / Room Live Stats）。
 
 用法：
-  python migrate_sc_archive.py           # 归档所有早于当前月的数据
-  python migrate_sc_archive.py --month 202401  # 归档指定月份
+  python -m app.migrate_sc_archive           # 归档所有早于当前月的数据
+  python -m app.migrate_sc_archive --month 202401  # 归档指定月份
 """
 
 import argparse
 import logging
 
-from gift import (
+from app.gift import (
     archive_live_session,
     archive_room_live_stats,
     archive_super_chat_log,

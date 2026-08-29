@@ -1,0 +1,49 @@
+{
+  "task": "todo6-live-gateway",
+  "overall_result": "BLOCKED",
+  "observed_at": "2026-08-29T09:54:27+08:00",
+  "scope": "separate historical real-environment live gateway QA; not layout verification",
+  "secret_handling": {
+    "env_values_inspected": false,
+    "persisted_cookie_or_api_secret": false,
+    "persisted_raw_headers_or_bodies": false,
+    "persisted_raw_logs": false
+  },
+  "live_gateway": {
+    "result": "BLOCKED",
+    "request_mode": "read-only GET only; no database or rooms.json writes",
+    "attempts": [
+      {
+        "name": "strict_json_parse",
+        "result": "BLOCKED",
+        "sanitized_error_class": "ContentTypeError"
+      },
+      {
+        "name": "content_type_agnostic_json_parse",
+        "result": "BLOCKED",
+        "sanitized_error_class": "JSONDecodeError"
+      },
+      {
+        "name": "http_only_read_probe",
+        "result": "BLOCKED",
+        "room_info_http_status": 412,
+        "room_init_http_status": 412
+      }
+    ],
+    "reason": "Bilibili read-only room-info and room-init responses were HTTP 412 and not parseable as expected JSON."
+  },
+  "real_service_startup": {
+    "result": "BLOCKED",
+    "reason": "MySQL schema-bootstrap authentication failure prevented listener readiness.",
+    "sanitized_failure_classes": [
+      "pymysql.err.OperationalError",
+      "authentication-denied",
+      "sqlalchemy.exc.OperationalError"
+    ]
+  },
+  "separation": {
+    "layout_ledger": "task-6-vr-douchong-modularization-assessment.json",
+    "layout_status": "PASS",
+    "live_qa_status": "BLOCKED"
+  }
+}
