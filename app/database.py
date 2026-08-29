@@ -43,6 +43,7 @@ def ensure_runtime_schema() -> None:
             "super_chat": "FLOAT NOT NULL DEFAULT 0",
             "blind_box_count": "INT NOT NULL DEFAULT 0",
             "blind_box_profit": "INT NOT NULL DEFAULT 0",
+            "danmaku_count": "INT NOT NULL DEFAULT 0",
             "avg_concurrency": "FLOAT NULL",
             "max_concurrency": "INT NULL",
             "sample_count": "INT NOT NULL DEFAULT 0",

@@ -213,6 +213,7 @@
 | super_chat | float | 区间 SC 收入。 |
 | blind_box_count | int | 区间盲盒数量。 |
 | blind_box_profit | float | 区间盲盒盈亏。 |
+| danmaku_count | int | 区间弹幕数量。 |
 | avg_concurrency | float 或 null | 区间平均同接。 |
 | max_concurrency | int 或 null | 区间最高同接。 |
 | sample_count | int | 区间同接采样次数。 |

@@ -301,7 +301,7 @@ def archive_live_session_15m_stats(target_month: Optional[str] = None) -> int:
                     (
                         "session_id", "bucket_index", "room_id", "month", "start_time", "end_time",
                         "gift", "guard", "super_chat", "blind_box_count", "blind_box_profit",
-                        "avg_concurrency", "max_concurrency", "sample_count", "payer_count",
+                        "danmaku_count", "avg_concurrency", "max_concurrency", "sample_count", "payer_count",
                     ),
                 )
                 quoted_columns = ", ".join(f"`{name}`" for name in columns)

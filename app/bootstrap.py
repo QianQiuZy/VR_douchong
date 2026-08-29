@@ -148,7 +148,8 @@ def init_session() -> None:
 
 
 def _flush_active_metrics(end_time: datetime.datetime) -> None:
-    for session_id in set(runtime_state.CURRENT_SESSIONS.values()):
+    for room_id, session_id in tuple(runtime_state.CURRENT_SESSIONS.items()):
+        monitoring_jobs.flush_pending_danmaku_for_room(room_id, session_id, end_time)
         flush_session(session_id, end_time)
 
 

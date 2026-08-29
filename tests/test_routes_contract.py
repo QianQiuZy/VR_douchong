@@ -361,6 +361,17 @@ class TestGiftByMonthRoute:
 
 
 class TestGiftLiveSessionsRoute:
+    def test_15m_stats_include_danmaku_count(self, gift_module):
+        from app import api_app
+
+        item = api_app._format_15m_stats((1, None, None, 1.0, 2.0, 3.0, 4, 5, 6, 7.0, 8, 9, 10))
+
+        assert item["danmaku_count"] == 6
+        assert item["avg_concurrency"] == 7.0
+        assert item["max_concurrency"] == 8
+        assert item["sample_count"] == 9
+        assert item["payer_count"] == 10
+
     def test_missing_room_id_defaults_to_zero_and_returns_400(self, client, gift_module, isolated_db):
         response = client.get("/gift/live_sessions")
         assert response.status_code == 400

@@ -164,6 +164,7 @@ class LiveSession15mStats(Base):
     super_chat = Column(Float, default=0.0, nullable=False)
     blind_box_count = Column(Integer, default=0, nullable=False)
     blind_box_profit = Column(Integer, default=0, nullable=False)
+    danmaku_count = Column(Integer, default=0, nullable=False)
     avg_concurrency = Column(Float, nullable=True)
     max_concurrency = Column(Integer, nullable=True)
     sample_count = Column(Integer, default=0, nullable=False)
@@ -186,6 +187,7 @@ class LiveSession15mStats(Base):
         super_chat: float,
         blind_box_count: int,
         blind_box_profit: int,
+        danmaku_count: int,
         avg_concurrency: float | None,
         max_concurrency: int | None,
         sample_count: int,
@@ -193,19 +195,20 @@ class LiveSession15mStats(Base):
     ) -> bool:
         return upsert_stats(
             cls,
-            session_id,
-            room_id,
-            month,
-            bucket_index,
-            start_time,
-            end_time,
-            gift,
-            guard,
-            super_chat,
-            blind_box_count,
-            blind_box_profit,
-            avg_concurrency,
-            max_concurrency,
-            sample_count,
-            payer_count,
+            session_id=session_id,
+            room_id=room_id,
+            month=month,
+            bucket_index=bucket_index,
+            start_time=start_time,
+            end_time=end_time,
+            gift=gift,
+            guard=guard,
+            super_chat=super_chat,
+            blind_box_count=blind_box_count,
+            blind_box_profit=blind_box_profit,
+            danmaku_count=danmaku_count,
+            avg_concurrency=avg_concurrency,
+            max_concurrency=max_concurrency,
+            sample_count=sample_count,
+            payer_count=payer_count,
         )

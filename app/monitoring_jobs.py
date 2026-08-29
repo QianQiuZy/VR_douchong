@@ -10,13 +10,12 @@ import random
 from typing import Optional
 
 import aiohttp
-from . import blivedm
 from sqlalchemy.exc import SQLAlchemyError
 
-from . import bilibili_gateway, event_ingestion, room_config, runtime_state
+from . import bilibili_gateway, blivedm, event_ingestion, room_config, runtime_state
 from .config import ATTENTION_DAILY_ROOM_SLEEP_SECONDS
 from .database import Session
-from .metrics_runtime import record_concurrency, start_session
+from .metrics_runtime import record_concurrency, record_danmaku, start_session
 from .models import Attention, LiveSession, RoomInfo, RoomLiveStats
 
 
@@ -100,11 +99,16 @@ def finalize_concurrency_cache(room_id: int, session_id: Optional[int]) -> tuple
     return ((int(cache.get("total", 0)) / samples) if samples else None, int(cache.get("max", 0)) if samples else None)
 
 
-def flush_pending_danmaku_for_room(room_id: int, session_id: Optional[int] = None) -> None:
+def flush_pending_danmaku_for_room(
+    room_id: int,
+    session_id: Optional[int] = None,
+    event_time: Optional[datetime.datetime] = None,
+) -> None:
     pending = int(runtime_state.DANMAKU_PENDING.pop(room_id, 0) or 0)
     if pending <= 0:
         return
     if session_id:
+        record_danmaku(session_id, event_time or _now(), pending)
         LiveSession.add_danmaku_by_id(session_id, pending)
     else:
         LiveSession.add_danmaku_by_room_open(room_id, pending)
@@ -218,16 +222,8 @@ async def danmaku_flush_scheduler() -> None:
         await asyncio.sleep(60)
         if not runtime_state.DANMAKU_PENDING:
             continue
-        snapshot = dict(runtime_state.DANMAKU_PENDING)
-        runtime_state.DANMAKU_PENDING.clear()
-        for room_id, increment in snapshot.items():
-            if increment <= 0:
-                continue
-            session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
-            if session_id:
-                LiveSession.add_danmaku_by_id(session_id, increment)
-            else:
-                LiveSession.add_danmaku_by_room_open(room_id, increment)
+        for room_id in tuple(runtime_state.DANMAKU_PENDING):
+            flush_pending_danmaku_for_room(room_id, runtime_state.CURRENT_SESSIONS.get(room_id))
 
 
 async def refresh_attention_scheduler() -> None:
@@ -404,7 +400,7 @@ def _record_stream_segment(room_id: int, end_dt: datetime.datetime) -> Optional[
         if seconds > 0:
             RoomLiveStats.add_duration(room_id, current.date(), seconds)
         current = min(end_dt, boundary)
-    flush_pending_danmaku_for_room(room_id, runtime_state.CURRENT_SESSIONS.get(room_id))
+    flush_pending_danmaku_for_room(room_id, runtime_state.CURRENT_SESSIONS.get(room_id), end_dt)
     total = int((end_dt - start).total_seconds())
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
 

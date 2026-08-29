@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import datetime
+from types import SimpleNamespace
 
 import pytest
 
-from app import metrics_runtime, redis_metrics
+from app import bootstrap, metrics_runtime, monitoring_jobs, redis_metrics, runtime_state
 
 
 class _FakeRedis:
@@ -56,7 +57,7 @@ def test_redis_registration_keeps_room_and_site_scopes(monkeypatch):
 
 
 def test_runtime_flushes_relative_buckets_and_keeps_launch_month(monkeypatch):
-    writes: list[dict[str, object]] = []
+    writes: list[dict[str, int | float | str | datetime.datetime | None]] = []
     monkeypatch.setattr(
         metrics_runtime.LiveSession15mStats,
         "upsert",
@@ -82,7 +83,49 @@ def test_runtime_flushes_relative_buckets_and_keeps_launch_month(monkeypatch):
     assert writes[0]["avg_concurrency"] == 15.0
     assert writes[0]["max_concurrency"] == 20
     assert writes[0]["payer_count"] == 0
+    assert writes[0]["danmaku_count"] == 0
     assert writes[1]["gift"] == 10.0
     assert writes[1]["avg_concurrency"] == 4.0
     assert writes[1]["max_concurrency"] == 4
     assert writes[1]["payer_count"] == 1
+
+
+def test_shutdown_flush_drains_pending_danmaku_before_metrics(monkeypatch):
+    calls: list[str] = []
+    runtime_state.CURRENT_SESSIONS[301] = 44
+    monkeypatch.setattr(
+        bootstrap.monitoring_jobs,
+        "flush_pending_danmaku_for_room",
+        lambda *_args: calls.append("danmaku"),
+    )
+    monkeypatch.setattr(bootstrap, "flush_session", lambda *_args: calls.append("metrics"))
+
+    bootstrap._flush_active_metrics(datetime.datetime(2026, 8, 30, 12, 0, 0))
+
+    assert calls == ["danmaku", "metrics"]
+    runtime_state.CURRENT_SESSIONS.pop(301, None)
+
+
+def test_pending_danmaku_flush_updates_parent_and_15m_bucket(monkeypatch):
+    writes: list[dict[str, int | float | str | datetime.datetime | None]] = []
+    parent_writes: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        metrics_runtime.LiveSession15mStats,
+        "upsert",
+        lambda **values: writes.append(values) or True,
+    )
+    monkeypatch.setattr(
+        monitoring_jobs,
+        "LiveSession",
+        SimpleNamespace(add_danmaku_by_id=lambda session_id, count: parent_writes.append((session_id, count))),
+    )
+    start = datetime.datetime(2026, 8, 30, 12, 0, 0)
+    runtime_state.DANMAKU_PENDING[301] = 7
+    metrics_runtime.start_session(44, 301, start)
+
+    monitoring_jobs.flush_pending_danmaku_for_room(301, 44, start + datetime.timedelta(minutes=1))
+    metrics_runtime.flush_session(44, start + datetime.timedelta(minutes=1))
+
+    assert parent_writes == [(44, 7)]
+    assert writes[0]["danmaku_count"] == 7
+    assert 301 not in runtime_state.DANMAKU_PENDING

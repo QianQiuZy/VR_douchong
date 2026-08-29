@@ -391,10 +391,11 @@ def _format_15m_stats(row: Any) -> dict[str, Any]:
             "super_chat": row[5],
             "blind_box_count": row[6],
             "blind_box_profit": row[7],
-            "avg_concurrency": row[8],
-            "max_concurrency": row[9],
-            "sample_count": row[10],
-            "payer_count": row[11],
+            "danmaku_count": row[8],
+            "avg_concurrency": row[9],
+            "max_concurrency": row[10],
+            "sample_count": row[11],
+            "payer_count": row[12],
         }
     return {
         "bucket_index": int(values.get("bucket_index") or 0),
@@ -405,6 +406,7 @@ def _format_15m_stats(row: Any) -> dict[str, Any]:
         "super_chat": float(values.get("super_chat") or 0),
         "blind_box_count": int(values.get("blind_box_count") or 0),
         "blind_box_profit": _profit_display(values.get("blind_box_profit")),
+        "danmaku_count": int(values.get("danmaku_count") or 0),
         "avg_concurrency": values.get("avg_concurrency"),
         "max_concurrency": values.get("max_concurrency"),
         "sample_count": int(values.get("sample_count") or 0),
@@ -429,6 +431,7 @@ def _session_15m_stats(session, session_id: int | Column[int], month: str) -> li
             "super_chat": row.super_chat,
             "blind_box_count": row.blind_box_count,
             "blind_box_profit": row.blind_box_profit,
+            "danmaku_count": row.danmaku_count,
             "avg_concurrency": row.avg_concurrency,
             "max_concurrency": row.max_concurrency,
             "sample_count": row.sample_count,
@@ -451,6 +454,7 @@ def _session_15m_stats(session, session_id: int | Column[int], month: str) -> li
             "super_chat": row.super_chat,
             "blind_box_count": row.blind_box_count,
             "blind_box_profit": row.blind_box_profit,
+            "danmaku_count": row.danmaku_count,
             "avg_concurrency": row.avg_concurrency,
             "max_concurrency": row.max_concurrency,
             "sample_count": row.sample_count,
@@ -458,9 +462,9 @@ def _session_15m_stats(session, session_id: int | Column[int], month: str) -> li
         }) for row in rows]
     rows = session.execute(
         text(
-            f"SELECT bucket_index, start_time, end_time, gift, guard, super_chat, "
-            "blind_box_count, blind_box_profit, avg_concurrency, max_concurrency, "
-            f"sample_count, payer_count FROM `{table_name}` "
+            "SELECT bucket_index, start_time, end_time, gift, guard, super_chat, "
+            "blind_box_count, blind_box_profit, danmaku_count, avg_concurrency, "
+            "max_concurrency, sample_count, payer_count FROM `{table_name}` "
             "WHERE session_id = :session_id ORDER BY bucket_index ASC"
         ),
         {"session_id": session_id},

@@ -259,6 +259,7 @@ class TestSchemaTablesAndColumns:
             "super_chat",
             "blind_box_count",
             "blind_box_profit",
+            "danmaku_count",
             "avg_concurrency",
             "max_concurrency",
             "sample_count",
@@ -268,7 +269,7 @@ class TestSchemaTablesAndColumns:
         for name in ("gift", "guard", "super_chat"):
             assert columns[name]["type"] == Float.__name__
             assert columns[name]["default"] == 0.0
-        for name in ("blind_box_count", "blind_box_profit", "sample_count", "payer_count"):
+        for name in ("blind_box_count", "blind_box_profit", "danmaku_count", "sample_count", "payer_count"):
             assert columns[name]["type"] == Integer.__name__
             assert columns[name]["default"] == 0
         assert columns["avg_concurrency"]["nullable"] is True

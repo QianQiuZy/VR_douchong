@@ -28,6 +28,7 @@ class _Bucket:
     super_chat: float = 0.0
     blind_box_count: int = 0
     blind_box_profit: int = 0
+    danmaku_count: int = 0
     concurrency_total: int = 0
     sample_count: int = 0
     max_concurrency: int = 0
@@ -46,6 +47,7 @@ class _Bucket:
             or self.super_chat
             or self.blind_box_count
             or self.blind_box_profit
+            or self.danmaku_count
             or self.sample_count
             or self.payer_count
         )
@@ -111,6 +113,7 @@ def _flush(bucket: _Bucket, end_time: datetime.datetime) -> None:
         super_chat=bucket.super_chat,
         blind_box_count=bucket.blind_box_count,
         blind_box_profit=bucket.blind_box_profit,
+        danmaku_count=bucket.danmaku_count,
         avg_concurrency=average,
         max_concurrency=bucket.max_concurrency if bucket.sample_count else None,
         sample_count=bucket.sample_count,
@@ -170,6 +173,16 @@ def record_concurrency(
         bucket.concurrency_total += value
         bucket.sample_count += 1
         bucket.max_concurrency = max(bucket.max_concurrency, value)
+        _buckets[session_id] = bucket
+
+
+def record_danmaku(session_id: int, event_time: datetime.datetime, count: int) -> None:
+    with _lock:
+        bucket = _buckets.get(session_id)
+        if bucket is None:
+            return
+        bucket = _advance(bucket, event_time)
+        bucket.danmaku_count += int(count)
         _buckets[session_id] = bucket
 
 
