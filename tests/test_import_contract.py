@@ -106,6 +106,7 @@ class TestImportSideEffects:
         assert sorted(__import__("app.gift", fromlist=["Base"]).Base.metadata.tables) == [
             "attention",
             "live_session",
+            "live_session_15m_stats",
             "room_blind_box_monthly",
             "room_info",
             "room_live_stats",

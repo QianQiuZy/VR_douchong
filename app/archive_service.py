@@ -3,6 +3,7 @@
 Owns the four archive migrations that Todo 5 extracts out of ``gift.py``:
 
 * :func:`archive_super_chat_log`
+* :func:`archive_live_session_15m_stats`
 * :func:`archive_live_session`
 * :func:`archive_room_live_stats`
 * :func:`archive_attention` (scheduler-only; never called by the CLI)
@@ -27,12 +28,21 @@ from .database import Session, engine
 from .repositories.tables import (
     ensure_attention_archive_table,
     ensure_live_session_archive_table,
+    ensure_live_session_15m_stats_archive_table,
     ensure_room_live_stats_archive_table,
     ensure_sc_archive_table,
     month_range,
     month_str,
     normalize_month_code,
 )
+
+
+def _archive_columns(table_name: str, candidates: tuple[str, ...]) -> list[str]:
+    try:
+        available = {column.get("name") for column in inspect(engine).get_columns(table_name)}
+    except SQLAlchemyError:
+        return list(candidates)
+    return [name for name in candidates if name in available]
 
 
 def archive_super_chat_log(target_month: Optional[str] = None) -> int:
@@ -127,6 +137,8 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
     - target_month: 指定归档月份（YYYYMM）；None 表示归档所有早于当前月的数据
     返回迁移的记录数（预估）。
     """
+    # Keep the child rows available while their parent remains in the hot table.
+    archive_live_session_15m_stats(target_month)
     current_month = month_str()
     months: list[str] = []
     if target_month:
@@ -166,7 +178,25 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
     for month_code in sorted(set(months)):
         table_name = ensure_live_session_archive_table(month_code)
         try:
+            has_child_table = inspect(engine).has_table("live_session_15m_stats")
             with engine.begin() as conn:
+                if has_child_table:
+                    child_count = conn.execute(
+                        text(
+                            "SELECT COUNT(1) FROM `live_session_15m_stats` AS stats "
+                            "JOIN `live_session` AS parent ON parent.id = stats.session_id "
+                            "WHERE stats.month = :month AND parent.month = :month "
+                            "AND parent.end_time IS NOT NULL"
+                        ),
+                        {"month": month_code},
+                    ).scalar()
+                    if child_count:
+                        logging.error(
+                            "[LiveSession] 子表归档未完成，跳过父表删除 month=%s rows=%s",
+                            month_code,
+                            child_count,
+                        )
+                        continue
                 count = conn.execute(
                     text(
                         "SELECT COUNT(1) FROM `live_session` "
@@ -176,20 +206,22 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
                 ).scalar()
                 if not count:
                     continue
+                columns = _archive_columns(
+                    table_name,
+                    (
+                        "id", "room_id", "start_time", "end_time", "title", "gift", "guard",
+                        "super_chat", "month", "blind_box_count", "blind_box_profit", "danmaku_count",
+                        "payer_count", "start_guard_1", "start_guard_2", "start_guard_3",
+                        "start_fans_count", "start_attention", "end_guard_1", "end_guard_2",
+                        "end_guard_3", "end_fans_count", "end_attention", "avg_concurrency",
+                        "max_concurrency",
+                    ),
+                )
+                quoted_columns = ", ".join(f"`{name}`" for name in columns)
                 conn.execute(
                     text(
-                        f"INSERT IGNORE INTO `{table_name}` "
-                        "(id, room_id, start_time, end_time, title, gift, guard, super_chat, month, "
-                        "danmaku_count, start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
-                        "start_attention, end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
-                        "end_attention, "
-                        "avg_concurrency, max_concurrency) "
-                        "SELECT id, room_id, start_time, end_time, title, gift, guard, super_chat, month, "
-                        "danmaku_count, start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
-                        "start_attention, end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
-                        "end_attention, "
-                        "avg_concurrency, max_concurrency "
-                        "FROM `live_session` "
+                        f"INSERT IGNORE INTO `{table_name}` ({quoted_columns}) "
+                        f"SELECT {quoted_columns} FROM `live_session` "
                         "WHERE month = :month AND end_time IS NOT NULL"
                     ),
                     {"month": month_code},
@@ -205,6 +237,96 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
             logging.info(f"[LiveSession] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as e:
             logging.error(f"[LiveSession] 归档失败 {month_code}: {e}")
+    return moved_total
+
+
+def archive_live_session_15m_stats(target_month: Optional[str] = None) -> int:
+    """Archive closed session-relative 15-minute rows before their parents."""
+    current_month = month_str()
+    months: list[str] = []
+    if target_month:
+        normalized = normalize_month_code(target_month)
+        if not normalized:
+            logging.error(f"[LiveSession15m] 归档月份格式非法: {target_month}")
+            return 0
+        if normalized == current_month:
+            logging.info("[LiveSession15m] 当前月不归档，跳过")
+            return 0
+        months = [normalized]
+    else:
+        session = Session()
+        try:
+            rows = session.execute(
+                text(
+                    "SELECT DISTINCT stats.month "
+                    "FROM live_session_15m_stats AS stats "
+                    "JOIN live_session AS parent ON parent.id = stats.session_id "
+                    "WHERE stats.month < :current_month "
+                    "AND parent.month = stats.month "
+                    "AND parent.end_time IS NOT NULL"
+                ),
+                {"current_month": current_month},
+            ).fetchall()
+            for (month_code,) in rows:
+                normalized = normalize_month_code(month_code)
+                if normalized and normalized != current_month:
+                    months.append(normalized)
+        except SQLAlchemyError as exc:
+            logging.error(f"[LiveSession15m] 读取待归档月份失败: {exc}")
+            return 0
+        finally:
+            session.close()
+
+    moved_total = 0
+    for month_code in sorted(set(months)):
+        table_name = ensure_live_session_15m_stats_archive_table(month_code)
+        try:
+            with engine.begin() as conn:
+                predicate = (
+                    "stats.month = :month AND parent.month = :month "
+                    "AND parent.end_time IS NOT NULL"
+                )
+                count = conn.execute(
+                    text(
+                        "SELECT COUNT(1) FROM `live_session_15m_stats` AS stats "
+                        "JOIN `live_session` AS parent ON parent.id = stats.session_id "
+                        f"WHERE {predicate}"
+                    ),
+                    {"month": month_code},
+                ).scalar()
+                if not count:
+                    continue
+                columns = _archive_columns(
+                    table_name,
+                    (
+                        "session_id", "bucket_index", "room_id", "month", "start_time", "end_time",
+                        "gift", "guard", "super_chat", "blind_box_count", "blind_box_profit",
+                        "avg_concurrency", "max_concurrency", "sample_count", "payer_count",
+                    ),
+                )
+                quoted_columns = ", ".join(f"`{name}`" for name in columns)
+                selected_columns = ", ".join(f"stats.`{name}`" for name in columns)
+                conn.execute(
+                    text(
+                        f"INSERT IGNORE INTO `{table_name}` ({quoted_columns}) "
+                        f"SELECT {selected_columns} FROM `live_session_15m_stats` AS stats "
+                        "JOIN `live_session` AS parent ON parent.id = stats.session_id "
+                        f"WHERE {predicate}"
+                    ),
+                    {"month": month_code},
+                )
+                conn.execute(
+                    text(
+                        "DELETE stats FROM `live_session_15m_stats` AS stats "
+                        "JOIN `live_session` AS parent ON parent.id = stats.session_id "
+                        f"WHERE {predicate}"
+                    ),
+                    {"month": month_code},
+                )
+                moved_total += int(count or 0)
+            logging.info(f"[LiveSession15m] 已归档 {month_code}，记录数 ~{count}")
+        except SQLAlchemyError as exc:
+            logging.error(f"[LiveSession15m] 归档失败 {month_code}: {exc}")
     return moved_total
 
 
@@ -270,12 +392,15 @@ def archive_room_live_stats(target_month: Optional[str] = None) -> int:
                 ).scalar()
                 if not count:
                     continue
+                columns = _archive_columns(
+                    table_name,
+                    ("room_id", "date", "duration", "gift", "guard", "super_chat", "payer_count", "steel_coin_count"),
+                )
+                quoted_columns = ", ".join(f"`{name}`" for name in columns)
                 conn.execute(
                     text(
-                        f"INSERT IGNORE INTO `{table_name}` "
-                        "(room_id, date, duration) "
-                        "SELECT room_id, date, duration "
-                        "FROM `room_live_stats` "
+                        f"INSERT IGNORE INTO `{table_name}` ({quoted_columns}) "
+                        f"SELECT {quoted_columns} FROM `room_live_stats` "
                         "WHERE date >= :start AND date < :end"
                     ),
                     {"start": start_dt, "end": end_dt},

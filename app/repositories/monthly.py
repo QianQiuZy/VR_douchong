@@ -2,6 +2,7 @@ import logging
 import random
 import time
 
+from sqlalchemy import func
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -15,7 +16,7 @@ def add_room_stats_amounts(model, room_id: int, month: str, gift: float = 0.0, g
         session = Session()
         try:
             stmt = insert(model).values(
-                room_id=room_id, month=month, gift=gift, guard=guard, super_chat=super_chat
+                room_id=room_id, month=month, gift=gift, guard=guard, super_chat=super_chat, payer_count=0
             ).on_duplicate_key_update(
                 gift=model.gift + gift,
                 guard=model.guard + guard,
@@ -41,6 +42,27 @@ def add_room_stats_amounts(model, room_id: int, month: str, gift: float = 0.0, g
             except Exception:
                 pass
     logging.error("[RoomStatsMonthly] 多次重试仍失败，数据可能不完整。")
+
+
+def set_room_payer_count(model, room_id: int, month: str, count: int) -> None:
+    """Persist the Redis cardinality for one room-month payer set."""
+    session = Session()
+    try:
+        stmt = insert(model).values(
+            room_id=room_id,
+            month=month,
+            gift=0.0,
+            guard=0.0,
+            super_chat=0.0,
+            payer_count=int(count),
+        ).on_duplicate_key_update(payer_count=func.greatest(model.payer_count, int(count)))
+        session.execute(stmt)
+        session.commit()
+    except SQLAlchemyError as exc:
+        session.rollback()
+        logging.error("[RoomStatsMonthly] payer_count写入失败 room_id=%s month=%s: %s", room_id, month, exc)
+    finally:
+        session.close()
 
 
 def add_blind_box_amounts(model, room_id: int, month: str, count: int = 0, profit: int = 0) -> None:

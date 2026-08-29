@@ -59,6 +59,10 @@ def room_live_stats_table_name(month_code: str) -> str:
     return f"room_live_stats_{month_code}"
 
 
+def live_session_15m_stats_table_name(month_code: str) -> str:
+    return f"live_session_15m_stats_{month_code}"
+
+
 def attention_table_name(month_code: str) -> str:
     return f"attention_{month_code}"
 
@@ -98,6 +102,15 @@ def ensure_live_session_archive_table(month_code: str) -> str:
 
 def ensure_room_live_stats_archive_table(month_code: str) -> str:
     return _ensure_archive_table(month_code, "room_live_stats", "room_live_stats", "RoomLiveStats")
+
+
+def ensure_live_session_15m_stats_archive_table(month_code: str) -> str:
+    return _ensure_archive_table(
+        month_code,
+        "live_session_15m_stats",
+        "live_session_15m_stats",
+        "LiveSession15mStats",
+    )
 
 
 def ensure_attention_archive_table(month_code: str) -> str:

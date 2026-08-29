@@ -29,6 +29,7 @@ from typing import Optional
 from . import api_app, archive_service, monitoring_jobs, runtime_state
 from .config import APP_HOST, APP_PORT
 from .database import create_schema, ensure_runtime_schema
+from .metrics_runtime import flush_session
 from .models import RoomInfo
 
 
@@ -55,10 +56,10 @@ def _month_str_now() -> str:
 async def _archive_month(target_month: Optional[str] = None) -> None:
     await asyncio.gather(
         asyncio.to_thread(archive_service.archive_super_chat_log, target_month),
-        asyncio.to_thread(archive_service.archive_live_session, target_month),
         asyncio.to_thread(archive_service.archive_room_live_stats, target_month),
         asyncio.to_thread(archive_service.archive_attention, target_month),
     )
+    await asyncio.to_thread(archive_service.archive_live_session, target_month)
 
 
 async def monthly_reset_scheduler() -> None:
@@ -146,6 +147,11 @@ def init_session() -> None:
     bilibili_gateway.init_session()
 
 
+def _flush_active_metrics(end_time: datetime.datetime) -> None:
+    for session_id in set(runtime_state.CURRENT_SESSIONS.values()):
+        flush_session(session_id, end_time)
+
+
 # ------------------ main coroutine ------------------ #
 async def main() -> None:
     """Top-level runtime coroutine.
@@ -181,6 +187,7 @@ async def main() -> None:
             monitoring_jobs.concurrency_poll_scheduler(),  # 开播房间每 15 秒轮询同接
         )
     finally:
+        _flush_active_metrics(_now())
         if runtime_state.aiohttp_session:
             await runtime_state.aiohttp_session.close()
 

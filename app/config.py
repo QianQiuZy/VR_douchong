@@ -62,3 +62,5 @@ API_SECRET = os.getenv("API_SECRET", "").strip()
 ATTENTION_DAILY_ROOM_SLEEP_SECONDS = float(
     os.getenv("ATTENTION_DAILY_ROOM_SLEEP_SECONDS", "1")
 )
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_KEY_TTL_SECONDS = get_env_int("REDIS_KEY_TTL_SECONDS", 90 * 24 * 60 * 60)

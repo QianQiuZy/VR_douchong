@@ -23,6 +23,8 @@ def test_my_handler_records_gift_and_common_notice_with_existing_repository_call
         "add_values_by_id",
         lambda session_id, **values: calls.append(("session", session_id, values)),
     )
+    monkeypatch.setattr(event_ingestion.RoomLiveStats, "add_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(event_ingestion, "register_payer", lambda *args, **kwargs: None)
 
     # When: the handler replays a normal gift then a mapped common-notice gift.
     handler = event_ingestion.MyHandler()

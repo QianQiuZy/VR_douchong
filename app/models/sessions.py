@@ -15,9 +15,12 @@ from ..repositories.live_sessions import (
     add_values_by_id,
     add_values_by_room_open,
     close_session_by_id,
+    find_open_session,
+    set_payer_count,
     start_session,
     update_concurrency_by_id,
 )
+from ..repositories.session_15m import upsert_stats
 from ..repositories.super_chat import log_super_chat
 
 
@@ -37,6 +40,7 @@ class LiveSession(Base):
     blind_box_count = Column(Integer, default=0, nullable=False)
     blind_box_profit = Column(Integer, default=0, nullable=False)
     danmaku_count = Column(Integer, default=0, nullable=False)
+    payer_count = Column(Integer, default=0, nullable=False)
     __table_args__ = (
         Index("idx_ls_room_month", "room_id", "month"),
         Index("idx_ls_room_month_start", "room_id", "month", "start_time"),
@@ -57,6 +61,10 @@ class LiveSession(Base):
     @classmethod
     def start_session(cls, room_id: int, start_dt: datetime.datetime, title: str) -> int | None:
         return start_session(cls, room_id, start_dt, title)
+
+    @classmethod
+    def find_open_session(cls, room_id: int) -> tuple[int, datetime.datetime] | None:
+        return find_open_session(cls, room_id)
 
     @classmethod
     def add_values_by_id(
@@ -81,6 +89,10 @@ class LiveSession(Base):
         cls, session_id: int | None, avg_concurrency: float | None = None, max_concurrency: int | None = None
     ) -> None:
         update_concurrency_by_id(cls, session_id, avg_concurrency, max_concurrency)
+
+    @classmethod
+    def set_payer_count(cls, session_id: int | None, count: int) -> None:
+        set_payer_count(cls, session_id, count)
 
     @classmethod
     def update_start_counts(
@@ -135,3 +147,65 @@ class SuperChatLog(Base):
         send_time: datetime.datetime | None = None,
     ) -> None:
         log_super_chat(cls, room_id, uname, uid, price, content, send_time)
+
+
+class LiveSession15mStats(Base):
+    """Session-relative 15-minute metrics; mutable because ORM rows are updated."""  # noqa: MUTABLE_OK
+
+    __tablename__ = "live_session_15m_stats"
+    session_id = Column(Integer, primary_key=True)
+    bucket_index = Column(Integer, primary_key=True)
+    room_id = Column(Integer, nullable=False, index=True)
+    month = Column(String(6), nullable=False, index=True)
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=False)
+    gift = Column(Float, default=0.0, nullable=False)
+    guard = Column(Float, default=0.0, nullable=False)
+    super_chat = Column(Float, default=0.0, nullable=False)
+    blind_box_count = Column(Integer, default=0, nullable=False)
+    blind_box_profit = Column(Integer, default=0, nullable=False)
+    avg_concurrency = Column(Float, nullable=True)
+    max_concurrency = Column(Integer, nullable=True)
+    sample_count = Column(Integer, default=0, nullable=False)
+    payer_count = Column(Integer, default=0, nullable=False)
+    __table_args__ = (
+        Index("idx_ls15_room_month_start", "room_id", "month", "start_time"),
+    )
+
+    @classmethod
+    def upsert(
+        cls,
+        session_id: int,
+        room_id: int,
+        month: str,
+        bucket_index: int,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        gift: float,
+        guard: float,
+        super_chat: float,
+        blind_box_count: int,
+        blind_box_profit: int,
+        avg_concurrency: float | None,
+        max_concurrency: int | None,
+        sample_count: int,
+        payer_count: int,
+    ) -> bool:
+        return upsert_stats(
+            cls,
+            session_id,
+            room_id,
+            month,
+            bucket_index,
+            start_time,
+            end_time,
+            gift,
+            guard,
+            super_chat,
+            blind_box_count,
+            blind_box_profit,
+            avg_concurrency,
+            max_concurrency,
+            sample_count,
+            payer_count,
+        )

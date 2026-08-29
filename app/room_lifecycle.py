@@ -8,6 +8,7 @@ from typing import Awaitable, Callable, Optional
 
 from .models import LiveSession, RoomInfo
 from . import room_config, runtime_state
+from .metrics_runtime import flush_session
 
 
 LIVE_SESSION_GRACE_SECONDS = 180
@@ -33,6 +34,7 @@ def finish_live_session(
     session_id = runtime_state.CURRENT_SESSIONS.pop(room_id, None)
     dependencies.flush_pending_danmaku(room_id, session_id)
     average, maximum = dependencies.finalize_concurrency(room_id, session_id)
+    flush_session(session_id, end_dt)
     LiveSession.close_session_by_id(session_id, end_dt)
     LiveSession.update_concurrency_by_id(session_id, avg_concurrency=average, max_concurrency=maximum)
     runtime_state.CONCURRENCY_CACHE.pop(room_id, None)
@@ -111,6 +113,7 @@ async def delete_room_async(room_id: int, dependencies: LifecycleDependencies) -
         runtime_state.PENDING_SESSION_ENDS.pop(room_id, None)
         session_id = runtime_state.CURRENT_SESSIONS.pop(room_id, None)
         dependencies.flush_pending_danmaku(room_id, session_id)
+        flush_session(session_id, end_dt)
         LiveSession.close_session_by_id(session_id, end_dt)
         average, maximum = dependencies.finalize_concurrency(room_id, session_id)
         LiveSession.update_concurrency_by_id(session_id, avg_concurrency=average, max_concurrency=maximum)

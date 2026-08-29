@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,8 @@ def test_extracted_handler_replays_gift_guard_sc_notice_and_danmaku(monkeypatch)
     runtime_state.LAST_STATUS[301] = 1
     monkeypatch.setattr(event_ingestion.RoomStatsMonthly, "add_amounts", lambda *args, **kwargs: calls.append(("monthly", kwargs)))
     monkeypatch.setattr(event_ingestion.LiveSession, "add_values_by_id", lambda *args, **kwargs: calls.append(("session", kwargs)))
+    monkeypatch.setattr(event_ingestion.RoomLiveStats, "add_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(event_ingestion, "register_payer", lambda *args, **kwargs: None)
     monkeypatch.setattr(event_ingestion.SuperChatLog, "log_sc", lambda *args, **kwargs: calls.append(("sc", kwargs)))
     handler = event_ingestion.MyHandler()
     handler.__getattribute__("_on_gift")(client, SimpleNamespace(total_price=1000, total_coin=1000, gift_name="gift", num=1, uname="u", uid=1))
@@ -37,6 +40,39 @@ def test_extracted_handler_replays_gift_guard_sc_notice_and_danmaku(monkeypatch)
     handler.__getattribute__("_on_danmaku")(client, SimpleNamespace(is_mirror=False))
     assert runtime_state.DANMAKU_PENDING[301] == 1
     assert [name for name, _ in calls] == ["monthly", "session", "monthly", "session", "monthly", "session", "sc", "monthly", "session"]
+
+
+def test_super_chat_recovers_open_session_before_runtime_bucket_write(monkeypatch):
+    client = SimpleNamespace(room_id=305)
+    runtime_state.CURRENT_SESSIONS.pop(305, None)
+    calls = []
+    registration = SimpleNamespace(
+        session=SimpleNamespace(size=1),
+        monthly=SimpleNamespace(size=1),
+        daily=SimpleNamespace(size=1),
+        bucket=SimpleNamespace(added=True),
+        steel_coin=None,
+    )
+    monkeypatch.setattr(event_ingestion.LiveSession, "find_open_session", lambda room_id: (55, datetime.datetime(2026, 8, 30, 12, 0)))
+    monkeypatch.setattr(event_ingestion, "start_session", lambda *args, **kwargs: calls.append(("start", args)))
+    monkeypatch.setattr(event_ingestion, "register_payer", lambda *args, **kwargs: registration)
+    monkeypatch.setattr(event_ingestion.RoomStatsMonthly, "add_amounts", lambda *args, **kwargs: None)
+    monkeypatch.setattr(event_ingestion.RoomStatsMonthly, "set_payer_count", lambda *args, **kwargs: None)
+    monkeypatch.setattr(event_ingestion.LiveSession, "add_values_by_room_open", lambda *args, **kwargs: None)
+    monkeypatch.setattr(event_ingestion.LiveSession, "set_payer_count", lambda *args, **kwargs: None)
+    monkeypatch.setattr(event_ingestion.RoomLiveStats, "add_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(event_ingestion.SuperChatLog, "log_sc", lambda *args, **kwargs: None)
+    monkeypatch.setattr(event_ingestion, "record_payment", lambda *args, **kwargs: calls.append(("payment", args)))
+
+    event_ingestion.MyHandler().__getattribute__("_on_super_chat")(
+        client,
+        SimpleNamespace(price=20, uid=9, uname="u", message="sc", start_time=None),
+    )
+
+    assert runtime_state.CURRENT_SESSIONS[305] == 55
+    assert [name for name, _ in calls] == ["start", "payment"]
+    assert calls[1][1][0] == 55
+    runtime_state.CURRENT_SESSIONS.pop(305, None)
 
 
 def test_extracted_handler_ignores_malformed_and_unknown_events():

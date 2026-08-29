@@ -26,22 +26,67 @@ def create_schema() -> None:
 
 
 def ensure_runtime_schema() -> None:
-    """Compatibly add live_session columns required by current runtime code."""
+    """Compatibly add current metrics columns to hot and old archive tables."""
     required_columns = {
-        "start_attention": "INT NULL",
-        "end_attention": "INT NULL",
+        "live_session": {
+            "start_attention": "INT NULL",
+            "end_attention": "INT NULL",
+            "payer_count": "INT NOT NULL DEFAULT 0",
+        },
+        "live_session_15m_stats": {
+            "room_id": "INT NOT NULL DEFAULT 0",
+            "month": "VARCHAR(6) NOT NULL DEFAULT ''",
+            "start_time": "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            "end_time": "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            "gift": "FLOAT NOT NULL DEFAULT 0",
+            "guard": "FLOAT NOT NULL DEFAULT 0",
+            "super_chat": "FLOAT NOT NULL DEFAULT 0",
+            "blind_box_count": "INT NOT NULL DEFAULT 0",
+            "blind_box_profit": "INT NOT NULL DEFAULT 0",
+            "avg_concurrency": "FLOAT NULL",
+            "max_concurrency": "INT NULL",
+            "sample_count": "INT NOT NULL DEFAULT 0",
+            "payer_count": "INT NOT NULL DEFAULT 0",
+        },
+        "room_stats_monthly": {
+            "payer_count": "INT NOT NULL DEFAULT 0",
+        },
+        "room_live_stats": {
+            "gift": "FLOAT NOT NULL DEFAULT 0",
+            "guard": "FLOAT NOT NULL DEFAULT 0",
+            "super_chat": "FLOAT NOT NULL DEFAULT 0",
+            "payer_count": "INT NOT NULL DEFAULT 0",
+            "steel_coin_count": "INT NOT NULL DEFAULT 0",
+        },
     }
     try:
-        existing_cols = {col.get("name") for col in inspect(engine).get_columns("live_session")}
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
     except SQLAlchemyError as exc:
-        logging.error(f"[schema] 读取 live_session 列失败: {exc}")
+        logging.error(f"[schema] 读取表结构失败: {exc}")
         return
-    for col_name, ddl in required_columns.items():
-        if col_name in existing_cols:
+    targets = dict(required_columns)
+    for table_name in table_names:
+        if table_name.startswith("live_session_") and table_name[len("live_session_"):].isdigit():
+            targets.setdefault(table_name, {})["payer_count"] = "INT NOT NULL DEFAULT 0"
+        if table_name.startswith("live_session_15m_stats_") and table_name[len("live_session_15m_stats_"):].isdigit():
+            targets.setdefault(table_name, {}).update(required_columns["live_session_15m_stats"])
+        if table_name.startswith("room_live_stats_") and table_name[len("room_live_stats_"):].isdigit():
+            targets.setdefault(table_name, {}).update(required_columns["room_live_stats"])
+    for table_name, columns in targets.items():
+        if table_name not in table_names:
             continue
         try:
-            with engine.begin() as conn:
-                conn.execute(text(f"ALTER TABLE `live_session` ADD COLUMN `{col_name}` {ddl}"))
-            logging.info(f"[schema] 已补齐 live_session.{col_name}")
+            existing_cols = {col.get("name") for col in inspector.get_columns(table_name)}
         except SQLAlchemyError as exc:
-            logging.error(f"[schema] 新增 live_session.{col_name} 失败: {exc}")
+            logging.error(f"[schema] 读取 {table_name} 列失败: {exc}")
+            continue
+        for col_name, ddl in columns.items():
+            if col_name in existing_cols:
+                continue
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE `{table_name}` ADD COLUMN `{col_name}` {ddl}"))
+                logging.info(f"[schema] 已补齐 {table_name}.{col_name}")
+            except SQLAlchemyError as exc:
+                logging.error(f"[schema] 新增 {table_name}.{col_name} 失败: {exc}")

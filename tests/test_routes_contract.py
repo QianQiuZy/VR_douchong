@@ -94,6 +94,11 @@ def isolated_db(gift_module, monkeypatch):
         "month_aggregate_for_month",
         classmethod(lambda cls, room_id, month: (0, 0)),
     )
+    monkeypatch.setattr(
+        gift_module.RoomLiveStats,
+        "month_steel_coin_for_month",
+        classmethod(lambda cls, room_id, month: 0),
+    )
     monkeypatch.setattr(gift_module, "sc_log_table_exists", lambda name: False)
 
 
@@ -284,6 +289,8 @@ class TestGiftCurrentMonthRoute:
             "gift",
             "guard",
             "super_chat",
+            "payer_count",
+            "steel_coin_count",
             "blind_box_count",
             "blind_box_profit",
             "live_duration",
@@ -321,6 +328,8 @@ class TestGiftByMonthRoute:
             "gift",
             "guard",
             "super_chat",
+            "payer_count",
+            "steel_coin_count",
             "blind_box_count",
             "blind_box_profit",
             "live_duration",

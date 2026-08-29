@@ -51,6 +51,7 @@ from .database import (  # noqa: F401 - preserved compat re-exports
 from .models import (  # noqa: F401 - preserved compat re-exports
     Attention,
     LiveSession,
+    LiveSession15mStats,
     RoomBlindBoxMonthly,
     RoomInfo,
     RoomLiveStats,
@@ -61,10 +62,12 @@ from .repositories.tables import (  # noqa: F401 - preserved compat re-exports
     attention_table_name,
     ensure_attention_archive_table,
     ensure_live_session_archive_table,
+    ensure_live_session_15m_stats_archive_table,
     ensure_room_live_stats_archive_table,
     ensure_sc_archive_table,
     is_current_month,
     live_session_table_name,
+    live_session_15m_stats_table_name,
     month_range,
     month_str,
     normalize_month_code,
@@ -131,6 +134,7 @@ COMMON_NOTICE_GIFT_COIN_MAP = event_ingestion.COMMON_NOTICE_GIFT_COIN_MAP
 from . import archive_service as _archive_service
 
 archive_super_chat_log = _archive_service.archive_super_chat_log
+archive_live_session_15m_stats = _archive_service.archive_live_session_15m_stats
 archive_live_session = _archive_service.archive_live_session
 archive_room_live_stats = _archive_service.archive_room_live_stats
 archive_attention = _archive_service.archive_attention

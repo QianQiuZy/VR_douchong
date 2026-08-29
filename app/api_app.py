@@ -46,6 +46,7 @@ from .database import engine
 from .models import (
     Attention,
     LiveSession,
+    LiveSession15mStats,
     RoomBlindBoxMonthly,
     RoomInfo,
     RoomLiveStats,
@@ -56,6 +57,7 @@ from .repositories.tables import (
     attention_table_name,
     is_current_month,
     live_session_table_name,
+    live_session_15m_stats_table_name,
     month_range,
     month_str,
     normalize_month_code,
@@ -308,6 +310,164 @@ def _room_ids_for_month(m: str, include_config: bool = True) -> list[int]:
         session.close()
 
 
+def _daily_metrics_for_room(session, room_id: int, month: str) -> dict[str, dict[str, float | int]]:
+    start_date, end_date = month_range(month)
+    if is_current_month(month):
+        rows = (
+            session.query(
+                RoomLiveStats.date,
+                RoomLiveStats.gift,
+                RoomLiveStats.guard,
+                RoomLiveStats.super_chat,
+                RoomLiveStats.payer_count,
+                RoomLiveStats.steel_coin_count,
+            )
+            .filter(
+                and_(
+                    RoomLiveStats.room_id == room_id,
+                    RoomLiveStats.date >= start_date,
+                    RoomLiveStats.date < end_date,
+                )
+            )
+            .all()
+        )
+    else:
+        table_name = room_live_stats_table_name(month)
+        if not _resolved_sc_log_table_exists()(table_name):
+            rows = (
+                session.query(
+                    RoomLiveStats.date,
+                    RoomLiveStats.gift,
+                    RoomLiveStats.guard,
+                    RoomLiveStats.super_chat,
+                    RoomLiveStats.payer_count,
+                    RoomLiveStats.steel_coin_count,
+                )
+                .filter(
+                    and_(
+                        RoomLiveStats.room_id == room_id,
+                        RoomLiveStats.date >= start_date,
+                        RoomLiveStats.date < end_date,
+                    )
+                )
+                .all()
+            )
+        else:
+            archive_columns = {col.get("name") for col in inspect(engine).get_columns(table_name)}
+            metric_names = ("gift", "guard", "super_chat", "payer_count", "steel_coin_count")
+            metric_select = ", ".join(
+                f"`{name}`" if name in archive_columns else f"0 AS `{name}`"
+                for name in metric_names
+            )
+            rows = session.execute(
+                text(
+                    f"SELECT `date`, {metric_select} FROM `{table_name}` "
+                    "WHERE room_id = :room_id AND `date` >= :start_date AND `date` < :end_date"
+                ),
+                {"room_id": room_id, "start_date": start_date, "end_date": end_date},
+            ).fetchall()
+    return {
+        str(row[0]): {
+            "gift": float(row[1] or 0),
+            "guard": float(row[2] or 0),
+            "super_chat": float(row[3] or 0),
+            "payer_count": int(row[4] or 0),
+            "steel_coin_count": int(row[5] or 0),
+        }
+        for row in rows
+    }
+
+
+def _format_15m_stats(row: Any) -> dict[str, Any]:
+    if isinstance(row, dict):
+        values = row
+    else:
+        values = {
+            "bucket_index": row[0],
+            "start_time": row[1],
+            "end_time": row[2],
+            "gift": row[3],
+            "guard": row[4],
+            "super_chat": row[5],
+            "blind_box_count": row[6],
+            "blind_box_profit": row[7],
+            "avg_concurrency": row[8],
+            "max_concurrency": row[9],
+            "sample_count": row[10],
+            "payer_count": row[11],
+        }
+    return {
+        "bucket_index": int(values.get("bucket_index") or 0),
+        "start_time": _format_optional_timestamp(values.get("start_time")),
+        "end_time": _format_optional_timestamp(values.get("end_time")),
+        "gift": float(values.get("gift") or 0),
+        "guard": float(values.get("guard") or 0),
+        "super_chat": float(values.get("super_chat") or 0),
+        "blind_box_count": int(values.get("blind_box_count") or 0),
+        "blind_box_profit": _profit_display(values.get("blind_box_profit")),
+        "avg_concurrency": values.get("avg_concurrency"),
+        "max_concurrency": values.get("max_concurrency"),
+        "sample_count": int(values.get("sample_count") or 0),
+        "payer_count": int(values.get("payer_count") or 0),
+    }
+
+
+def _session_15m_stats(session, session_id: int | Column[int], month: str) -> list[dict[str, Any]]:
+    if is_current_month(month):
+        rows = (
+            session.query(LiveSession15mStats)
+            .filter_by(session_id=session_id)
+            .order_by(LiveSession15mStats.bucket_index.asc())
+            .all()
+        )
+        return [_format_15m_stats({
+            "bucket_index": row.bucket_index,
+            "start_time": row.start_time,
+            "end_time": row.end_time,
+            "gift": row.gift,
+            "guard": row.guard,
+            "super_chat": row.super_chat,
+            "blind_box_count": row.blind_box_count,
+            "blind_box_profit": row.blind_box_profit,
+            "avg_concurrency": row.avg_concurrency,
+            "max_concurrency": row.max_concurrency,
+            "sample_count": row.sample_count,
+            "payer_count": row.payer_count,
+        }) for row in rows]
+    table_name = live_session_15m_stats_table_name(month)
+    if not _resolved_sc_log_table_exists()(table_name):
+        rows = (
+            session.query(LiveSession15mStats)
+            .filter_by(session_id=session_id)
+            .order_by(LiveSession15mStats.bucket_index.asc())
+            .all()
+        )
+        return [_format_15m_stats({
+            "bucket_index": row.bucket_index,
+            "start_time": row.start_time,
+            "end_time": row.end_time,
+            "gift": row.gift,
+            "guard": row.guard,
+            "super_chat": row.super_chat,
+            "blind_box_count": row.blind_box_count,
+            "blind_box_profit": row.blind_box_profit,
+            "avg_concurrency": row.avg_concurrency,
+            "max_concurrency": row.max_concurrency,
+            "sample_count": row.sample_count,
+            "payer_count": row.payer_count,
+        }) for row in rows]
+    rows = session.execute(
+        text(
+            f"SELECT bucket_index, start_time, end_time, gift, guard, super_chat, "
+            "blind_box_count, blind_box_profit, avg_concurrency, max_concurrency, "
+            f"sample_count, payer_count FROM `{table_name}` "
+            "WHERE session_id = :session_id ORDER BY bucket_index ASC"
+        ),
+        {"session_id": session_id},
+    ).fetchall()
+    return [_format_15m_stats(row) for row in rows]
+
+
 # ------------------ Routes ------------------ #
 @app.post("/add/room")
 def add_room_api(request: Request, payload: RoomPayload = Body(default={})):
@@ -368,6 +528,7 @@ def get_stats_current_month():
             g = rsm.gift if rsm else 0.0
             gd = rsm.guard if rsm else 0.0
             sc = rsm.super_chat if rsm else 0.0
+            payer_count = getattr(rsm, "payer_count", 0) if rsm else 0
             rbm = session.query(RoomBlindBoxMonthly).filter_by(room_id=room_id, month=m).first()
             bb_count = rbm.blind_box_count if rbm else 0
             bb_profit = _profit_display(rbm.blind_box_profit) if rbm else 0.0
@@ -380,6 +541,7 @@ def get_stats_current_month():
             ) or 0
 
             total_sec, eff_days = RoomLiveStats.month_aggregate_for_month(room_id, m)
+            steel_coin_count = RoomLiveStats.month_steel_coin_for_month(room_id, m)
             live_dur_str = _seconds_to_hms(total_sec)
 
             info = runtime_state.LIVE_INFO.get(room_id, {})
@@ -411,6 +573,8 @@ def get_stats_current_month():
                     "gift": g,
                     "guard": gd,
                     "super_chat": sc,
+                    "payer_count": payer_count,
+                    "steel_coin_count": steel_coin_count,
                     "blind_box_count": bb_count,
                     "blind_box_profit": bb_profit,
                     "live_duration": live_dur_str,
@@ -453,6 +617,7 @@ def get_stats_by_month(request: Request):
             g = rsm.gift if rsm else 0.0
             gd = rsm.guard if rsm else 0.0
             sc = rsm.super_chat if rsm else 0.0
+            payer_count = getattr(rsm, "payer_count", 0) if rsm else 0
             rbm = session.query(RoomBlindBoxMonthly).filter_by(room_id=room_id, month=m).first()
             bb_count = rbm.blind_box_count if rbm else 0
             bb_profit = _profit_display(rbm.blind_box_profit) if rbm else 0.0
@@ -465,6 +630,7 @@ def get_stats_by_month(request: Request):
             ) or 0
 
             total_sec, eff_days = RoomLiveStats.month_aggregate_for_month(room_id, m)
+            steel_coin_count = RoomLiveStats.month_steel_coin_for_month(room_id, m)
             live_dur_str = _seconds_to_hms(total_sec)
 
             if is_current:
@@ -497,6 +663,8 @@ def get_stats_by_month(request: Request):
                     "gift": g,
                     "guard": gd,
                     "super_chat": sc,
+                    "payer_count": payer_count,
+                    "steel_coin_count": steel_coin_count,
                     "blind_box_count": bb_count,
                     "blind_box_profit": bb_profit,
                     "live_duration": live_dur_str,
@@ -566,6 +734,7 @@ def get_live_sessions_by_room_month(request: Request):
                         "gift": r.gift,
                         "guard": r.guard,
                         "super_chat": r.super_chat,
+                        "payer_count": getattr(r, "payer_count", 0) or 0,
                         "blind_box_count": r.blind_box_count,
                         "blind_box_profit": _profit_display(r.blind_box_profit),
                         "danmaku_count": r.danmaku_count or 0,
@@ -584,11 +753,14 @@ def get_live_sessions_by_room_month(request: Request):
                         "avg_concurrency": avg_concurrency,
                         "max_concurrency": max_concurrency,
                         "current_concurrency": current_concurrency,
+                        "stats_15m": _session_15m_stats(session, r.id, m),
                     }
                 )
         else:
             table_name = live_session_table_name(m)
             if sc_log_table_exists(table_name):
+                archive_columns = {col.get("name") for col in inspect(engine).get_columns(table_name)}
+                payer_select = "`payer_count`" if "payer_count" in archive_columns else "0 AS payer_count"
                 rows = session.execute(
                     text(
                         f"SELECT id, start_time, end_time, title, gift, guard, super_chat, "
@@ -596,7 +768,7 @@ def get_live_sessions_by_room_month(request: Request):
                         "start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
                         "start_attention, end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
                         "end_attention, "
-                        "avg_concurrency, max_concurrency "
+                        f"avg_concurrency, max_concurrency, {payer_select} "
                         f"FROM `{table_name}` "
                         "WHERE room_id = :room_id AND month = :month "
                         "ORDER BY start_time ASC"
@@ -612,6 +784,7 @@ def get_live_sessions_by_room_month(request: Request):
                             "gift": row[4],
                             "guard": row[5],
                             "super_chat": row[6],
+                            "payer_count": row[22] or 0,
                             "blind_box_count": row[7],
                             "blind_box_profit": _profit_display(row[8]),
                             "danmaku_count": row[9] or 0,
@@ -628,6 +801,7 @@ def get_live_sessions_by_room_month(request: Request):
                             "avg_concurrency": row[20],
                             "max_concurrency": row[21],
                             "current_concurrency": None,
+                            "stats_15m": _session_15m_stats(session, row[0], m),
                         }
                     )
             else:
@@ -646,6 +820,7 @@ def get_live_sessions_by_room_month(request: Request):
                             "gift": r.gift,
                             "guard": r.guard,
                             "super_chat": r.super_chat,
+                            "payer_count": getattr(r, "payer_count", 0) or 0,
                             "blind_box_count": r.blind_box_count,
                             "blind_box_profit": _profit_display(r.blind_box_profit),
                             "danmaku_count": r.danmaku_count or 0,
@@ -662,6 +837,7 @@ def get_live_sessions_by_room_month(request: Request):
                             "avg_concurrency": r.avg_concurrency,
                             "max_concurrency": r.max_concurrency,
                             "current_concurrency": None,
+                            "stats_15m": _session_15m_stats(session, r.id, m),
                         }
                     )
         payload = {"room_id": room_id, "month": m, "sessions": out}
@@ -701,6 +877,7 @@ def get_attention_logs(request: Request):
     sc_log_table_exists = _resolved_sc_log_table_exists()
     session = session_factory()
     try:
+        daily_metrics = _daily_metrics_for_room(session, room_id, m)
         if is_current_month(m):
             rows = (
                 session.query(
@@ -759,17 +936,27 @@ def get_attention_logs(request: Request):
                     .order_by(Attention.date.asc())
                     .all()
                 )
-        out = [
-            {
-                "date": str(row[0]).replace("-", ""),
-                "attention": str(int(row[1] or 0)),
-                "guard_1": None if row[2] in (None, "") else int(row[2]),
-                "guard_2": None if row[3] in (None, "") else int(row[3]),
-                "guard_3": None if row[4] in (None, "") else int(row[4]),
-                "fans_count": None if row[5] in (None, "") else int(row[5]),
-            }
-            for row in rows
-        ]
+        attention_by_date = {str(row[0]): row for row in rows}
+        dates = sorted(set(attention_by_date) | set(daily_metrics))
+        out = []
+        for date_key in dates:
+            row = attention_by_date.get(date_key)
+            metrics = daily_metrics.get(date_key, {})
+            out.append(
+                {
+                    "date": date_key.replace("-", ""),
+                    "attention": str(int(row[1] or 0)) if row else "0",
+                    "guard_1": None if not row or row[2] in (None, "") else int(row[2]),
+                    "guard_2": None if not row or row[3] in (None, "") else int(row[3]),
+                    "guard_3": None if not row or row[4] in (None, "") else int(row[4]),
+                    "fans_count": None if not row or row[5] in (None, "") else int(row[5]),
+                    "gift": metrics.get("gift", 0.0),
+                    "guard": metrics.get("guard", 0.0),
+                    "super_chat": metrics.get("super_chat", 0.0),
+                    "payer_count": metrics.get("payer_count", 0),
+                    "steel_coin_count": metrics.get("steel_coin_count", 0),
+                }
+            )
         payload = {"room_id": room_id, "month": m, "attention": out}
         return JSONResponse(content=jsonable_encoder(payload))
     except SQLAlchemyError as e:

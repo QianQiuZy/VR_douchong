@@ -101,6 +101,8 @@
 | gift | float | 礼物收入累计。 |
 | guard | float | 守护收入累计。 |
 | super_chat | float | SC 收入累计。 |
+| payer_count | int | 当月去重付费人数。 |
+| steel_coin_count | int | 当月房间钢镚计数。 |
 | blind_box_count | int | 盲盒数量累计。 |
 | blind_box_profit | float | 盲盒盈亏累计（正负均可能，最小单位 0.1）。 |
 | live_duration | string | 当月直播时长（`HH:MM:SS`）。 |
@@ -138,6 +140,7 @@
 
 - 历史月份返回 `live_time` 为 `0000-00-00 00:00:00`，`title` 为空，`status` 为 `0`。
 - 历史月份的 `guard_1/guard_2/guard_3/fans_count` 返回 `null`。
+- 返回 `payer_count`，表示该房间该月的去重付费人数。
 - 不返回 `current_concurrency` 字段。
 
 **错误响应**
@@ -179,6 +182,7 @@
 | gift | float | 单场礼物收入。 |
 | guard | float | 单场守护收入。 |
 | super_chat | float | 单场 SC 收入。 |
+| payer_count | int | 单场去重付费人数。 |
 | blind_box_count | int | 单场盲盒数量。 |
 | blind_box_profit | float | 单场盲盒盈亏（正负均可能，最小单位 0.1）。 |
 | danmaku_count | int | 弹幕数量。 |
@@ -195,6 +199,24 @@
 | avg_concurrency | float 或 null | 平均同接（若未采样则为 null）。 |
 | max_concurrency | int 或 null | 最大同接（若未采样则为 null）。 |
 | current_concurrency | int 或 null | 进行中直播的即时同接，历史场次为 null。 |
+| stats_15m | array | 以本场开播时间为起点的15分钟统计区间。 |
+
+`stats_15m` 元素字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| bucket_index | int | 本场相对区间序号，从0开始。 |
+| start_time | string | 区间开始时间。 |
+| end_time | string | 区间结束或最终落库时间。 |
+| gift | float | 区间礼物收入。 |
+| guard | float | 区间守护收入。 |
+| super_chat | float | 区间 SC 收入。 |
+| blind_box_count | int | 区间盲盒数量。 |
+| blind_box_profit | float | 区间盲盒盈亏。 |
+| avg_concurrency | float 或 null | 区间平均同接。 |
+| max_concurrency | int 或 null | 区间最高同接。 |
+| sample_count | int | 区间同接采样次数。 |
+| payer_count | int | 区间去重付费人数。 |
 
 **错误响应**
 
@@ -236,6 +258,11 @@
 | guard_2 | int / null | 当日提督数；历史归档表缺少该字段或字段为空时返回 `null`。 |
 | guard_3 | int / null | 当日总督数；历史归档表缺少该字段或字段为空时返回 `null`。 |
 | fans_count | int / null | 当日粉丝团人数；历史归档表缺少该字段或字段为空时返回 `null`。 |
+| gift | float | 当日房间礼物收入。 |
+| guard | float | 当日房间守护收入。 |
+| super_chat | float | 当日房间 SC 收入。 |
+| payer_count | int | 当日房间去重付费人数。 |
+| steel_coin_count | int | 当日房间钢镚计数。 |
 
 示例：
 

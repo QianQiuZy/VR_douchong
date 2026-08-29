@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import bilibili_gateway, event_ingestion, room_config, runtime_state
 from .config import ATTENTION_DAILY_ROOM_SLEEP_SECONDS
 from .database import Session
+from .metrics_runtime import record_concurrency, start_session
 from .models import Attention, LiveSession, RoomInfo, RoomLiveStats
 
 
@@ -70,8 +71,13 @@ async def run_clients_loop() -> None:
         await asyncio.sleep(3)
 
 
-def init_concurrency_cache(room_id: int, session_id: int) -> None:
+def init_concurrency_cache(
+    room_id: int,
+    session_id: int,
+    start_time: Optional[datetime.datetime] = None,
+) -> None:
     runtime_state.CONCURRENCY_CACHE[room_id] = {"session_id": int(session_id), "total": 0, "samples": 0, "max": 0, "last": 0}
+    start_session(session_id, room_id, start_time or _now())
 
 
 def update_concurrency_cache(room_id: int, session_id: int, count: int) -> None:
@@ -83,6 +89,7 @@ def update_concurrency_cache(room_id: int, session_id: int, count: int) -> None:
     cache["samples"] = int(cache.get("samples", 0)) + 1
     cache["max"] = max(int(cache.get("max", 0)), int(count))
     cache["last"] = int(count)
+    record_concurrency(session_id, _now(), int(count))
 
 
 def finalize_concurrency_cache(room_id: int, session_id: Optional[int]) -> tuple[Optional[float], Optional[int]]:
@@ -373,7 +380,7 @@ async def monitor_all_rooms_status() -> None:
                         session_id = LiveSession.start_session(room_id, start, info.get("title") or "")
                         if session_id:
                             runtime_state.CURRENT_SESSIONS[room_id] = session_id
-                            init_concurrency_cache(room_id, session_id)
+                            init_concurrency_cache(room_id, session_id, start)
                             runtime_state.GUARD_FANS_QUEUE.put_nowait((room_id, session_id, "start"))
                             runtime_state.ATTENTION_QUEUE.put_nowait((room_id, session_id, "start", now.date()))
                     runtime_state.LIVE_INFO.setdefault(room_id, {}).update({"live_time": start.strftime("%Y-%m-%d %H:%M:%S"), "title": info.get("title") or ""})

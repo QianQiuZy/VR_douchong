@@ -56,6 +56,7 @@ class TestSchemaTablesAndColumns:
         assert sorted(gift_module.Base.metadata.tables.keys()) == [
             "attention",
             "live_session",
+            "live_session_15m_stats",
             "room_blind_box_monthly",
             "room_info",
             "room_live_stats",
@@ -122,12 +123,14 @@ class TestSchemaTablesAndColumns:
     def test_room_stats_monthly_columns_and_indexes(self, gift_module):
         table = gift_module.Base.metadata.tables["room_stats_monthly"]
         columns = {c.name: _column_snapshot(c) for c in table.columns}
-        assert set(columns) == {"room_id", "month", "gift", "guard", "super_chat"}
+        assert set(columns) == {"room_id", "month", "gift", "guard", "super_chat", "payer_count"}
         assert columns["month"]["type"] == String.__name__
         assert columns["month"]["length"] == 6
         for metric in ("gift", "guard", "super_chat"):
             assert columns[metric]["type"] == Float.__name__
             assert columns[metric]["default"] == 0.0
+        assert columns["payer_count"]["type"] == Integer.__name__
+        assert columns["payer_count"]["default"] == 0
         assert {"room_id", "month"} == {c.name for c in table.primary_key.columns}
         assert sorted(idx.name for idx in table.indexes) == ["idx_rsm_month"]
 
@@ -148,9 +151,24 @@ class TestSchemaTablesAndColumns:
     def test_room_live_stats_columns_pk_indexes(self, gift_module):
         table = gift_module.Base.metadata.tables["room_live_stats"]
         columns = {c.name: _column_snapshot(c) for c in table.columns}
-        assert set(columns) == {"room_id", "date", "duration"}
+        assert set(columns) == {
+            "room_id",
+            "date",
+            "duration",
+            "gift",
+            "guard",
+            "super_chat",
+            "payer_count",
+            "steel_coin_count",
+        }
         assert columns["duration"]["type"] == Integer.__name__
         assert columns["duration"]["default"] == 0
+        for metric in ("gift", "guard", "super_chat"):
+            assert columns[metric]["type"] == Float.__name__
+            assert columns[metric]["default"] == 0.0
+        for metric in ("payer_count", "steel_coin_count"):
+            assert columns[metric]["type"] == Integer.__name__
+            assert columns[metric]["default"] == 0
         assert {"room_id", "date"} == {c.name for c in table.primary_key.columns}
         assert sorted(idx.name for idx in table.indexes) == ["idx_rls_date"]
 
@@ -171,6 +189,7 @@ class TestSchemaTablesAndColumns:
             "blind_box_count",
             "blind_box_profit",
             "danmaku_count",
+            "payer_count",
             "start_guard_1",
             "start_guard_2",
             "start_guard_3",
@@ -196,6 +215,8 @@ class TestSchemaTablesAndColumns:
         assert columns["title"]["default"] == ""
         assert columns["month"]["type"] == String.__name__
         assert columns["month"]["length"] == 6
+        assert columns["payer_count"]["type"] == Integer.__name__
+        assert columns["payer_count"]["default"] == 0
         # start_* / end_* snapshots are nullable Integers.
         for name in (
             "start_guard_1",
@@ -222,6 +243,41 @@ class TestSchemaTablesAndColumns:
             ("ix_live_session_room_id", ("room_id",)),
             ("ix_live_session_month", ("month",)),
         }
+
+    def test_live_session_15m_stats_columns_and_indexes(self, gift_module):
+        table = gift_module.Base.metadata.tables["live_session_15m_stats"]
+        columns = {c.name: _column_snapshot(c) for c in table.columns}
+        assert set(columns) == {
+            "session_id",
+            "bucket_index",
+            "room_id",
+            "month",
+            "start_time",
+            "end_time",
+            "gift",
+            "guard",
+            "super_chat",
+            "blind_box_count",
+            "blind_box_profit",
+            "avg_concurrency",
+            "max_concurrency",
+            "sample_count",
+            "payer_count",
+        }
+        assert {c.name for c in table.primary_key.columns} == {"session_id", "bucket_index"}
+        for name in ("gift", "guard", "super_chat"):
+            assert columns[name]["type"] == Float.__name__
+            assert columns[name]["default"] == 0.0
+        for name in ("blind_box_count", "blind_box_profit", "sample_count", "payer_count"):
+            assert columns[name]["type"] == Integer.__name__
+            assert columns[name]["default"] == 0
+        assert columns["avg_concurrency"]["nullable"] is True
+        assert columns["max_concurrency"]["nullable"] is True
+        assert sorted(idx.name for idx in table.indexes) == [
+            "idx_ls15_room_month_start",
+            "ix_live_session_15m_stats_month",
+            "ix_live_session_15m_stats_room_id",
+        ]
 
     def test_super_chat_log_columns_and_indexes(self, gift_module):
         table = gift_module.Base.metadata.tables["super_chat_log"]
