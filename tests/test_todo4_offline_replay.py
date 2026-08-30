@@ -42,6 +42,33 @@ def test_extracted_handler_replays_gift_guard_sc_notice_and_danmaku(monkeypatch)
     assert [name for name, _ in calls] == ["monthly", "session", "monthly", "session", "monthly", "session", "sc", "monthly", "session"]
 
 
+def test_captain_purchase_is_recorded_once_across_paired_commands(monkeypatch):
+    room_id = 309
+    client = SimpleNamespace(room_id=room_id)
+    runtime_state.CURRENT_SESSIONS[room_id] = 44
+    calls = []
+    monkeypatch.setattr(event_ingestion.RoomStatsMonthly, "add_amounts", lambda *args, **kwargs: calls.append("monthly"))
+    monkeypatch.setattr(event_ingestion.LiveSession, "add_values_by_id", lambda *args, **kwargs: calls.append("session"))
+    monkeypatch.setattr(event_ingestion.RoomLiveStats, "add_metrics", lambda *args, **kwargs: calls.append("daily"))
+    monkeypatch.setattr(event_ingestion, "register_payer", lambda *args, **kwargs: calls.append("payer"))
+    monkeypatch.setattr(event_ingestion, "record_payment", lambda *args, **kwargs: calls.append("15m"))
+    message = SimpleNamespace(
+        price=1680,
+        num=1,
+        guard_level=3,
+        username="edeN滸",
+        uid=246954,
+        start_time=1_756_526_059,
+    )
+
+    handler = event_ingestion.MyHandler()
+    handler.__getattribute__("_on_buy_guard")(client, message)
+    handler.__getattribute__("_on_user_toast_v2")(client, message)
+
+    assert calls == ["monthly", "session", "payer", "daily", "15m"]
+    runtime_state.CURRENT_SESSIONS.pop(room_id, None)
+
+
 def test_super_chat_recovers_open_session_before_runtime_bucket_write(monkeypatch):
     client = SimpleNamespace(room_id=305)
     runtime_state.CURRENT_SESSIONS.pop(305, None)

@@ -297,20 +297,6 @@ class MyHandler(blivedm.BaseHandler):
             "(红包上舰)" if is_red_pack else "",
         )
 
-    def _on_buy_guard(self, client, message) -> None:  # noqa: N802
-        try:
-            self._record_guard(
-                client,
-                getattr(message, "username", ""),
-                getattr(message, "uid", 0),
-                getattr(message, "guard_level", 0),
-                getattr(message, "num", 0),
-                getattr(message, "price", 0),
-                getattr(message, "start_time", None),
-            )
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.error("处理 GUARD_BUY 舰长记录时出错: %s", exc)
-
     def _on_user_toast_v2(self, client, message) -> None:  # noqa: N802
         try:
             self._record_guard(
