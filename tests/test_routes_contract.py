@@ -361,6 +361,28 @@ class TestGiftByMonthRoute:
 
 
 class TestGiftLiveSessionsRoute:
+    def test_historical_15m_stats_query_uses_concrete_archive_table(
+        self, gift_module, monkeypatch
+    ):
+        from app import api_app
+
+        captured: dict[str, str] = {}
+
+        class _Result:
+            def fetchall(self) -> list[tuple[object, ...]]:
+                return []
+
+        class _Session:
+            def execute(self, statement, _parameters):
+                captured["sql"] = str(statement)
+                return _Result()
+
+        monkeypatch.setattr(gift_module, "sc_log_table_exists", lambda _name: True)
+
+        api_app._session_15m_stats(_Session(), 14500, "202608")
+
+        assert "FROM `live_session_15m_stats_202608`" in captured["sql"]
+
     def test_15m_stats_include_danmaku_count(self, gift_module):
         from app import api_app
 

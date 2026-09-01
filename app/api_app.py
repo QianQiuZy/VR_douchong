@@ -464,7 +464,7 @@ def _session_15m_stats(session, session_id: int | Column[int], month: str) -> li
         text(
             "SELECT bucket_index, start_time, end_time, gift, guard, super_chat, "
             "blind_box_count, blind_box_profit, danmaku_count, avg_concurrency, "
-            "max_concurrency, sample_count, payer_count FROM `{table_name}` "
+            f"max_concurrency, sample_count, payer_count FROM `{table_name}` "
             "WHERE session_id = :session_id ORDER BY bucket_index ASC"
         ),
         {"session_id": session_id},
