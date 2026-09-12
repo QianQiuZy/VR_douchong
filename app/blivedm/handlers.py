@@ -88,11 +88,12 @@ class BaseHandler(HandlerInterface):
 
     def __send_gift_v2_callback(self, client: ws_base.WebSocketClientBase, command):
         try:
-            message = web_models.SendGiftV2Message.from_command(command['data'])
+            messages = web_models.SendGiftV2Message.from_command(command['data'])
         except web_models.SendGiftV2DecodeError:
             logger.warning('room=%d invalid SEND_GIFT_V2 payload', client.room_id)
             return
-        return self._on_gift(client, message)
+        for message in messages:
+            self._on_gift(client, message)
 
     _CMD_CALLBACK_DICT: Dict[
         str,

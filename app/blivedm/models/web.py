@@ -433,48 +433,54 @@ class SendGiftV2(pb_msg.BaseMessage):
     blind: Annotated[BlindGift, pb_anno.Field(9)] = dataclasses.field(
         default_factory=BlindGift
     )
-    gift: Annotated[GiftData, pb_anno.Field(10)] = dataclasses.field(
-        default_factory=GiftData
+    gift: Annotated[list[GiftData], pb_anno.Field(10)] = dataclasses.field(
+        default_factory=list
     )
 
 
 class SendGiftV2Message:
     @classmethod
-    def from_command(cls, data: SendGiftV2Command) -> GiftMessage:
+    def from_command(cls, data: SendGiftV2Command) -> tuple[GiftMessage, ...]:
         try:
             proto = SendGiftV2.loads(base64.b64decode(data['pb'], validate=True))
         except (binascii.Error, EOFError, KeyError, TypeError, ValueError) as exc:
             raise SendGiftV2DecodeError from exc
 
-        gift = proto.gift
-        blind = proto.blind
-        if gift.gift_id <= 0 or gift.num <= 0 or not gift.gift_name:
+        if not proto.gift:
             raise SendGiftV2DecodeError
-        is_blind_box = bool(blind.original_gift_id or blind.original_gift_name)
-        total_price = gift.price * gift.num if is_blind_box else gift.total_coin
 
-        return GiftMessage(
-            gift_name=gift.gift_name,
-            num=gift.num,
-            uname=proto.uname,
-            face=proto.face,
-            guard_level=proto.medal.guard_level,
-            uid=proto.uid,
-            timestamp=gift.timestamp,
-            gift_id=gift.gift_id,
-            gift_type=gift.gift_type,
-            gift_img_basic=gift.effect.img_basic,
-            action=gift.action,
-            price=gift.price,
-            rnd=gift.rnd,
-            coin_type=gift.coin_type,
-            total_coin=gift.total_coin,
-            total_price=total_price,
-            tid=gift.tid,
-            medal_level=proto.medal.medal_level,
-            medal_name=proto.medal.medal_name,
-            medal_ruid=proto.medal.anchor_uid,
-        )
+        blind = proto.blind
+        is_blind_box = bool(blind.original_gift_id or blind.original_gift_name)
+        messages: list[GiftMessage] = []
+        for gift in proto.gift:
+            if gift.gift_id <= 0 or gift.num <= 0 or not gift.gift_name:
+                raise SendGiftV2DecodeError
+            total_price = gift.price * gift.num if is_blind_box else gift.total_coin
+            messages.append(
+                GiftMessage(
+                    gift_name=gift.gift_name,
+                    num=gift.num,
+                    uname=proto.uname,
+                    face=proto.face,
+                    guard_level=proto.medal.guard_level,
+                    uid=proto.uid,
+                    timestamp=gift.timestamp,
+                    gift_id=gift.gift_id,
+                    gift_type=gift.gift_type,
+                    gift_img_basic=gift.effect.img_basic,
+                    action=gift.action,
+                    price=gift.price,
+                    rnd=gift.rnd,
+                    coin_type=gift.coin_type,
+                    total_coin=gift.total_coin,
+                    total_price=total_price,
+                    tid=gift.tid,
+                    medal_level=proto.medal.medal_level,
+                    medal_name=proto.medal.medal_name,
+                    medal_ruid=proto.medal.anchor_uid,
+                )
+            )
+        return tuple(messages)
 
 
 @dataclasses.dataclass
