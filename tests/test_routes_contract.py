@@ -303,12 +303,21 @@ class TestGiftCurrentMonthRoute:
             "guard_3",
             "fans_count",
             "current_concurrency",
+            "whale_dependency",
         }
         assert item["room_id"] == 111111
         assert item["month"] == gift_module.month_str()
         assert item["status"] == 0
         assert item["current_concurrency"] is None
         assert item["live_duration"] == "00:00:00"
+        assert item["whale_dependency"] == {
+            "status": "unavailable",
+            "source": "redis",
+            "top1": None,
+            "top5": None,
+            "top10": None,
+            "top1_percent": None,
+        }
 
 
 class TestGiftByMonthRoute:
@@ -341,7 +350,9 @@ class TestGiftByMonthRoute:
             "guard_2",
             "guard_3",
             "fans_count",
+            "whale_dependency",
         }
+        assert payload[0]["whale_dependency"]["status"] == "unavailable"
 
     def test_historical_month_uses_placeholder_live_time_and_null_metrics(
         self, client, gift_module, isolated_db, monkeypatch
@@ -358,6 +369,14 @@ class TestGiftByMonthRoute:
         assert item["guard_2"] is None
         assert item["guard_3"] is None
         assert item["fans_count"] is None
+        assert item["whale_dependency"] == {
+            "status": "unavailable",
+            "source": "redis",
+            "top1": None,
+            "top5": None,
+            "top10": None,
+            "top1_percent": None,
+        }
 
 
 class TestGiftLiveSessionsRoute:

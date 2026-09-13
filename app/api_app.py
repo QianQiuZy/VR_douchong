@@ -65,6 +65,12 @@ from .repositories.tables import (
     sc_log_table_exists as _default_sc_log_table_exists,
     sc_log_table_name,
 )
+from .whale_metrics import (
+    WhaleDependencyPayload,
+    get_live_whale_metrics,
+    get_whale_state,
+    whale_dependency_payload,
+)
 
 
 # ------------------ FastAPI app (Todo 5 canonical owner) ------------------ #
@@ -175,6 +181,40 @@ def _format_optional_timestamp(value: datetime.datetime | Column[datetime.dateti
             return None
         case unreachable:
             assert_never(unreachable)
+
+
+def _ratio_value(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+def _whale_dependency_for_room(rsm: Any, room_id: int, month: str) -> WhaleDependencyPayload:
+    if is_current_month(month):
+        metrics = get_live_whale_metrics(room_id, month)
+        return whale_dependency_payload(
+            metrics,
+            "live" if metrics is not None else "unavailable",
+            "redis",
+        )
+    archived_status = getattr(rsm, "whale_status", None) if rsm is not None else None
+    cache_state = get_whale_state(room_id, month)
+    if cache_state == "dirty":
+        metrics = get_live_whale_metrics(room_id, month)
+        return whale_dependency_payload(
+            metrics,
+            "live" if metrics is not None else "unavailable",
+            "redis",
+        )
+    if archived_status in ("archived", "partial"):
+        return {
+            "status": archived_status,
+            "source": "mysql",
+            "top1": _ratio_value(getattr(rsm, "whale_top1_ratio", None)),
+            "top5": _ratio_value(getattr(rsm, "whale_top5_ratio", None)),
+            "top10": _ratio_value(getattr(rsm, "whale_top10_ratio", None)),
+            "top1_percent": _ratio_value(getattr(rsm, "whale_top1pct_ratio", None)),
+        }
+    metrics = get_live_whale_metrics(room_id, month)
+    return whale_dependency_payload(metrics, "live" if metrics is not None else "unavailable", "redis")
 
 
 # ------------------ Parse / auth helpers ------------------ #
@@ -591,6 +631,7 @@ def get_stats_current_month():
                     "guard_3": guard_3,  # 总督
                     "fans_count": fans_count,  # 粉丝团数量
                     "current_concurrency": current_concurrency,
+                    "whale_dependency": _whale_dependency_for_room(rsm, room_id, m),
                 }
             )
         return JSONResponse(results)
@@ -680,6 +721,7 @@ def get_stats_by_month(request: Request):
                     "guard_2": guard_2,
                     "guard_3": guard_3,
                     "fans_count": fans_count,
+                    "whale_dependency": _whale_dependency_for_room(rsm, room_id, m),
                 }
             )
         return JSONResponse(results)

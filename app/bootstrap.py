@@ -31,6 +31,7 @@ from .config import APP_HOST, APP_PORT
 from .database import create_schema, ensure_runtime_schema
 from .metrics_runtime import flush_session
 from .models import RoomInfo
+from .whale_archive import archive_whale_month
 
 
 # ------------------ time helpers ------------------ #
@@ -58,6 +59,7 @@ async def _archive_month(target_month: Optional[str] = None) -> None:
         asyncio.to_thread(archive_service.archive_super_chat_log, target_month),
         asyncio.to_thread(archive_service.archive_room_live_stats, target_month),
         asyncio.to_thread(archive_service.archive_attention, target_month),
+        asyncio.to_thread(archive_whale_month, target_month),
     )
     await asyncio.to_thread(archive_service.archive_live_session, target_month)
 

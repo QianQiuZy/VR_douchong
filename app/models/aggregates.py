@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import Column, Date, Float, Index, Integer, PrimaryKeyConstraint, String
+from sqlalchemy import BigInteger, Column, Date, DateTime, Float, Index, Integer, Numeric, PrimaryKeyConstraint, String
 
 from ..database import Base
 from ..repositories.live_stats import (
@@ -26,6 +26,21 @@ class RoomStatsMonthly(Base):
     guard = Column(Float, default=0.0, nullable=False)
     super_chat = Column(Float, default=0.0, nullable=False)
     payer_count = Column(Integer, default=0, nullable=False)
+    whale_top1_amount = Column(BigInteger, default=0, nullable=False)
+    whale_top1_ratio = Column(Numeric(12, 8), nullable=True)
+    whale_top5_amount = Column(BigInteger, default=0, nullable=False)
+    whale_top5_ratio = Column(Numeric(12, 8), nullable=True)
+    whale_top10_amount = Column(BigInteger, default=0, nullable=False)
+    whale_top10_ratio = Column(Numeric(12, 8), nullable=True)
+    whale_top1pct_amount = Column(BigInteger, default=0, nullable=False)
+    whale_top1pct_ratio = Column(Numeric(12, 8), nullable=True)
+    whale_total_revenue = Column(BigInteger, default=0, nullable=False)
+    whale_attributed_revenue = Column(BigInteger, default=0, nullable=False)
+    whale_unattributed_revenue = Column(BigInteger, default=0, nullable=False)
+    whale_payer_count = Column(Integer, default=0, nullable=False)
+    whale_status = Column(String(16), nullable=True)
+    whale_metric_version = Column(Integer, default=1, nullable=False)
+    whale_calculated_at = Column(DateTime, nullable=True)
     __table_args__ = (
         PrimaryKeyConstraint("room_id", "month", name="pk_room_month"),
         Index("idx_rsm_month", "month"),

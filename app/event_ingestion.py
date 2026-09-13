@@ -10,6 +10,7 @@ from . import blivedm
 from . import runtime_state
 from .metrics_runtime import current_bucket_index, record_payment, start_session
 from .redis_metrics import register_payer
+from .whale_metrics import record_whale_revenue
 from .models import LiveSession, RoomBlindBoxMonthly, RoomLiveStats, RoomStatsMonthly, SuperChatLog
 
 
@@ -158,10 +159,23 @@ class MyHandler(blivedm.BaseHandler):
         uid: int = 0,
         trigger_cookie_alert: bool = False,
         event_time: datetime.datetime | None = None,
+        event_key: str | None = None,
     ) -> None:
         dependencies = _configured_dependencies()
         value = total_coin / 1000
         event_time = event_time or datetime.datetime.now()
+        resolved_event_key = event_key or (
+            f"gift:{client.room_id}:{uid}:{int(event_time.timestamp())}:"
+            f"{gift_name}:{num}:{total_coin}"
+        )
+        record_whale_revenue(
+            client.room_id,
+            event_time.strftime("%Y%m"),
+            int(uid or 0),
+            int(total_coin),
+            resolved_event_key,
+            "gift",
+        )
         RoomStatsMonthly.add_amounts(client.room_id, event_time.strftime("%Y%m"), gift=value)
         session_id = runtime_state.CURRENT_SESSIONS.get(client.room_id)
         if session_id:
@@ -218,6 +232,11 @@ class MyHandler(blivedm.BaseHandler):
                 message.uid,
                 True,
                 event_time,
+                event_key=(
+                    f"gift:{getattr(message, 'tid', '') or getattr(message, 'rnd', '')}"
+                    if getattr(message, "tid", "") or getattr(message, "rnd", "")
+                    else None
+                ),
             )
             if message.total_price != total_coin:
                 self._record_blind_box(
@@ -240,7 +259,16 @@ class MyHandler(blivedm.BaseHandler):
             if coin_value is None:
                 logging.info("[%s] COMMON_NOTICE_DANMAKU 未匹配礼物价格: %s", client.room_id, gift_name)
                 return
-            self._record_gift(client, gift_name, 1, coin_value, sender, event_time=datetime.datetime.now())
+            event_time = datetime.datetime.now()
+            self._record_gift(
+                client,
+                gift_name,
+                1,
+                coin_value,
+                sender,
+                event_time=event_time,
+                event_key=f"common_notice:{client.room_id}:{sender}:{gift_name}:{int(event_time.timestamp())}",
+            )
         except Exception as exc:  # noqa: BROAD_EXCEPT_OK
             logging.error("处理 COMMON_NOTICE_DANMAKU 礼物记录时出错: %s", exc)
 
@@ -253,6 +281,7 @@ class MyHandler(blivedm.BaseHandler):
         num: int,
         price: int,
         start_time: int | float | str | None,
+        event_key: str | None = None,
     ) -> None:
         room_id = client.room_id
         if room_id is None:
@@ -270,6 +299,18 @@ class MyHandler(blivedm.BaseHandler):
             total_coins = mappings.get(int(guard_level), {}).get(int(num), total_coins)
         value = total_coins / 1000
         event_time = _timestamp_to_datetime(start_time) or datetime.datetime.now()
+        resolved_event_key = event_key or (
+            f"guard:{room_id}:{uid}:{int(event_time.timestamp())}:"
+            f"{guard_level}:{num}:{price}"
+        )
+        record_whale_revenue(
+            room_id,
+            event_time.strftime("%Y%m"),
+            int(uid or 0),
+            int(total_coins),
+            resolved_event_key,
+            "guard",
+        )
         RoomStatsMonthly.add_amounts(room_id, event_time.strftime("%Y%m"), guard=value)
         session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
         if session_id:
@@ -307,6 +348,11 @@ class MyHandler(blivedm.BaseHandler):
                 getattr(message, "num", 0),
                 getattr(message, "price", 0),
                 getattr(message, "start_time", None),
+                event_key=(
+                    f"guard:{client.room_id}:{getattr(message, 'uid', 0)}:"
+                    f"{getattr(message, 'start_time', 0)}:{getattr(message, 'guard_level', 0)}:"
+                    f"{getattr(message, 'num', 0)}:{getattr(message, 'price', 0)}"
+                ),
             )
         except Exception as exc:  # noqa: BROAD_EXCEPT_OK
             logging.error("处理舰长记录时出错: %s", exc)
@@ -323,6 +369,23 @@ class MyHandler(blivedm.BaseHandler):
             if event_time is None:
                 event_time = _timestamp_to_datetime(getattr(message, "ts", None))
             event_time = event_time or datetime.datetime.now()
+            user_info = getattr(message, "user_info", None)
+            uname = getattr(message, "uname", "") or (user_info.get("uname", "") if isinstance(user_info, dict) else "")
+            uid = getattr(message, "uid", 0) or (user_info.get("uid", 0) if isinstance(user_info, dict) else 0)
+            message_id = getattr(message, "id", 0)
+            event_key = (
+                f"sc:{room_id}:{message_id}"
+                if message_id
+                else f"sc:{room_id}:{uid}:{int(event_time.timestamp())}:{value}:{getattr(message, 'message', '')}"
+            )
+            record_whale_revenue(
+                room_id,
+                event_time.strftime("%Y%m"),
+                int(uid or 0),
+                int(value) * 1000,
+                event_key,
+                "super_chat",
+            )
             RoomStatsMonthly.add_amounts(room_id, event_time.strftime("%Y%m"), super_chat=value)
             session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
             if session_id:
@@ -345,9 +408,6 @@ class MyHandler(blivedm.BaseHandler):
                     super_chat=value,
                     payer_added=bucket_payer_added,
                 )
-            user_info = getattr(message, "user_info", None)
-            uname = getattr(message, "uname", "") or (user_info.get("uname", "") if isinstance(user_info, dict) else "")
-            uid = getattr(message, "uid", 0) or (user_info.get("uid", 0) if isinstance(user_info, dict) else 0)
             SuperChatLog.log_sc(room_id, uname, uid, value, getattr(message, "message", "") or "", event_time)
             logging.info("[%s] SC ¥%.2f %s %s: %s", room_id, value, uname, uid, getattr(message, "message", "") or "")
         except Exception as exc:  # noqa: BROAD_EXCEPT_OK

@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     Integer,
+    Numeric,
     String,
 )
 
@@ -123,7 +124,29 @@ class TestSchemaTablesAndColumns:
     def test_room_stats_monthly_columns_and_indexes(self, gift_module):
         table = gift_module.Base.metadata.tables["room_stats_monthly"]
         columns = {c.name: _column_snapshot(c) for c in table.columns}
-        assert set(columns) == {"room_id", "month", "gift", "guard", "super_chat", "payer_count"}
+        assert set(columns) == {
+            "room_id",
+            "month",
+            "gift",
+            "guard",
+            "super_chat",
+            "payer_count",
+            "whale_top1_amount",
+            "whale_top1_ratio",
+            "whale_top5_amount",
+            "whale_top5_ratio",
+            "whale_top10_amount",
+            "whale_top10_ratio",
+            "whale_top1pct_amount",
+            "whale_top1pct_ratio",
+            "whale_total_revenue",
+            "whale_attributed_revenue",
+            "whale_unattributed_revenue",
+            "whale_payer_count",
+            "whale_status",
+            "whale_metric_version",
+            "whale_calculated_at",
+        }
         assert columns["month"]["type"] == String.__name__
         assert columns["month"]["length"] == 6
         for metric in ("gift", "guard", "super_chat"):
@@ -131,6 +154,34 @@ class TestSchemaTablesAndColumns:
             assert columns[metric]["default"] == 0.0
         assert columns["payer_count"]["type"] == Integer.__name__
         assert columns["payer_count"]["default"] == 0
+        for metric in (
+            "whale_top1_amount",
+            "whale_top5_amount",
+            "whale_top10_amount",
+            "whale_top1pct_amount",
+            "whale_total_revenue",
+            "whale_attributed_revenue",
+            "whale_unattributed_revenue",
+        ):
+            assert columns[metric]["type"] == BigInteger.__name__
+            assert columns[metric]["default"] == 0
+            assert columns[metric]["nullable"] is False
+        for metric in (
+            "whale_top1_ratio",
+            "whale_top5_ratio",
+            "whale_top10_ratio",
+            "whale_top1pct_ratio",
+        ):
+            assert columns[metric]["type"] == Numeric.__name__
+            assert columns[metric]["nullable"] is True
+        assert columns["whale_payer_count"]["type"] == Integer.__name__
+        assert columns["whale_payer_count"]["default"] == 0
+        assert columns["whale_status"]["type"] == String.__name__
+        assert columns["whale_status"]["length"] == 16
+        assert columns["whale_status"]["nullable"] is True
+        assert columns["whale_metric_version"]["type"] == Integer.__name__
+        assert columns["whale_metric_version"]["default"] == 1
+        assert columns["whale_calculated_at"]["nullable"] is True
         assert {"room_id", "month"} == {c.name for c in table.primary_key.columns}
         assert sorted(idx.name for idx in table.indexes) == ["idx_rsm_month"]
 
