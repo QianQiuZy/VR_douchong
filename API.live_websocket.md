@@ -1,4 +1,4 @@
-# 直播 WebSocket 消息协议（2026-07-15 更新）
+# 直播 WebSocket 消息协议（2026-09-14 更新）
 
 > 来源：`SocialSisterYi/bilibili-API-collect` + 浏览器捕获验证。
 
@@ -74,7 +74,7 @@ wss://{host}:{wss_port}/sub
 | CMD | 说明 |
 | --- | --- |
 | `SEND_GIFT` | 送礼物。含 `giftName`, `num`, `price`, `uid`, `uname`。 |
-| `SEND_GIFT_V2` | 送礼物新版（2026-07 灰度）。核心字段在 `data.data.pb`（base64 protobuf），见下节。 |
+| `SEND_GIFT_V2` | 送礼物新版（2026-07 灰度，含新盲盒包格式）。核心字段在 `data.data.pb`（base64 protobuf），见下节。 |
 | `COMBO_SEND` | 连击礼物。 |
 | `GIFT_STAR_PROCESS` | 礼物星球进度。 |
 | `POPULARITY_RED_POCKET_NEW` | 人气红包。 |
@@ -230,7 +230,7 @@ message SendGiftV2 {
   string face         = 3;  // 送礼用户头像 url
   MedalInfo medal     = 8;  // 送礼用户佩戴的粉丝勋章
   BlindGift blind     = 9;  // 盲盒信息（非盲盒礼物时可能缺省）
-  GiftData gift       = 10; // 礼物核心数据
+  repeated GiftData gift = 10; // 礼物核心数据，可包含多个礼物记录
   uint32 field11      = 11; // ? 恒为 1
   Batch  batch        = 13; // ? { field1: 连击/批次相关 }
   UserInfo sender     = 15; // 送礼用户完整 uinfo（base + medal）
@@ -261,7 +261,7 @@ message GiftData {
   uint32 num         = 3;   // 数量
   uint32 gift_type   = 4;   // ? 礼物类型
   uint32 price       = 5;   // 单价（瓜子）
-  uint32 total_coin  = 6;   // 实付总价 = price × num
+  uint32 total_coin  = 6;   // 普通礼物实付总价；盲盒包中的原始金额字段
   uint32 discount_price = 7;// ? 盲盒场景下的折算价 / 原价
   string coin_type   = 8;   // gold=金瓜子 silver=银瓜子
   string tid         = 9;   // 交易流水号（字符串大数）
@@ -296,11 +296,37 @@ message UserInfo {           // 完整用户信息（base + medal）
 }
 ```
 
+### SEND_GIFT_V2 新盲盒包解析（commit `a0a4e53beef1d5a6c48096a7f0ab540c0b9caed3`）
+
+新盲盒包的 field 10 是 **repeated、length-delimited** 的 `GiftData`，不能再按单个对象读取。一个 `pb` 可以携带多个礼物记录，protobuf wire tag 为 `0x52`（field 10、wire type 2），每个记录依次编码为：
+
+```text
+0x52 + length(varint) + GiftData[0].dumps()
+0x52 + length(varint) + GiftData[1].dumps()
+...
+```
+
+消费端解析流程：
+
+1. 对 `data.pb` 做严格 base64 解码，再反序列化为 `SendGiftV2`。
+2. `gift` 为空，或任一 `GiftData` 的 `gift_id <= 0`、`num <= 0`、`gift_name` 为空时，判定整个事件无效。
+3. 判断 `blind.original_gift_id` 或 `blind.original_gift_name` 是否存在；任一存在即按盲盒处理。
+4. 为 `gift[]` 中的每一条记录生成一个 `GiftMessage`，因此一个 WebSocket 事件可能触发多条送礼回调。
+5. 普通礼物的归一化总价为 `gift[i].total_coin`；盲盒的归一化总价为 `gift[i].price × gift[i].num`。原始 `gift[i].total_coin` 仍保留，用于盲盒价值/盈亏计算。
+
+处理回调必须遍历解码结果并逐条入账，不能只处理第一条：
+
+```python
+messages = SendGiftV2Message.from_command(command["data"])
+for message in messages:
+    handler._on_gift(client, message)
+```
+
 **关键落地建议**：
-- `SEND_GIFT_V2` 与 `SEND_GIFT` 语义等价，映射关系：pb `uid/uname/face` ↔ 旧版 `uid/uname/face`；`gift.gift_id/gift_name/num/price/total_coin/coin_type/action` ↔ 旧版同名字段；`medal` ↔ `medal_info`；`blind` ↔ `blind_gift`；`sender` ↔ `sender_uinfo`。
+- `SEND_GIFT_V2` 与 `SEND_GIFT` 语义等价，映射关系：pb `uid/uname/face` ↔ 旧版 `uid/uname/face`；`gift[i].gift_id/gift_name/num/price/total_coin/coin_type/action` ↔ 旧版同名字段；`medal` ↔ `medal_info`；`blind` ↔ `blind_gift`；`sender` ↔ `sender_uinfo`。
 - 颜色字段在 pb `MedalInfo` 中为十进制整数，在 `UserInfo.medal` 中为 `#RRGGBBAA` 十六进制串（如 `#3FB4F699`），两处表示不同，勿混用。
-- `?` 字段含义未确认，切勿硬编码依赖；`total_coin`（#6）为实付金额，是计费/统计的权威字段。
-- 盲盒礼物：`blind.original_gift_name`=用户抽的盲盒名，`gift.gift_name`=实际爆出的礼物，`gift.total_coin`=盲盒购买价（非爆出礼物原价）。
+- `?` 字段含义未确认，切勿硬编码依赖；普通礼物以 `total_coin`（#6）作为计费/统计金额，盲盒按上面的归一化规则处理。
+- 盲盒礼物：`blind.original_gift_name`=用户抽的盲盒名，`gift[i].gift_name`=实际爆出的礼物；`blind.blind_price` 是原始盲盒价格字段，但当前解析器使用 `gift[i].price × gift[i].num` 生成归一化总价。
 
 ### 其他高频事件
 
@@ -319,7 +345,7 @@ message UserInfo {           // 完整用户信息（base + medal）
 - 协议版本 3（brotli 压缩）是当前 Web 端默认，需解压后按包头递归解析。无 brotli 环境可在鉴权包改用 protover 2 走 zlib。
 - `DANMU_MSG` 的 `info` 字段是数组格式（非对象），结构见上节。
 - `SEND_GIFT` 中 `coin_type` 区分金瓜子(gold)和银瓜子(silver)礼物。
-- `SEND_GIFT_V2`（2026-07 灰度）核心字段迁至 `data.data.pb`（base64 protobuf），需先解码；尚未全量替换 `SEND_GIFT`，消费端需同时兼容两者。
+- `SEND_GIFT_V2`（2026-07 灰度，含新盲盒包）核心字段迁至 `data.data.pb`（base64 protobuf），且 field 10 为重复的 `GiftData` 列表，需先解码并逐条处理；尚未全量替换 `SEND_GIFT`，消费端需同时兼容两者。
 - `INTERACT_WORD_V2`、`ONLINE_RANK_V3`、`SEND_GIFT_V2` 等新版事件已 **protobuf 编码**，明文 JSON 解析会失败，需先 base64 解码再按 proto 反序列化。
 - 同一个事件可能同时推送多种 CMD（如上舰同时推送 `GUARD_BUY` + `USER_TOAST_MSG` + `NOTICE_MSG`）。
 - 匿名连接（uid=0）实测被风控拒绝，需带登录态 `uid` + `buvid3`。
