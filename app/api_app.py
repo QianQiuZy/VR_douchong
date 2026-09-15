@@ -29,7 +29,7 @@ import asyncio
 import datetime
 import logging
 import sys
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Optional, Tuple, TypedDict, assert_never
 
 from fastapi import Body, FastAPI, Request
@@ -56,22 +56,21 @@ from .models import (
 from .repositories.tables import (
     attention_table_name,
     is_current_month,
-    live_session_table_name,
     live_session_15m_stats_table_name,
+    live_session_table_name,
     month_range,
     month_str,
     normalize_month_code,
     room_live_stats_table_name,
-    sc_log_table_exists as _default_sc_log_table_exists,
     sc_log_table_name,
 )
+from .repositories.tables import sc_log_table_exists as _default_sc_log_table_exists
 from .whale_metrics import (
     WhaleDependencyPayload,
     get_live_whale_metrics,
     get_whale_state,
     whale_dependency_payload,
 )
-
 
 # ------------------ FastAPI app (Todo 5 canonical owner) ------------------ #
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -81,6 +80,14 @@ class RoomPayload(TypedDict, total=False):
     room_id: JsonValue
     room_anchors: JsonValue
     api_key: JsonValue
+
+
+class MonthlyDanmakuPayload(TypedDict):
+    total: int | None
+    captain: int | None
+    admiral: int | None
+    governor: int | None
+    normal: int | None
 
 
 # ------------------ Runtime dependency resolution ------------------ #
@@ -185,6 +192,20 @@ def _format_optional_timestamp(value: datetime.datetime | Column[datetime.dateti
 
 def _ratio_value(value: Any) -> float | None:
     return None if value is None else float(value)
+
+
+def _monthly_danmaku_payload(rsm: Any) -> MonthlyDanmakuPayload:
+    def optional_int(name: str) -> int | None:
+        value = getattr(rsm, name, None) if rsm is not None else None
+        return int(value) if value is not None else None
+
+    return {
+        "total": optional_int("danmaku_count"),
+        "captain": optional_int("captain_danmaku_count"),
+        "admiral": optional_int("admiral_danmaku_count"),
+        "governor": optional_int("governor_danmaku_count"),
+        "normal": optional_int("normal_danmaku_count"),
+    }
 
 
 def _whale_dependency_for_room(rsm: Any, room_id: int, month: str) -> WhaleDependencyPayload:
@@ -432,10 +453,14 @@ def _format_15m_stats(row: Any) -> dict[str, Any]:
             "blind_box_count": row[6],
             "blind_box_profit": row[7],
             "danmaku_count": row[8],
-            "avg_concurrency": row[9],
-            "max_concurrency": row[10],
-            "sample_count": row[11],
-            "payer_count": row[12],
+            "captain_danmaku_count": row[9],
+            "admiral_danmaku_count": row[10],
+            "governor_danmaku_count": row[11],
+            "normal_danmaku_count": row[12],
+            "avg_concurrency": row[13],
+            "max_concurrency": row[14],
+            "sample_count": row[15],
+            "payer_count": row[16],
         }
     return {
         "bucket_index": int(values.get("bucket_index") or 0),
@@ -447,6 +472,10 @@ def _format_15m_stats(row: Any) -> dict[str, Any]:
         "blind_box_count": int(values.get("blind_box_count") or 0),
         "blind_box_profit": _profit_display(values.get("blind_box_profit")),
         "danmaku_count": int(values.get("danmaku_count") or 0),
+        "captain_danmaku_count": values.get("captain_danmaku_count"),
+        "admiral_danmaku_count": values.get("admiral_danmaku_count"),
+        "governor_danmaku_count": values.get("governor_danmaku_count"),
+        "normal_danmaku_count": values.get("normal_danmaku_count"),
         "avg_concurrency": values.get("avg_concurrency"),
         "max_concurrency": values.get("max_concurrency"),
         "sample_count": int(values.get("sample_count") or 0),
@@ -472,6 +501,10 @@ def _session_15m_stats(session, session_id: int | Column[int], month: str) -> li
             "blind_box_count": row.blind_box_count,
             "blind_box_profit": row.blind_box_profit,
             "danmaku_count": row.danmaku_count,
+            "captain_danmaku_count": row.captain_danmaku_count,
+            "admiral_danmaku_count": row.admiral_danmaku_count,
+            "governor_danmaku_count": row.governor_danmaku_count,
+            "normal_danmaku_count": row.normal_danmaku_count,
             "avg_concurrency": row.avg_concurrency,
             "max_concurrency": row.max_concurrency,
             "sample_count": row.sample_count,
@@ -495,15 +528,29 @@ def _session_15m_stats(session, session_id: int | Column[int], month: str) -> li
             "blind_box_count": row.blind_box_count,
             "blind_box_profit": row.blind_box_profit,
             "danmaku_count": row.danmaku_count,
+            "captain_danmaku_count": row.captain_danmaku_count,
+            "admiral_danmaku_count": row.admiral_danmaku_count,
+            "governor_danmaku_count": row.governor_danmaku_count,
+            "normal_danmaku_count": row.normal_danmaku_count,
             "avg_concurrency": row.avg_concurrency,
             "max_concurrency": row.max_concurrency,
             "sample_count": row.sample_count,
             "payer_count": row.payer_count,
         }) for row in rows]
+    archive_columns = {col.get("name") for col in inspect(engine).get_columns(table_name)}
+    category_select = ", ".join(
+        f"`{name}`" if name in archive_columns else f"NULL AS {name}"
+        for name in (
+            "captain_danmaku_count",
+            "admiral_danmaku_count",
+            "governor_danmaku_count",
+            "normal_danmaku_count",
+        )
+    )
     rows = session.execute(
         text(
             "SELECT bucket_index, start_time, end_time, gift, guard, super_chat, "
-            "blind_box_count, blind_box_profit, danmaku_count, avg_concurrency, "
+            f"blind_box_count, blind_box_profit, danmaku_count, {category_select}, avg_concurrency, "
             f"max_concurrency, sample_count, payer_count FROM `{table_name}` "
             "WHERE session_id = :session_id ORDER BY bucket_index ASC"
         ),
@@ -632,6 +679,7 @@ def get_stats_current_month():
                     "fans_count": fans_count,  # 粉丝团数量
                     "current_concurrency": current_concurrency,
                     "whale_dependency": _whale_dependency_for_room(rsm, room_id, m),
+                    "danmaku": _monthly_danmaku_payload(rsm),
                 }
             )
         return JSONResponse(results)
@@ -722,6 +770,7 @@ def get_stats_by_month(request: Request):
                     "guard_3": guard_3,
                     "fans_count": fans_count,
                     "whale_dependency": _whale_dependency_for_room(rsm, room_id, m),
+                    "danmaku": _monthly_danmaku_payload(rsm),
                 }
             )
         return JSONResponse(results)
@@ -784,6 +833,10 @@ def get_live_sessions_by_room_month(request: Request):
                         "blind_box_count": r.blind_box_count,
                         "blind_box_profit": _profit_display(r.blind_box_profit),
                         "danmaku_count": r.danmaku_count or 0,
+                        "captain_danmaku_count": r.captain_danmaku_count,
+                        "admiral_danmaku_count": r.admiral_danmaku_count,
+                        "governor_danmaku_count": r.governor_danmaku_count,
+                        "normal_danmaku_count": r.normal_danmaku_count,
                         # 开播时快照（旧数据为 None -> JSON null）
                         "start_guard_1": r.start_guard_1,  # 舰长
                         "start_guard_2": r.start_guard_2,  # 提督
@@ -807,10 +860,19 @@ def get_live_sessions_by_room_month(request: Request):
             if sc_log_table_exists(table_name):
                 archive_columns = {col.get("name") for col in inspect(engine).get_columns(table_name)}
                 payer_select = "`payer_count`" if "payer_count" in archive_columns else "0 AS payer_count"
+                category_select = ", ".join(
+                    f"`{name}`" if name in archive_columns else f"NULL AS {name}"
+                    for name in (
+                        "captain_danmaku_count",
+                        "admiral_danmaku_count",
+                        "governor_danmaku_count",
+                        "normal_danmaku_count",
+                    )
+                )
                 rows = session.execute(
                     text(
                         f"SELECT id, start_time, end_time, title, gift, guard, super_chat, "
-                        "blind_box_count, blind_box_profit, danmaku_count, "
+                        f"blind_box_count, blind_box_profit, danmaku_count, {category_select}, "
                         "start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
                         "start_attention, end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
                         "end_attention, "
@@ -830,22 +892,26 @@ def get_live_sessions_by_room_month(request: Request):
                             "gift": row[4],
                             "guard": row[5],
                             "super_chat": row[6],
-                            "payer_count": row[22] or 0,
+                            "payer_count": row[26] or 0,
                             "blind_box_count": row[7],
                             "blind_box_profit": _profit_display(row[8]),
                             "danmaku_count": row[9] or 0,
-                            "start_guard_1": row[10],
-                            "start_guard_2": row[11],
-                            "start_guard_3": row[12],
-                            "start_fans_count": row[13],
-                            "start_attention": row[14],
-                            "end_guard_1": row[15],
-                            "end_guard_2": row[16],
-                            "end_guard_3": row[17],
-                            "end_fans_count": row[18],
-                            "end_attention": row[19],
-                            "avg_concurrency": row[20],
-                            "max_concurrency": row[21],
+                            "captain_danmaku_count": row[10],
+                            "admiral_danmaku_count": row[11],
+                            "governor_danmaku_count": row[12],
+                            "normal_danmaku_count": row[13],
+                            "start_guard_1": row[14],
+                            "start_guard_2": row[15],
+                            "start_guard_3": row[16],
+                            "start_fans_count": row[17],
+                            "start_attention": row[18],
+                            "end_guard_1": row[19],
+                            "end_guard_2": row[20],
+                            "end_guard_3": row[21],
+                            "end_fans_count": row[22],
+                            "end_attention": row[23],
+                            "avg_concurrency": row[24],
+                            "max_concurrency": row[25],
                             "current_concurrency": None,
                             "stats_15m": _session_15m_stats(session, row[0], m),
                         }
@@ -870,6 +936,10 @@ def get_live_sessions_by_room_month(request: Request):
                             "blind_box_count": r.blind_box_count,
                             "blind_box_profit": _profit_display(r.blind_box_profit),
                             "danmaku_count": r.danmaku_count or 0,
+                            "captain_danmaku_count": r.captain_danmaku_count,
+                            "admiral_danmaku_count": r.admiral_danmaku_count,
+                            "governor_danmaku_count": r.governor_danmaku_count,
+                            "normal_danmaku_count": r.normal_danmaku_count,
                             "start_guard_1": r.start_guard_1,
                             "start_guard_2": r.start_guard_2,
                             "start_guard_3": r.start_guard_3,

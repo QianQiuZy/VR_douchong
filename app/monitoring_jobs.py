@@ -12,11 +12,24 @@ from typing import Optional
 import aiohttp
 from sqlalchemy.exc import SQLAlchemyError
 
-from . import bilibili_gateway, blivedm, event_ingestion, room_config, runtime_state
+from . import (
+    bilibili_gateway,
+    blivedm,
+    event_ingestion,
+    room_config,
+    runtime_state,
+)
 from .config import ATTENTION_DAILY_ROOM_SLEEP_SECONDS
 from .database import Session
-from .metrics_runtime import record_concurrency, record_danmaku, start_session
-from .models import Attention, LiveSession, RoomInfo, RoomLiveStats
+from .metrics_runtime import record_concurrency, start_session
+from .models import (
+    Attention,
+    LiveSession,
+    LiveSession15mStats,
+    RoomInfo,
+    RoomLiveStats,
+    RoomStatsMonthly,
+)
 
 
 def _now() -> datetime.datetime:
@@ -104,15 +117,24 @@ def flush_pending_danmaku_for_room(
     session_id: Optional[int] = None,
     event_time: Optional[datetime.datetime] = None,
 ) -> None:
-    pending = int(runtime_state.DANMAKU_PENDING.pop(room_id, 0) or 0)
-    if pending <= 0:
+    pending = runtime_state.DANMAKU_PENDING.get(room_id)
+    if pending is None:
         return
-    if session_id:
-        record_danmaku(session_id, event_time or _now(), pending)
-        LiveSession.add_danmaku_by_id(session_id, pending)
-    else:
-        LiveSession.add_danmaku_by_room_open(room_id, pending)
-    logging.debug("[Danmaku] room_id=%s 下播/停用即时落库 +%s", room_id, pending)
+    total = sum(counts.total for counts in pending.sessions.values())
+    for month, counts in tuple(sorted(pending.monthly.items())):
+        if RoomStatsMonthly.add_danmaku_counts(room_id, month, counts):
+            pending.monthly.pop(month, None)
+    for pending_session_id, counts in tuple(sorted(pending.sessions.items())):
+        if LiveSession.add_danmaku_by_id(pending_session_id, counts):
+            pending.sessions.pop(pending_session_id, None)
+    for target, counts in tuple(
+        sorted(pending.buckets.items(), key=lambda item: item[0].start_time)
+    ):
+        if LiveSession15mStats.add_danmaku_counts(target, counts):
+            pending.buckets.pop(target, None)
+    if pending.is_empty():
+        runtime_state.DANMAKU_PENDING.pop(room_id, None)
+    logging.debug("[Danmaku] room_id=%s 下播/停用即时落库 +%s", room_id, total)
 
 
 def _read_room_attention(room_id: int) -> int:

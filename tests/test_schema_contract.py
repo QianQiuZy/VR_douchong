@@ -53,6 +53,53 @@ def _table_snapshot(table) -> dict[str, Any]:  # type: ignore[no-untyped-def]
 
 
 class TestSchemaTablesAndColumns:
+    def test_runtime_schema_does_not_force_new_danmaku_columns_onto_old_archives(
+        self, monkeypatch
+    ):
+        from app import database
+
+        statements: list[str] = []
+
+        class _Inspector:
+            def get_table_names(self) -> list[str]:
+                return [
+                    "live_session",
+                    "live_session_15m_stats",
+                    "live_session_15m_stats_202501",
+                    "room_stats_monthly",
+                ]
+
+            def get_columns(self, _table_name: str) -> list[dict[str, str]]:
+                return []
+
+        class _Connection:
+            def execute(self, statement) -> None:
+                statements.append(str(statement))
+
+        class _Begin:
+            def __enter__(self) -> _Connection:
+                return _Connection()
+
+            def __exit__(self, _exc_type, _exc, _traceback) -> bool:
+                return False
+
+        class _Engine:
+            def begin(self) -> _Begin:
+                return _Begin()
+
+        monkeypatch.setattr(database, "inspect", lambda _engine: _Inspector())
+        monkeypatch.setattr(database, "engine", _Engine())
+
+        database.ensure_runtime_schema()
+
+        hot_changes = [sql for sql in statements if "`live_session_15m_stats`" in sql]
+        archive_changes = [sql for sql in statements if "`live_session_15m_stats_202501`" in sql]
+        assert any("captain_danmaku_count" in sql for sql in hot_changes)
+        assert all("captain_danmaku_count" not in sql for sql in archive_changes)
+        assert all("admiral_danmaku_count" not in sql for sql in archive_changes)
+        assert all("governor_danmaku_count" not in sql for sql in archive_changes)
+        assert all("normal_danmaku_count" not in sql for sql in archive_changes)
+
     def test_metadata_contains_exactly_the_seven_tables(self, gift_module):
         assert sorted(gift_module.Base.metadata.tables.keys()) == [
             "attention",
@@ -131,6 +178,11 @@ class TestSchemaTablesAndColumns:
             "guard",
             "super_chat",
             "payer_count",
+            "danmaku_count",
+            "captain_danmaku_count",
+            "admiral_danmaku_count",
+            "governor_danmaku_count",
+            "normal_danmaku_count",
             "whale_top1_amount",
             "whale_top1_ratio",
             "whale_top5_amount",
@@ -154,6 +206,16 @@ class TestSchemaTablesAndColumns:
             assert columns[metric]["default"] == 0.0
         assert columns["payer_count"]["type"] == Integer.__name__
         assert columns["payer_count"]["default"] == 0
+        for metric in (
+            "danmaku_count",
+            "captain_danmaku_count",
+            "admiral_danmaku_count",
+            "governor_danmaku_count",
+            "normal_danmaku_count",
+        ):
+            assert columns[metric]["type"] == Integer.__name__
+            assert columns[metric]["default"] == 0
+            assert columns[metric]["nullable"] is True
         for metric in (
             "whale_top1_amount",
             "whale_top5_amount",
@@ -240,6 +302,10 @@ class TestSchemaTablesAndColumns:
             "blind_box_count",
             "blind_box_profit",
             "danmaku_count",
+            "captain_danmaku_count",
+            "admiral_danmaku_count",
+            "governor_danmaku_count",
+            "normal_danmaku_count",
             "payer_count",
             "start_guard_1",
             "start_guard_2",
@@ -311,6 +377,10 @@ class TestSchemaTablesAndColumns:
             "blind_box_count",
             "blind_box_profit",
             "danmaku_count",
+            "captain_danmaku_count",
+            "admiral_danmaku_count",
+            "governor_danmaku_count",
+            "normal_danmaku_count",
             "avg_concurrency",
             "max_concurrency",
             "sample_count",
@@ -320,9 +390,26 @@ class TestSchemaTablesAndColumns:
         for name in ("gift", "guard", "super_chat"):
             assert columns[name]["type"] == Float.__name__
             assert columns[name]["default"] == 0.0
-        for name in ("blind_box_count", "blind_box_profit", "danmaku_count", "sample_count", "payer_count"):
+        for name in (
+            "blind_box_count",
+            "blind_box_profit",
+            "danmaku_count",
+            "captain_danmaku_count",
+            "admiral_danmaku_count",
+            "governor_danmaku_count",
+            "normal_danmaku_count",
+            "sample_count",
+            "payer_count",
+        ):
             assert columns[name]["type"] == Integer.__name__
             assert columns[name]["default"] == 0
+        for name in (
+            "captain_danmaku_count",
+            "admiral_danmaku_count",
+            "governor_danmaku_count",
+            "normal_danmaku_count",
+        ):
+            assert columns[name]["nullable"] is True
         assert columns["avg_concurrency"]["nullable"] is True
         assert columns["max_concurrency"]["nullable"] is True
         assert sorted(idx.name for idx in table.indexes) == [

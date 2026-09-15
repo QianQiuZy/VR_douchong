@@ -9,9 +9,6 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
-bili.build/
-bili.dist/
-bili.onefile-build/
 develop-eggs/
 dist/
 downloads/
@@ -25,22 +22,16 @@ var/
 wheels/
 share/python-wheels/
 *.egg-info/
-notice/
 .installed.cfg
 *.egg
 MANIFEST
-
-# cache&测试部分
-cache/
-bili_config.json
-bili_pay.png
-bili_login.png
-bili.exe
+*.zip
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
+*.spec
 
 # Installer logs
 pip-log.txt
@@ -215,3 +206,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project tooling
+.omo/
+.basedpyright/
+.pyright/
+.vscode/
+.idea/
+
+# Local environment overrides
+.env.*
+
+# Operating systems
+.DS_Store
+Thumbs.db

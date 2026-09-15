@@ -7,9 +7,9 @@ import logging
 import threading
 from dataclasses import dataclass
 
+from . import DanmakuBucketTarget, DanmakuCounts
 from .models import LiveSession15mStats
 from .redis_metrics import delete_session_keys
-
 
 BUCKET_SECONDS = 15 * 60
 
@@ -28,7 +28,6 @@ class _Bucket:
     super_chat: float = 0.0
     blind_box_count: int = 0
     blind_box_profit: int = 0
-    danmaku_count: int = 0
     concurrency_total: int = 0
     sample_count: int = 0
     max_concurrency: int = 0
@@ -47,7 +46,6 @@ class _Bucket:
             or self.super_chat
             or self.blind_box_count
             or self.blind_box_profit
-            or self.danmaku_count
             or self.sample_count
             or self.payer_count
         )
@@ -113,7 +111,11 @@ def _flush(bucket: _Bucket, end_time: datetime.datetime) -> None:
         super_chat=bucket.super_chat,
         blind_box_count=bucket.blind_box_count,
         blind_box_profit=bucket.blind_box_profit,
-        danmaku_count=bucket.danmaku_count,
+        danmaku_count=0,
+        captain_danmaku_count=0,
+        admiral_danmaku_count=0,
+        governor_danmaku_count=0,
+        normal_danmaku_count=0,
         avg_concurrency=average,
         max_concurrency=bucket.max_concurrency if bucket.sample_count else None,
         sample_count=bucket.sample_count,
@@ -176,14 +178,40 @@ def record_concurrency(
         _buckets[session_id] = bucket
 
 
-def record_danmaku(session_id: int, event_time: datetime.datetime, count: int) -> None:
+def danmaku_bucket_target(
+    session_id: int,
+    event_time: datetime.datetime,
+) -> DanmakuBucketTarget | None:
     with _lock:
         bucket = _buckets.get(session_id)
         if bucket is None:
-            return
-        bucket = _advance(bucket, event_time)
-        bucket.danmaku_count += int(count)
-        _buckets[session_id] = bucket
+            return None
+        session_start = bucket.start_time - datetime.timedelta(
+            seconds=bucket.bucket_index * BUCKET_SECONDS
+        )
+        elapsed = max(0, int((event_time - session_start).total_seconds()))
+        bucket_index = elapsed // BUCKET_SECONDS
+        start_time = session_start + datetime.timedelta(seconds=bucket_index * BUCKET_SECONDS)
+        target = DanmakuBucketTarget(
+            session_id=session_id,
+            room_id=bucket.room_id,
+            month=bucket.month,
+            bucket_index=bucket_index,
+            start_time=start_time,
+            end_time=start_time + datetime.timedelta(seconds=BUCKET_SECONDS),
+        )
+        return target
+
+
+def record_danmaku(
+    session_id: int,
+    event_time: datetime.datetime,
+    counts: DanmakuCounts,
+) -> bool:
+    target = danmaku_bucket_target(session_id, event_time)
+    if target is None:
+        return False
+    return LiveSession15mStats.add_danmaku_counts(target, counts)
 
 
 def flush_session(session_id: int | None, end_time: datetime.datetime) -> None:

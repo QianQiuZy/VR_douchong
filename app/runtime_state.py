@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Optional
 
 import aiohttp
-from . import blivedm
 
+from . import PendingDanmaku, blivedm
 
 DEFAULT_ROOMS_JSON_PATH = Path(__file__).resolve().parents[1] / "rooms.json"
 ROOMS_JSON_PATH = os.getenv("ROOMS_JSON_PATH", str(DEFAULT_ROOMS_JSON_PATH))
@@ -28,7 +28,7 @@ LAST_STATUS: dict[int, int] = {}
 STREAM_STARTS: dict[int, datetime.datetime] = {}
 LIVE_INFO: dict[int, dict[str, str]] = {}
 PENDING_SESSION_ENDS: dict[int, datetime.datetime] = {}
-DANMAKU_PENDING: dict[int, int] = {}
+DANMAKU_PENDING: dict[int, PendingDanmaku] = {}
 FANS_COUNT: dict[int, int] = {}
 GUARD_COUNTS: dict[int, dict[str, int]] = {}
 CONCURRENCY_CACHE: dict[int, dict[str, int]] = {}

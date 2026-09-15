@@ -3,6 +3,7 @@ import logging
 from sqlalchemy import and_
 from sqlalchemy.exc import SQLAlchemyError
 
+from .. import DanmakuCounts
 from ..database import Session
 
 
@@ -102,29 +103,36 @@ def update_end_attention(model, session_id: int, attention: int | None = None) -
         session.close()
 
 
-def add_danmaku_by_id(model, session_id: int, count: int) -> None:
-    if not session_id or count <= 0:
-        return
+def _add_danmaku_counts(row, counts: DanmakuCounts) -> None:
+    row.danmaku_count = (row.danmaku_count or 0) + counts.total
+    row.captain_danmaku_count = (row.captain_danmaku_count or 0) + counts.captain
+    row.admiral_danmaku_count = (row.admiral_danmaku_count or 0) + counts.admiral
+    row.governor_danmaku_count = (row.governor_danmaku_count or 0) + counts.governor
+    row.normal_danmaku_count = (row.normal_danmaku_count or 0) + counts.normal
+
+
+def add_danmaku_by_id(model, session_id: int, counts: DanmakuCounts) -> bool:
+    if not session_id or counts.total <= 0:
+        return counts.total <= 0
     session = Session()
     try:
         row = session.query(model).filter_by(id=session_id).first()
         if not row:
-            return
-        row.danmaku_count = (row.danmaku_count or 0) + int(count)
+            return False
+        _add_danmaku_counts(row, counts)
         session.commit()
+        return True
     except SQLAlchemyError as exc:
         session.rollback()
         logging.error(f"[LiveSession] add_danmaku_by_id 失败: {exc}")
+        return False
     finally:
-        try:
-            session.close()
-        except Exception:
-            pass
+        session.close()
 
 
-def add_danmaku_by_room_open(model, room_id: int, count: int) -> None:
-    if count <= 0:
-        return
+def add_danmaku_by_room_open(model, room_id: int, counts: DanmakuCounts) -> bool:
+    if counts.total <= 0:
+        return True
     session = Session()
     try:
         row = (
@@ -134,14 +142,13 @@ def add_danmaku_by_room_open(model, room_id: int, count: int) -> None:
             .first()
         )
         if not row:
-            return
-        row.danmaku_count = (row.danmaku_count or 0) + int(count)
+            return False
+        _add_danmaku_counts(row, counts)
         session.commit()
+        return True
     except SQLAlchemyError as exc:
         session.rollback()
         logging.error(f"[LiveSession] add_danmaku_by_room_open 失败: {exc}")
+        return False
     finally:
-        try:
-            session.close()
-        except Exception:
-            pass
+        session.close()

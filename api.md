@@ -115,6 +115,29 @@
 | guard_3 | int | 总督数量（当前状态）。 |
 | fans_count | int | 粉丝团数量（当前状态）。 |
 | current_concurrency | int 或 null | 当前同接，未开播或无采样则为 null。 |
+| whale_dependency | object | 当月付费集中度及其数据状态，字段结构见下。 |
+| danmaku | object | 当月弹幕统计二级菜单；历史数据无对应字段时各项为 `null`。 |
+
+`whale_dependency` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| status | string | 数据状态：`live` 表示实时数据可用；`archived` 表示历史数据已完整归档；`partial` 表示历史数据仅部分归档；`unavailable` 表示暂无可用数据。 |
+| source | string | 数据来源：`redis` 表示实时 Redis 数据，`mysql` 表示 MySQL 历史归档。 |
+| top1 | float 或 null | 付费金额最高的 1 名用户占总收入的比例，范围为 `0` 到 `1`；无可用数据或总收入为 0 时为 `null`。 |
+| top5 | float 或 null | 付费金额最高的 5 名用户合计占总收入的比例，范围为 `0` 到 `1`；无可用数据或总收入为 0 时为 `null`。 |
+| top10 | float 或 null | 付费金额最高的 10 名用户合计占总收入的比例，范围为 `0` 到 `1`；无可用数据或总收入为 0 时为 `null`。 |
+| top1_percent | float 或 null | 付费金额最高的前 1% 用户合计占总收入的比例，范围为 `0` 到 `1`；无可用数据或总收入为 0 时为 `null`。 |
+
+`danmaku` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| total | int 或 null | 当月总弹幕数。 |
+| captain | int 或 null | 当月舰长弹幕数。 |
+| admiral | int 或 null | 当月提督弹幕数。 |
+| governor | int 或 null | 当月总督弹幕数。 |
+| normal | int 或 null | 当月正常用户弹幕数。 |
 
 **错误响应**
 
@@ -141,6 +164,8 @@
 - 历史月份返回 `live_time` 为 `0000-00-00 00:00:00`，`title` 为空，`status` 为 `0`。
 - 历史月份的 `guard_1/guard_2/guard_3/fans_count` 返回 `null`。
 - 返回 `payer_count`，表示该房间该月的去重付费人数。
+- 返回 `whale_dependency`，结构与 `/gift` 相同。当前月及归档状态为脏的历史月优先读取 Redis；已归档历史月从 MySQL 返回，暂无数据时 `status` 为 `unavailable` 且比例字段为 `null`。
+- 返回 `danmaku` 二级菜单，结构与 `/gift` 相同；旧月份无对应字段时各项为 `null`。
 - 不返回 `current_concurrency` 字段。
 
 **错误响应**
@@ -186,6 +211,10 @@
 | blind_box_count | int | 单场盲盒数量。 |
 | blind_box_profit | float | 单场盲盒盈亏（正负均可能，最小单位 0.1）。 |
 | danmaku_count | int | 弹幕数量。 |
+| captain_danmaku_count | int 或 null | 舰长弹幕数量；旧记录无字段时为 `null`。 |
+| admiral_danmaku_count | int 或 null | 提督弹幕数量；旧记录无字段时为 `null`。 |
+| governor_danmaku_count | int 或 null | 总督弹幕数量；旧记录无字段时为 `null`。 |
+| normal_danmaku_count | int 或 null | 正常用户弹幕数量；旧记录无字段时为 `null`。 |
 | start_guard_1 | int 或 null | 开播时舰长数量。 |
 | start_guard_2 | int 或 null | 开播时提督数量。 |
 | start_guard_3 | int 或 null | 开播时总督数量。 |
@@ -214,6 +243,10 @@
 | blind_box_count | int | 区间盲盒数量。 |
 | blind_box_profit | float | 区间盲盒盈亏。 |
 | danmaku_count | int | 区间弹幕数量。 |
+| captain_danmaku_count | int 或 null | 区间舰长弹幕数量；旧记录无字段时为 `null`。 |
+| admiral_danmaku_count | int 或 null | 区间提督弹幕数量；旧记录无字段时为 `null`。 |
+| governor_danmaku_count | int 或 null | 区间总督弹幕数量；旧记录无字段时为 `null`。 |
+| normal_danmaku_count | int 或 null | 区间正常用户弹幕数量；旧记录无字段时为 `null`。 |
 | avg_concurrency | float 或 null | 区间平均同接。 |
 | max_concurrency | int 或 null | 区间最高同接。 |
 | sample_count | int | 区间同接采样次数。 |

@@ -18,6 +18,7 @@ Coverage matrix (mirrors api.md and gift.py lines 3151-3712):
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -304,6 +305,7 @@ class TestGiftCurrentMonthRoute:
             "fans_count",
             "current_concurrency",
             "whale_dependency",
+            "danmaku",
         }
         assert item["room_id"] == 111111
         assert item["month"] == gift_module.month_str()
@@ -317,6 +319,13 @@ class TestGiftCurrentMonthRoute:
             "top5": None,
             "top10": None,
             "top1_percent": None,
+        }
+        assert item["danmaku"] == {
+            "total": None,
+            "captain": None,
+            "admiral": None,
+            "governor": None,
+            "normal": None,
         }
 
 
@@ -351,6 +360,7 @@ class TestGiftByMonthRoute:
             "guard_3",
             "fans_count",
             "whale_dependency",
+            "danmaku",
         }
         assert payload[0]["whale_dependency"]["status"] == "unavailable"
 
@@ -380,6 +390,76 @@ class TestGiftByMonthRoute:
 
 
 class TestGiftLiveSessionsRoute:
+    def test_current_session_returns_guard_level_danmaku_counts(
+        self, client, gift_module, monkeypatch
+    ):
+        from app import api_app
+
+        row = SimpleNamespace(
+            id=44,
+            start_time=api_app.datetime.datetime(2026, 9, 1, 12, 0, 0),
+            end_time=api_app.datetime.datetime(2026, 9, 1, 13, 0, 0),
+            title="live",
+            gift=0.0,
+            guard=0.0,
+            super_chat=0.0,
+            payer_count=0,
+            blind_box_count=0,
+            blind_box_profit=0,
+            danmaku_count=10,
+            captain_danmaku_count=1,
+            admiral_danmaku_count=2,
+            governor_danmaku_count=3,
+            normal_danmaku_count=4,
+            start_guard_1=None,
+            start_guard_2=None,
+            start_guard_3=None,
+            start_fans_count=None,
+            start_attention=None,
+            end_guard_1=None,
+            end_guard_2=None,
+            end_guard_3=None,
+            end_fans_count=None,
+            end_attention=None,
+            avg_concurrency=None,
+            max_concurrency=None,
+        )
+
+        class _Query:
+            def filter(self, *_args):
+                return self
+
+            def order_by(self, *_args):
+                return self
+
+            def all(self):
+                return [row]
+
+        class _Session:
+            def query(self, *_args):
+                return _Query()
+
+            def close(self) -> None:
+                return None
+
+            def rollback(self) -> None:
+                return None
+
+        monkeypatch.setattr(gift_module, "Session", lambda: _Session())
+        monkeypatch.setattr(api_app, "_session_15m_stats", lambda *_args: [])
+
+        response = client.get(
+            "/gift/live_sessions",
+            params={"room_id": 111111, "month": gift_module.month_str()},
+        )
+
+        session = response.json()["sessions"][0]
+        assert session["danmaku_count"] == 10
+        assert session["captain_danmaku_count"] == 1
+        assert session["admiral_danmaku_count"] == 2
+        assert session["governor_danmaku_count"] == 3
+        assert session["normal_danmaku_count"] == 4
+
     def test_historical_15m_stats_query_uses_concrete_archive_table(
         self, gift_module, monkeypatch
     ):
@@ -388,7 +468,7 @@ class TestGiftLiveSessionsRoute:
         captured: dict[str, str] = {}
 
         class _Result:
-            def fetchall(self) -> list[tuple[object, ...]]:
+            def fetchall(self) -> list[tuple[int, ...]]:
                 return []
 
         class _Session:
@@ -397,6 +477,11 @@ class TestGiftLiveSessionsRoute:
                 return _Result()
 
         monkeypatch.setattr(gift_module, "sc_log_table_exists", lambda _name: True)
+        monkeypatch.setattr(
+            api_app,
+            "inspect",
+            lambda _engine: SimpleNamespace(get_columns=lambda _table: []),
+        )
 
         api_app._session_15m_stats(_Session(), 14500, "202608")
 
@@ -405,13 +490,94 @@ class TestGiftLiveSessionsRoute:
     def test_15m_stats_include_danmaku_count(self, gift_module):
         from app import api_app
 
-        item = api_app._format_15m_stats((1, None, None, 1.0, 2.0, 3.0, 4, 5, 6, 7.0, 8, 9, 10))
+        item = api_app._format_15m_stats(
+            (1, None, None, 1.0, 2.0, 3.0, 4, 5, 6, 1, 2, 3, 4, 7.0, 8, 9, 10)
+        )
 
         assert item["danmaku_count"] == 6
+        assert item["captain_danmaku_count"] == 1
+        assert item["admiral_danmaku_count"] == 2
+        assert item["governor_danmaku_count"] == 3
+        assert item["normal_danmaku_count"] == 4
         assert item["avg_concurrency"] == 7.0
         assert item["max_concurrency"] == 8
         assert item["sample_count"] == 9
         assert item["payer_count"] == 10
+
+    def test_15m_stats_missing_new_columns_return_null(self, gift_module):
+        from app import api_app
+
+        item = api_app._format_15m_stats(
+            {
+                "bucket_index": 1,
+                "start_time": None,
+                "end_time": None,
+                "gift": 0,
+                "guard": 0,
+                "super_chat": 0,
+                "blind_box_count": 0,
+                "blind_box_profit": 0,
+                "danmaku_count": 6,
+                "avg_concurrency": None,
+                "max_concurrency": None,
+                "sample_count": 0,
+                "payer_count": 0,
+            }
+        )
+
+        assert item["captain_danmaku_count"] is None
+        assert item["admiral_danmaku_count"] is None
+        assert item["governor_danmaku_count"] is None
+        assert item["normal_danmaku_count"] is None
+
+    def test_historical_session_query_selects_null_for_missing_new_columns(
+        self, client, gift_module, monkeypatch
+    ):
+        from app import api_app
+
+        captured: dict[str, str] = {}
+
+        class _Result:
+            def fetchall(self) -> list[tuple[int, ...]]:
+                return []
+
+        class _Session:
+            def execute(self, statement, _parameters):
+                captured["sql"] = str(statement)
+                return _Result()
+
+            def rollback(self) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        old_columns = {
+            "id", "start_time", "end_time", "title", "gift", "guard", "super_chat",
+            "blind_box_count", "blind_box_profit", "danmaku_count", "start_guard_1",
+            "start_guard_2", "start_guard_3", "start_fans_count", "start_attention",
+            "end_guard_1", "end_guard_2", "end_guard_3", "end_fans_count",
+            "end_attention", "avg_concurrency", "max_concurrency", "payer_count",
+        }
+        monkeypatch.setattr(gift_module, "Session", lambda: _Session())
+        monkeypatch.setattr(gift_module, "sc_log_table_exists", lambda _name: True)
+        monkeypatch.setattr(
+            api_app,
+            "inspect",
+            lambda _engine: SimpleNamespace(
+                get_columns=lambda _table: [{"name": name} for name in old_columns]
+            ),
+        )
+
+        response = client.get(
+            "/gift/live_sessions", params={"room_id": 111111, "month": "202608"}
+        )
+
+        assert response.status_code == 200
+        assert "NULL AS captain_danmaku_count" in captured["sql"]
+        assert "NULL AS admiral_danmaku_count" in captured["sql"]
+        assert "NULL AS governor_danmaku_count" in captured["sql"]
+        assert "NULL AS normal_danmaku_count" in captured["sql"]
 
     def test_missing_room_id_defaults_to_zero_and_returns_400(self, client, gift_module, isolated_db):
         response = client.get("/gift/live_sessions")

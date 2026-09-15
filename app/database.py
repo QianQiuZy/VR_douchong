@@ -8,7 +8,6 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 from .config import DB_CONFIG
 
-
 engine = create_engine(
     f"mysql+pymysql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
     f"{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['db']}",
@@ -32,6 +31,10 @@ def ensure_runtime_schema() -> None:
             "start_attention": "INT NULL",
             "end_attention": "INT NULL",
             "payer_count": "INT NOT NULL DEFAULT 0",
+            "captain_danmaku_count": "INT NULL DEFAULT NULL",
+            "admiral_danmaku_count": "INT NULL DEFAULT NULL",
+            "governor_danmaku_count": "INT NULL DEFAULT NULL",
+            "normal_danmaku_count": "INT NULL DEFAULT NULL",
         },
         "live_session_15m_stats": {
             "room_id": "INT NOT NULL DEFAULT 0",
@@ -44,6 +47,10 @@ def ensure_runtime_schema() -> None:
             "blind_box_count": "INT NOT NULL DEFAULT 0",
             "blind_box_profit": "INT NOT NULL DEFAULT 0",
             "danmaku_count": "INT NOT NULL DEFAULT 0",
+            "captain_danmaku_count": "INT NULL DEFAULT NULL",
+            "admiral_danmaku_count": "INT NULL DEFAULT NULL",
+            "governor_danmaku_count": "INT NULL DEFAULT NULL",
+            "normal_danmaku_count": "INT NULL DEFAULT NULL",
             "avg_concurrency": "FLOAT NULL",
             "max_concurrency": "INT NULL",
             "sample_count": "INT NOT NULL DEFAULT 0",
@@ -51,6 +58,11 @@ def ensure_runtime_schema() -> None:
         },
         "room_stats_monthly": {
             "payer_count": "INT NOT NULL DEFAULT 0",
+            "danmaku_count": "INT NULL DEFAULT NULL",
+            "captain_danmaku_count": "INT NULL DEFAULT NULL",
+            "admiral_danmaku_count": "INT NULL DEFAULT NULL",
+            "governor_danmaku_count": "INT NULL DEFAULT NULL",
+            "normal_danmaku_count": "INT NULL DEFAULT NULL",
             "whale_top1_amount": "BIGINT NOT NULL DEFAULT 0",
             "whale_top1_ratio": "DECIMAL(12,8) NULL",
             "whale_top5_amount": "BIGINT NOT NULL DEFAULT 0",
@@ -86,7 +98,18 @@ def ensure_runtime_schema() -> None:
         if table_name.startswith("live_session_") and table_name[len("live_session_"):].isdigit():
             targets.setdefault(table_name, {})["payer_count"] = "INT NOT NULL DEFAULT 0"
         if table_name.startswith("live_session_15m_stats_") and table_name[len("live_session_15m_stats_"):].isdigit():
-            targets.setdefault(table_name, {}).update(required_columns["live_session_15m_stats"])
+            targets.setdefault(table_name, {}).update(
+                {
+                    name: ddl
+                    for name, ddl in required_columns["live_session_15m_stats"].items()
+                    if name not in {
+                        "captain_danmaku_count",
+                        "admiral_danmaku_count",
+                        "governor_danmaku_count",
+                        "normal_danmaku_count",
+                    }
+                }
+            )
         if table_name.startswith("room_live_stats_") and table_name[len("room_live_stats_"):].isdigit():
             targets.setdefault(table_name, {}).update(required_columns["room_live_stats"])
     for table_name, columns in targets.items():

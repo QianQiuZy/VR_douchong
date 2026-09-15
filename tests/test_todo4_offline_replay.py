@@ -37,8 +37,13 @@ def test_extracted_handler_replays_gift_guard_sc_notice_and_danmaku(monkeypatch)
     handler.__getattribute__("_on_user_toast_v2")(client, SimpleNamespace(price=1000, num=1, guard_level=3, username="u", uid=1))
     handler.__getattribute__("_on_super_chat")(client, SimpleNamespace(price=30, uname="u", uid=1, message="sc", time=1_700_000_000))
     handler.__getattribute__("_on_common_notice_danmaku")(client, SimpleNamespace(content_segments=[SimpleNamespace(text="u"), SimpleNamespace(text="干杯之旅")], content_text="u 干杯之旅"))
-    handler.__getattribute__("_on_danmaku")(client, SimpleNamespace(is_mirror=False))
-    assert runtime_state.DANMAKU_PENDING[301] == 1
+    handler.__getattribute__("_on_danmaku")(
+        client,
+        SimpleNamespace(is_mirror=False, privilege_type=0, timestamp=1_775_000_000),
+    )
+    pending = runtime_state.DANMAKU_PENDING[301].monthly["202604"]
+    assert pending.total == 1
+    assert pending.normal == 1
     assert [name for name, _ in calls] == ["monthly", "session", "monthly", "session", "monthly", "session", "sc", "monthly", "session"]
 
 

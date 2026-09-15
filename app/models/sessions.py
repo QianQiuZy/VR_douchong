@@ -2,6 +2,7 @@ import datetime
 
 from sqlalchemy import BigInteger, Column, DateTime, Float, Index, Integer, String
 
+from .. import DanmakuBucketTarget, DanmakuCounts
 from ..database import Base
 from ..repositories.live_session_snapshots import (
     add_danmaku_by_id,
@@ -20,6 +21,7 @@ from ..repositories.live_sessions import (
     start_session,
     update_concurrency_by_id,
 )
+from ..repositories.session_15m import add_danmaku_counts as add_15m_danmaku_counts
 from ..repositories.session_15m import upsert_stats
 from ..repositories.super_chat import log_super_chat
 
@@ -40,6 +42,10 @@ class LiveSession(Base):
     blind_box_count = Column(Integer, default=0, nullable=False)
     blind_box_profit = Column(Integer, default=0, nullable=False)
     danmaku_count = Column(Integer, default=0, nullable=False)
+    captain_danmaku_count = Column(Integer, default=0, nullable=True)
+    admiral_danmaku_count = Column(Integer, default=0, nullable=True)
+    governor_danmaku_count = Column(Integer, default=0, nullable=True)
+    normal_danmaku_count = Column(Integer, default=0, nullable=True)
     payer_count = Column(Integer, default=0, nullable=False)
     __table_args__ = (
         Index("idx_ls_room_month", "room_id", "month"),
@@ -117,12 +123,12 @@ class LiveSession(Base):
         update_end_attention(cls, session_id, attention)
 
     @classmethod
-    def add_danmaku_by_id(cls, session_id: int, count: int) -> None:
-        add_danmaku_by_id(cls, session_id, count)
+    def add_danmaku_by_id(cls, session_id: int, counts: DanmakuCounts) -> bool:
+        return add_danmaku_by_id(cls, session_id, counts)
 
     @classmethod
-    def add_danmaku_by_room_open(cls, room_id: int, count: int) -> None:
-        add_danmaku_by_room_open(cls, room_id, count)
+    def add_danmaku_by_room_open(cls, room_id: int, counts: DanmakuCounts) -> bool:
+        return add_danmaku_by_room_open(cls, room_id, counts)
 
 
 class SuperChatLog(Base):
@@ -165,6 +171,10 @@ class LiveSession15mStats(Base):
     blind_box_count = Column(Integer, default=0, nullable=False)
     blind_box_profit = Column(Integer, default=0, nullable=False)
     danmaku_count = Column(Integer, default=0, nullable=False)
+    captain_danmaku_count = Column(Integer, default=0, nullable=True)
+    admiral_danmaku_count = Column(Integer, default=0, nullable=True)
+    governor_danmaku_count = Column(Integer, default=0, nullable=True)
+    normal_danmaku_count = Column(Integer, default=0, nullable=True)
     avg_concurrency = Column(Float, nullable=True)
     max_concurrency = Column(Integer, nullable=True)
     sample_count = Column(Integer, default=0, nullable=False)
@@ -172,6 +182,14 @@ class LiveSession15mStats(Base):
     __table_args__ = (
         Index("idx_ls15_room_month_start", "room_id", "month", "start_time"),
     )
+
+    @classmethod
+    def add_danmaku_counts(
+        cls,
+        target: DanmakuBucketTarget,
+        counts: DanmakuCounts,
+    ) -> bool:
+        return add_15m_danmaku_counts(cls, target, counts)
 
     @classmethod
     def upsert(
@@ -188,6 +206,10 @@ class LiveSession15mStats(Base):
         blind_box_count: int,
         blind_box_profit: int,
         danmaku_count: int,
+        captain_danmaku_count: int,
+        admiral_danmaku_count: int,
+        governor_danmaku_count: int,
+        normal_danmaku_count: int,
         avg_concurrency: float | None,
         max_concurrency: int | None,
         sample_count: int,
@@ -207,6 +229,10 @@ class LiveSession15mStats(Base):
             blind_box_count=blind_box_count,
             blind_box_profit=blind_box_profit,
             danmaku_count=danmaku_count,
+            captain_danmaku_count=captain_danmaku_count,
+            admiral_danmaku_count=admiral_danmaku_count,
+            governor_danmaku_count=governor_danmaku_count,
+            normal_danmaku_count=normal_danmaku_count,
             avg_concurrency=avg_concurrency,
             max_concurrency=max_concurrency,
             sample_count=sample_count,

@@ -27,8 +27,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from .database import Session, engine
 from .repositories.tables import (
     ensure_attention_archive_table,
-    ensure_live_session_archive_table,
     ensure_live_session_15m_stats_archive_table,
+    ensure_live_session_archive_table,
     ensure_room_live_stats_archive_table,
     ensure_sc_archive_table,
     month_range,
@@ -211,6 +211,8 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
                     (
                         "id", "room_id", "start_time", "end_time", "title", "gift", "guard",
                         "super_chat", "month", "blind_box_count", "blind_box_profit", "danmaku_count",
+                        "captain_danmaku_count", "admiral_danmaku_count",
+                        "governor_danmaku_count", "normal_danmaku_count",
                         "payer_count", "start_guard_1", "start_guard_2", "start_guard_3",
                         "start_fans_count", "start_attention", "end_guard_1", "end_guard_2",
                         "end_guard_3", "end_fans_count", "end_attention", "avg_concurrency",
@@ -301,7 +303,9 @@ def archive_live_session_15m_stats(target_month: Optional[str] = None) -> int:
                     (
                         "session_id", "bucket_index", "room_id", "month", "start_time", "end_time",
                         "gift", "guard", "super_chat", "blind_box_count", "blind_box_profit",
-                        "danmaku_count", "avg_concurrency", "max_concurrency", "sample_count", "payer_count",
+                        "danmaku_count", "captain_danmaku_count", "admiral_danmaku_count",
+                        "governor_danmaku_count", "normal_danmaku_count", "avg_concurrency",
+                        "max_concurrency", "sample_count", "payer_count",
                     ),
                 )
                 quoted_columns = ", ".join(f"`{name}`" for name in columns)

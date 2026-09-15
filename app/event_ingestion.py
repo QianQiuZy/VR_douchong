@@ -5,14 +5,22 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
-from . import blivedm
-
-from . import runtime_state
-from .metrics_runtime import current_bucket_index, record_payment, start_session
+from . import DanmakuCounts, PendingDanmaku, blivedm, runtime_state
+from .metrics_runtime import (
+    current_bucket_index,
+    danmaku_bucket_target,
+    record_payment,
+    start_session,
+)
+from .models import (
+    LiveSession,
+    RoomBlindBoxMonthly,
+    RoomLiveStats,
+    RoomStatsMonthly,
+    SuperChatLog,
+)
 from .redis_metrics import register_payer
 from .whale_metrics import record_whale_revenue
-from .models import LiveSession, RoomBlindBoxMonthly, RoomLiveStats, RoomStatsMonthly, SuperChatLog
-
 
 COMMON_NOTICE_GIFT_COIN_MAP = {
     "干杯之旅": 10000,
@@ -215,7 +223,15 @@ class MyHandler(blivedm.BaseHandler):
                 return
             if getattr(message, "is_mirror", False) or runtime_state.LAST_STATUS.get(room_id, 0) != 1:
                 return
-            runtime_state.DANMAKU_PENDING[room_id] = runtime_state.DANMAKU_PENDING.get(room_id, 0) + 1
+            event_time = _timestamp_to_datetime(getattr(message, "timestamp", None)) or datetime.datetime.now()
+            session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
+            target = danmaku_bucket_target(session_id, event_time) if session_id is not None else None
+            if target is None:
+                session_id = self._resolve_session(client, None, event_time)
+                target = danmaku_bucket_target(session_id, event_time) if session_id is not None else None
+            counts = DanmakuCounts.from_privilege_type(int(getattr(message, "privilege_type", 0) or 0))
+            pending = runtime_state.DANMAKU_PENDING.setdefault(room_id, PendingDanmaku())
+            pending.add(event_time, counts, target)
         except Exception as exc:  # noqa: BROAD_EXCEPT_OK
             logging.error("[Danmaku] 统计弹幕时出错: %s", exc)
 

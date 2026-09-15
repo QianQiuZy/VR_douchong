@@ -6,6 +6,7 @@ from sqlalchemy import func
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
+from .. import DanmakuCounts
 from ..database import Session
 
 
@@ -61,6 +62,46 @@ def set_room_payer_count(model, room_id: int, month: str, count: int) -> None:
     except SQLAlchemyError as exc:
         session.rollback()
         logging.error("[RoomStatsMonthly] payer_count写入失败 room_id=%s month=%s: %s", room_id, month, exc)
+    finally:
+        session.close()
+
+
+def add_danmaku_counts(model, room_id: int, month: str, counts: DanmakuCounts) -> bool:
+    if counts.total <= 0:
+        return True
+    session = Session()
+    try:
+        stmt = insert(model).values(
+            room_id=room_id,
+            month=month,
+            gift=0.0,
+            guard=0.0,
+            super_chat=0.0,
+            payer_count=0,
+            danmaku_count=counts.total,
+            captain_danmaku_count=counts.captain,
+            admiral_danmaku_count=counts.admiral,
+            governor_danmaku_count=counts.governor,
+            normal_danmaku_count=counts.normal,
+        ).on_duplicate_key_update(
+            danmaku_count=func.coalesce(model.danmaku_count, 0) + counts.total,
+            captain_danmaku_count=func.coalesce(model.captain_danmaku_count, 0) + counts.captain,
+            admiral_danmaku_count=func.coalesce(model.admiral_danmaku_count, 0) + counts.admiral,
+            governor_danmaku_count=func.coalesce(model.governor_danmaku_count, 0) + counts.governor,
+            normal_danmaku_count=func.coalesce(model.normal_danmaku_count, 0) + counts.normal,
+        )
+        session.execute(stmt)
+        session.commit()
+        return True
+    except SQLAlchemyError as exc:
+        session.rollback()
+        logging.error(
+            "[RoomStatsMonthly] 弹幕写入失败 room_id=%s month=%s: %s",
+            room_id,
+            month,
+            exc,
+        )
+        return False
     finally:
         session.close()
 

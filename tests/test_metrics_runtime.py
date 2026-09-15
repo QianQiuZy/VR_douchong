@@ -2,10 +2,26 @@ from __future__ import annotations
 
 import datetime
 from types import SimpleNamespace
+from typing import Protocol
 
 import pytest
 
-from app import bootstrap, metrics_runtime, monitoring_jobs, redis_metrics, runtime_state
+from app import (
+    bootstrap,
+    event_ingestion,
+    metrics_runtime,
+    monitoring_jobs,
+    redis_metrics,
+    runtime_state,
+)
+
+
+class _DanmakuCountView(Protocol):
+    total: int
+    captain: int
+    admiral: int
+    governor: int
+    normal: int
 
 
 class _FakeRedis:
@@ -34,9 +50,11 @@ class _FakeRedis:
 def clear_runtime_buckets():
     with metrics_runtime._lock:
         metrics_runtime._buckets.clear()
+    runtime_state.DANMAKU_PENDING.clear()
     yield
     with metrics_runtime._lock:
         metrics_runtime._buckets.clear()
+    runtime_state.DANMAKU_PENDING.clear()
 
 
 def test_redis_registration_keeps_room_and_site_scopes(monkeypatch):
@@ -107,25 +125,120 @@ def test_shutdown_flush_drains_pending_danmaku_before_metrics(monkeypatch):
 
 
 def test_pending_danmaku_flush_updates_parent_and_15m_bucket(monkeypatch):
-    writes: list[dict[str, int | float | str | datetime.datetime | None]] = []
-    parent_writes: list[tuple[int, int]] = []
+    writes: list[tuple[int, _DanmakuCountView]] = []
+    parent_writes: list[tuple[int, _DanmakuCountView]] = []
+    monthly_writes: list[tuple[int, str, _DanmakuCountView]] = []
     monkeypatch.setattr(
         metrics_runtime.LiveSession15mStats,
-        "upsert",
-        lambda **values: writes.append(values) or True,
+        "add_danmaku_counts",
+        classmethod(
+            lambda _cls, target, counts: writes.append((target.bucket_index, counts)) or True
+        ),
     )
     monkeypatch.setattr(
         monitoring_jobs,
         "LiveSession",
-        SimpleNamespace(add_danmaku_by_id=lambda session_id, count: parent_writes.append((session_id, count))),
+        SimpleNamespace(
+            add_danmaku_by_id=lambda session_id, counts: (
+                parent_writes.append((session_id, counts)) or True
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        monitoring_jobs,
+        "RoomStatsMonthly",
+        SimpleNamespace(
+            add_danmaku_counts=lambda room_id, month, counts: monthly_writes.append(
+                (room_id, month, counts)
+            )
+            or True
+        ),
     )
     start = datetime.datetime(2026, 8, 30, 12, 0, 0)
-    runtime_state.DANMAKU_PENDING[301] = 7
+    handler = event_ingestion.MyHandler()
+    runtime_state.LAST_STATUS[301] = 1
     metrics_runtime.start_session(44, 301, start)
+    runtime_state.CURRENT_SESSIONS[301] = 44
+
+    for privilege_type in (3, 3, 2, 1, 0, 0, 0):
+        handler.__getattribute__("_on_danmaku")(
+            SimpleNamespace(room_id=301),
+            SimpleNamespace(
+                is_mirror=False,
+                privilege_type=privilege_type,
+                timestamp=int(start.timestamp()),
+            ),
+        )
 
     monitoring_jobs.flush_pending_danmaku_for_room(301, 44, start + datetime.timedelta(minutes=1))
     metrics_runtime.flush_session(44, start + datetime.timedelta(minutes=1))
 
-    assert parent_writes == [(44, 7)]
-    assert writes[0]["danmaku_count"] == 7
+    assert len(parent_writes) == 1
+    parent_counts = parent_writes[0][1]
+    assert parent_writes[0][0] == 44
+    assert parent_counts.total == 7
+    assert parent_counts.captain == 2
+    assert parent_counts.admiral == 1
+    assert parent_counts.governor == 1
+    assert parent_counts.normal == 3
+    assert len(monthly_writes) == 1
+    assert monthly_writes[0][0:2] == (301, "202608")
+    assert monthly_writes[0][2] == parent_counts
+    assert writes[0][0] == 0
+    assert writes[0][1] == parent_counts
     assert 301 not in runtime_state.DANMAKU_PENDING
+    runtime_state.LAST_STATUS.pop(301, None)
+
+
+def test_danmaku_monthly_counts_follow_event_calendar_month(monkeypatch):
+    monthly_writes: list[tuple[int, str, _DanmakuCountView]] = []
+    parent_writes: list[_DanmakuCountView] = []
+    monkeypatch.setattr(
+        monitoring_jobs,
+        "RoomStatsMonthly",
+        SimpleNamespace(
+            add_danmaku_counts=lambda room_id, month, counts: monthly_writes.append(
+                (room_id, month, counts)
+            )
+            or True
+        ),
+    )
+    monkeypatch.setattr(
+        monitoring_jobs,
+        "LiveSession",
+        SimpleNamespace(
+            add_danmaku_by_id=lambda _session_id, counts: parent_writes.append(counts) or True
+        ),
+    )
+    handler = event_ingestion.MyHandler()
+    runtime_state.LAST_STATUS[301] = 1
+    first_event_time = datetime.datetime.fromtimestamp(1_798_732_799)
+    metrics_runtime.start_session(44, 301, first_event_time)
+    runtime_state.CURRENT_SESSIONS[301] = 44
+
+    handler.__getattribute__("_on_danmaku")(
+        SimpleNamespace(room_id=301),
+        SimpleNamespace(is_mirror=False, privilege_type=3, timestamp=1_798_732_799),
+    )
+    handler.__getattribute__("_on_danmaku")(
+        SimpleNamespace(room_id=301),
+        SimpleNamespace(is_mirror=False, privilege_type=0, timestamp=1_798_732_801),
+    )
+    runtime_state.LAST_STATUS[302] = 0
+    handler.__getattribute__("_on_danmaku")(
+        SimpleNamespace(room_id=302),
+        SimpleNamespace(is_mirror=False, privilege_type=1, timestamp=1_798_732_801),
+    )
+
+    monitoring_jobs.flush_pending_danmaku_for_room(301, 44)
+
+    assert [(room_id, month) for room_id, month, _counts in monthly_writes] == [
+        (301, "202612"),
+        (301, "202701"),
+    ]
+    assert monthly_writes[0][2].captain == 1
+    assert monthly_writes[1][2].normal == 1
+    assert parent_writes[0].total == 2
+    assert 302 not in runtime_state.DANMAKU_PENDING
+    runtime_state.LAST_STATUS.pop(301, None)
+    runtime_state.LAST_STATUS.pop(302, None)

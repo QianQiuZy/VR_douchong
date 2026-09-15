@@ -1,7 +1,19 @@
 import datetime
 
-from sqlalchemy import BigInteger, Column, Date, DateTime, Float, Index, Integer, Numeric, PrimaryKeyConstraint, String
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    Numeric,
+    PrimaryKeyConstraint,
+    String,
+)
 
+from .. import DanmakuCounts
 from ..database import Base
 from ..repositories.live_stats import (
     add_daily_metrics,
@@ -11,6 +23,7 @@ from ..repositories.live_stats import (
 )
 from ..repositories.monthly import (
     add_blind_box_amounts,
+    add_danmaku_counts,
     add_room_stats_amounts,
     set_room_payer_count,
 )
@@ -26,6 +39,11 @@ class RoomStatsMonthly(Base):
     guard = Column(Float, default=0.0, nullable=False)
     super_chat = Column(Float, default=0.0, nullable=False)
     payer_count = Column(Integer, default=0, nullable=False)
+    danmaku_count = Column(Integer, default=0, nullable=True)
+    captain_danmaku_count = Column(Integer, default=0, nullable=True)
+    admiral_danmaku_count = Column(Integer, default=0, nullable=True)
+    governor_danmaku_count = Column(Integer, default=0, nullable=True)
+    normal_danmaku_count = Column(Integer, default=0, nullable=True)
     whale_top1_amount = Column(BigInteger, default=0, nullable=False)
     whale_top1_ratio = Column(Numeric(12, 8), nullable=True)
     whale_top5_amount = Column(BigInteger, default=0, nullable=False)
@@ -55,6 +73,10 @@ class RoomStatsMonthly(Base):
     @classmethod
     def set_payer_count(cls, room_id: int, month: str, count: int) -> None:
         set_room_payer_count(cls, room_id, month, count)
+
+    @classmethod
+    def add_danmaku_counts(cls, room_id: int, month: str, counts: DanmakuCounts) -> bool:
+        return add_danmaku_counts(cls, room_id, month, counts)
 
 
 class RoomBlindBoxMonthly(Base):
