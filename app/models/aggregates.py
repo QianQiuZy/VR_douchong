@@ -1,4 +1,5 @@
 import datetime
+from typing import overload
 
 from sqlalchemy import (
     BigInteger,
@@ -12,6 +13,7 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
 )
+from sqlalchemy.orm import Session
 
 from .. import DanmakuCounts
 from ..database import Base
@@ -27,6 +29,7 @@ from ..repositories.monthly import (
     add_room_stats_amounts,
     set_room_payer_count,
 )
+from ..repositories.tables import ReportTableMetadata
 
 
 class RoomStatsMonthly(Base):
@@ -132,10 +135,62 @@ class RoomLiveStats(Base):
     ) -> None:
         add_daily_metrics(cls, room_id, date_value, gift, guard, super_chat, payer_count, steel_coin_delta)
 
+    @overload
     @classmethod
-    def month_aggregate_for_month(cls, room_id: int, month: str) -> tuple[int, int]:
-        return month_aggregate_for_month(cls, room_id, month)
+    def month_aggregate_for_month(
+        cls,
+        room_id: int,
+        month: str,
+        session: Session | None = None,
+        metadata: ReportTableMetadata | None = None,
+    ) -> tuple[int, int]: ...
+
+    @overload
+    @classmethod
+    def month_aggregate_for_month(
+        cls,
+        room_id: list[int],
+        month: str,
+        session: Session | None = None,
+        metadata: ReportTableMetadata | None = None,
+    ) -> dict[int, tuple[int, int]]: ...
 
     @classmethod
-    def month_steel_coin_for_month(cls, room_id: int, month: str) -> int:
-        return month_steel_coin_for_month(cls, room_id, month)
+    def month_aggregate_for_month(
+        cls,
+        room_id: int | list[int],
+        month: str,
+        session: Session | None = None,
+        metadata: ReportTableMetadata | None = None,
+    ) -> tuple[int, int] | dict[int, tuple[int, int]]:
+        return month_aggregate_for_month(cls, room_id, month, session=session, metadata=metadata)
+
+    @overload
+    @classmethod
+    def month_steel_coin_for_month(
+        cls,
+        room_id: int,
+        month: str,
+        session: Session | None = None,
+        metadata: ReportTableMetadata | None = None,
+    ) -> int: ...
+
+    @overload
+    @classmethod
+    def month_steel_coin_for_month(
+        cls,
+        room_id: list[int],
+        month: str,
+        session: Session | None = None,
+        metadata: ReportTableMetadata | None = None,
+    ) -> dict[int, int]: ...
+
+    @classmethod
+    def month_steel_coin_for_month(
+        cls,
+        room_id: int | list[int],
+        month: str,
+        session: Session | None = None,
+        metadata: ReportTableMetadata | None = None,
+    ) -> int | dict[int, int]:
+        return month_steel_coin_for_month(cls, room_id, month, session=session, metadata=metadata)

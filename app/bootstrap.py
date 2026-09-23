@@ -28,10 +28,12 @@ from typing import Optional
 
 from . import api_app, archive_service, monitoring_jobs, runtime_state
 from .config import APP_HOST, APP_PORT
-from .database import create_schema, ensure_runtime_schema
+from .database import create_schema, ensure_runtime_schema, log_pool_status
 from .metrics_runtime import flush_session
 from .models import RoomInfo
 from .whale_archive import archive_whale_month
+
+POOL_STATUS_INTERVAL_SECONDS = 300
 
 
 # ------------------ time helpers ------------------ #
@@ -55,13 +57,30 @@ def _month_str_now() -> str:
 
 # ------------------ archive scheduler ------------------ #
 async def _archive_month(target_month: Optional[str] = None) -> None:
-    await asyncio.gather(
-        asyncio.to_thread(archive_service.archive_super_chat_log, target_month),
-        asyncio.to_thread(archive_service.archive_room_live_stats, target_month),
-        asyncio.to_thread(archive_service.archive_attention, target_month),
-        asyncio.to_thread(archive_whale_month, target_month),
-    )
-    await asyncio.to_thread(archive_service.archive_live_session, target_month)
+    """Run archive jobs serially, reporting failures before continuing."""
+    for archive_job in (
+        archive_service.archive_super_chat_log,
+        archive_service.archive_room_live_stats,
+        archive_service.archive_attention,
+        archive_whale_month,
+    ):
+        try:
+            await asyncio.to_thread(archive_job, target_month)
+        except Exception as exc:
+            logging.error(
+                "[archive] job failed; continuing job=%s error_type=%s",
+                archive_job.__name__,
+                type(exc).__name__,
+            )
+    try:
+        await asyncio.to_thread(archive_service.archive_live_session, target_month)
+    except Exception as exc:
+        logging.error(
+            "[archive] job failed; continuing job=%s error_type=%s",
+            archive_service.archive_live_session.__name__,
+            type(exc).__name__,
+        )
+    log_pool_status("monthly_archive")
 
 
 async def monthly_reset_scheduler() -> None:
@@ -155,6 +174,12 @@ def _flush_active_metrics(end_time: datetime.datetime) -> None:
         flush_session(session_id, end_time)
 
 
+async def pool_status_scheduler() -> None:
+    while True:
+        log_pool_status("periodic", level=logging.INFO)
+        await asyncio.sleep(POOL_STATUS_INTERVAL_SECONDS)
+
+
 # ------------------ main coroutine ------------------ #
 async def main() -> None:
     """Top-level runtime coroutine.
@@ -188,6 +213,7 @@ async def main() -> None:
             monitoring_jobs.bili_ticket_scheduler(),  # 每日 5:00 刷新 bili_ticket
             monitoring_jobs.danmaku_flush_scheduler(),
             monitoring_jobs.concurrency_poll_scheduler(),  # 开播房间每 15 秒轮询同接
+            pool_status_scheduler(),
         )
     finally:
         _flush_active_metrics(_now())

@@ -1,9 +1,12 @@
 import datetime
 import logging
+from collections.abc import Sequence
+from typing import ClassVar, Protocol, SupportsInt
 
-from sqlalchemy import and_, func, inspect, text
+from sqlalchemy import Column, Integer, and_, bindparam, case, column, func, inspect, text, type_coerce
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session as OrmSession
 
 from ..database import Session, engine
 from .tables import (
@@ -13,7 +16,52 @@ from .tables import (
     month_str,
     room_live_stats_table_name,
     sc_log_table_exists,
+    ReportTableMetadata,
 )
+
+
+class _LiveStatsAggregateModel(Protocol):
+    room_id: ClassVar[Column[int]]
+    date: ClassVar[Column[datetime.date]]
+    duration: ClassVar[Column[int]]
+    steel_coin_count: ClassVar[Column[int]]
+
+
+class _TupleRows[T](Protocol):
+    def all(self) -> Sequence[T]: ...
+    def one(self) -> T: ...
+
+
+class _TupleResult[T](Protocol):
+    def tuples(self) -> _TupleRows[T]: ...
+
+
+class _ScalarResult[T](Protocol):
+    def scalar(self) -> T | None: ...
+
+
+type _IntegerLike = SupportsInt | str | bytes | bytearray
+
+
+class _IntegerPairRows(Protocol):
+    def one(self) -> tuple[_IntegerLike, _IntegerLike]: ...
+
+
+class _IntegerPairResult(Protocol):
+    def tuples(self) -> _IntegerPairRows: ...
+
+
+def _tuple_rows[T](result: _TupleResult[T]) -> Sequence[T]:
+    return result.tuples().all()
+
+
+def _scalar_value[T](result: _ScalarResult[T]) -> T | None:
+    return result.scalar()
+
+
+def _archive_aggregate_values(result: _IntegerPairResult) -> tuple[int, int]:
+    total_sec, eff_days = result.tuples().one()
+    return int(total_sec), int(eff_days)
 
 
 def add_duration(model, room_id: int, date_value: datetime.date, seconds: int) -> None:
@@ -122,75 +170,120 @@ def add_daily_metrics(
         session.close()
 
 
-def month_aggregate_for_month(model, room_id: int, month: str) -> tuple[int, int]:
-    session = Session()
+def month_aggregate_for_month(
+    model: type[_LiveStatsAggregateModel],
+    room_id: int | list[int],
+    month: str,
+    session: OrmSession | None = None,
+    metadata: ReportTableMetadata | None = None,
+) -> tuple[int, int] | dict[int, tuple[int, int]]:
+    owns_session = session is None
+    session = Session() if owns_session else session
     try:
         start, end = month_range(month)
-        if is_current_month(month):
-            from sqlalchemy import case, func
-
-            total_sec, eff_days = session.query(
-                func.coalesce(func.sum(model.duration), 0),
-                func.coalesce(func.sum(case((model.duration >= 7200, 1), else_=0)), 0),
-            ).filter(and_(model.room_id == room_id, model.date >= start, model.date < end)).one()
-            return int(total_sec), int(eff_days)
         table_name = room_live_stats_table_name(month)
-        if sc_log_table_exists(table_name):
-            total_sec, eff_days = session.execute(
+        if not is_current_month(month) and (
+            metadata.has_table(table_name) if metadata else sc_log_table_exists(table_name)
+        ):
+            if isinstance(room_id, list):
+                archive_rows: Sequence[tuple[int, int, int]] = _tuple_rows(session.execute(
+                    text("".join((
+                        f"SELECT room_id, COALESCE(SUM(duration), 0), ",
+                        "COALESCE(SUM(CASE WHEN duration >= 7200 THEN 1 ELSE 0 END), 0) ",
+                        f"FROM `{table_name}` WHERE room_id IN :room_ids ",
+                        "AND date >= :start AND date < :end GROUP BY room_id",
+                    ))).bindparams(bindparam("room_ids", expanding=True)).columns(column("room_id", Integer), column("total_sec", Integer), column("eff_days", Integer)),
+                    {"room_ids": room_id, "start": start, "end": end},
+                ))
+                return {row_id: (int(total_sec or 0), int(eff_days or 0)) for row_id, total_sec, eff_days in archive_rows}
+            total_sec, eff_days = _archive_aggregate_values(session.execute(
                 text(
                     f"SELECT COALESCE(SUM(duration), 0) AS total_sec, "
                     "COALESCE(SUM(CASE WHEN duration >= 7200 THEN 1 ELSE 0 END), 0) AS eff_days "
                     f"FROM `{table_name}` WHERE room_id = :room_id AND date >= :start AND date < :end"
-                ),
+                ).columns(column("total_sec", Integer), column("eff_days", Integer)),
                 {"room_id": room_id, "start": start, "end": end},
-            ).one()
+            ))
             return int(total_sec or 0), int(eff_days or 0)
-        from sqlalchemy import case, func
-
+        if isinstance(room_id, list):
+            current_rows: Sequence[tuple[int, int, int]] = _tuple_rows(session.query(
+                model.room_id,
+                type_coerce(func.coalesce(func.sum(model.duration), 0), Integer),
+                type_coerce(func.coalesce(func.sum(case((model.duration >= 7200, 1), else_=0)), 0), Integer),
+            ).filter(
+                and_(model.room_id.in_(room_id), model.date >= start, model.date < end)
+            ).group_by(model.room_id))
+            return {row_id: (int(total_sec or 0), int(eff_days or 0)) for row_id, total_sec, eff_days in current_rows}
         total_sec, eff_days = session.query(
-            func.coalesce(func.sum(model.duration), 0),
-            func.coalesce(func.sum(case((model.duration >= 7200, 1), else_=0)), 0),
-        ).filter(and_(model.room_id == room_id, model.date >= start, model.date < end)).one()
+            type_coerce(func.coalesce(func.sum(model.duration), 0), Integer),
+            type_coerce(func.coalesce(func.sum(case((model.duration >= 7200, 1), else_=0)), 0), Integer),
+        ).filter(and_(model.room_id == room_id, model.date >= start, model.date < end)).tuples().one()
         return int(total_sec), int(eff_days)
     except SQLAlchemyError as exc:
+        if not owns_session: raise
+        session.rollback()
         logging.error(f"[RoomLiveStats] month_aggregate_for_month 读取失败: {exc}")
-        return 0, 0
+        return {} if isinstance(room_id, list) else (0, 0)
     finally:
-        session.close()
+        if owns_session: session.close()
 
 
-def month_steel_coin_for_month(model, room_id: int, month: str) -> int:
-    session = Session()
+def month_steel_coin_for_month(
+    model: type[_LiveStatsAggregateModel],
+    room_id: int | list[int],
+    month: str,
+    session: OrmSession | None = None,
+    metadata: ReportTableMetadata | None = None,
+) -> int | dict[int, int]:
+    owns_session = session is None
+    session = Session() if owns_session else session
     try:
         start, end = month_range(month)
-        if is_current_month(month):
-            value = (
-                session.query(func.coalesce(func.sum(model.steel_coin_count), 0))
-                .filter(and_(model.room_id == room_id, model.date >= start, model.date < end))
-                .scalar()
-            )
-            return int(value or 0)
         table_name = room_live_stats_table_name(month)
-        if sc_log_table_exists(table_name):
-            columns = {column.get("name") for column in inspect(engine).get_columns(table_name)}
+        if not is_current_month(month) and (
+            metadata.has_table(table_name) if metadata else sc_log_table_exists(table_name)
+        ):
+            columns = (
+                metadata.column_names(table_name)
+                if metadata
+                else frozenset(column.get("name") for column in inspect(engine).get_columns(table_name))
+            )
             if "steel_coin_count" not in columns:
-                return 0
-            value = session.execute(
+                return {} if isinstance(room_id, list) else 0
+            if isinstance(room_id, list):
+                archive_rows: Sequence[tuple[int, int]] = _tuple_rows(session.execute(
+                    text("".join((
+                        f"SELECT room_id, COALESCE(SUM(`steel_coin_count`), 0) ",
+                        f"FROM `{table_name}` WHERE room_id IN :room_ids ",
+                        "AND date >= :start AND date < :end GROUP BY room_id",
+                    ))).bindparams(bindparam("room_ids", expanding=True)).columns(column("room_id", Integer), column("steel_coin_count", Integer)),
+                    {"room_ids": room_id, "start": start, "end": end},
+                ))
+                return {row_id: int(value or 0) for row_id, value in archive_rows}
+            archive_value: int | None = _scalar_value(session.execute(
                 text(
                     f"SELECT COALESCE(SUM(`steel_coin_count`), 0) FROM `{table_name}` "
                     "WHERE room_id = :room_id AND date >= :start AND date < :end"
-                ),
+                ).columns(column("steel_coin_count", Integer)),
                 {"room_id": room_id, "start": start, "end": end},
-            ).scalar()
-            return int(value or 0)
-        value = (
-            session.query(func.coalesce(func.sum(model.steel_coin_count), 0))
-            .filter(and_(model.room_id == room_id, model.date >= start, model.date < end))
-            .scalar()
-        )
-        return int(value or 0)
+            ))
+            return int(archive_value or 0)
+        if isinstance(room_id, list):
+            current_rows: Sequence[tuple[int, int]] = _tuple_rows(session.query(
+                model.room_id,
+                type_coerce(func.coalesce(func.sum(model.steel_coin_count), 0), Integer),
+            ).filter(
+                and_(model.room_id.in_(room_id), model.date >= start, model.date < end)
+            ).group_by(model.room_id))
+            return {row_id: int(value or 0) for row_id, value in current_rows}
+        current_value: int | None = _scalar_value(session.query(
+            type_coerce(func.coalesce(func.sum(model.steel_coin_count), 0), Integer)
+        ).filter(and_(model.room_id == room_id, model.date >= start, model.date < end)))
+        return int(current_value or 0)
     except SQLAlchemyError as exc:
+        if not owns_session: raise
+        session.rollback()
         logging.error(f"[RoomLiveStats] month_steel_coin_for_month 读取失败: {exc}")
-        return 0
+        return {} if isinstance(room_id, list) else 0
     finally:
-        session.close()
+        if owns_session: session.close()

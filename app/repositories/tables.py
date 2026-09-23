@@ -3,11 +3,33 @@
 import datetime
 import logging
 import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..database import engine
+
+
+@dataclass
+class ReportTableMetadata:
+    """Memoize reflection results for one report operation only."""
+
+    table_exists: Callable[[str], bool]
+    reflect_columns: Callable[[str], frozenset[str]]
+    _existing_tables: dict[str, bool] = field(default_factory=dict)
+    _columns_by_table: dict[str, frozenset[str]] = field(default_factory=dict)
+
+    def has_table(self, table_name: str) -> bool:
+        if table_name not in self._existing_tables:
+            self._existing_tables[table_name] = self.table_exists(table_name)
+        return self._existing_tables[table_name]
+
+    def column_names(self, table_name: str) -> frozenset[str]:
+        if table_name not in self._columns_by_table:
+            self._columns_by_table[table_name] = self.reflect_columns(table_name)
+        return self._columns_by_table[table_name]
 
 
 def month_str(dt: datetime.datetime | None = None) -> str:
@@ -30,8 +52,8 @@ def normalize_month_code(raw: str | None) -> str | None:
     if not raw:
         return None
     value = raw.strip()
-    compact_match = re.fullmatch(r"(\d{4})(\d{2})", value)
-    dashed_match = re.fullmatch(r"(\d{4})-(\d{2})", value)
+    compact_match = re.fullmatch(r"([0-9]{4})([0-9]{2})", value)
+    dashed_match = re.fullmatch(r"([0-9]{4})-([0-9]{2})", value)
     if compact_match:
         year, month = compact_match.group(1), compact_match.group(2)
     elif dashed_match:
@@ -39,8 +61,9 @@ def normalize_month_code(raw: str | None) -> str | None:
     else:
         return None
     try:
+        year_number = int(year)
         month_number = int(month)
-        if 1 <= month_number <= 12:
+        if 1 <= year_number <= 9998 and 1 <= month_number <= 12:
             return f"{year}{month}"
     except ValueError:
         return None

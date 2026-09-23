@@ -4,7 +4,9 @@ from collections import defaultdict
 from types import SimpleNamespace
 
 from app import api_app, event_ingestion, runtime_state, whale_metrics
-from app.whale_metrics import _redis_db1_url
+from app.models import RoomLiveStats
+from app.whale_metrics import WhaleMetrics, _redis_db1_url
+from sqlalchemy.orm import Session
 
 
 class _FakeWhaleRedis:
@@ -37,6 +39,43 @@ class _FakeWhaleRedis:
 
     def hgetall(self, key: str) -> dict[str, str]:
         return {name: str(value) for name, value in self.hashes.get(key, {}).items()}
+
+
+def _room_ids_for_current_whale_report(
+    _month: str,
+    include_config: bool = True,
+    session: Session | None = None,
+    *,
+    metadata=None,
+) -> list[int]:
+    _ = include_config
+    _ = session
+    _ = metadata
+    return [301]
+
+
+def _empty_duration_aggregates(
+    _cls: type[RoomLiveStats],
+    room_ids: list[int],
+    _month: str,
+    session: Session | None = None,
+    metadata=None,
+) -> dict[int, tuple[int, int]]:
+    _ = session
+    _ = metadata
+    return {room_id: (0, 0) for room_id in room_ids}
+
+
+def _empty_steel_coin_aggregates(
+    _cls: type[RoomLiveStats],
+    room_ids: list[int],
+    _month: str,
+    session: Session | None = None,
+    metadata=None,
+) -> dict[int, int]:
+    _ = session
+    _ = metadata
+    return {room_id: 0 for room_id in room_ids}
 
 
 def test_calculate_whale_metrics_uses_deterministic_top_groups() -> None:
@@ -124,18 +163,30 @@ def test_redis_month_cache_deduplicates_events_and_keeps_unknown_revenue(monkeyp
 def test_current_route_exposes_live_whale_dependency(monkeypatch, gift_module) -> None:
     # Given: a current room whose Redis calculation is available.
     metrics = whale_metrics.calculate_whale_metrics({7: 7500, 8: 2500}, 10000, 0)
-    monkeypatch.setattr(api_app, "get_live_whale_metrics", lambda _room_id, _month: metrics)
-    monkeypatch.setattr(gift_module, "_room_ids_for_month", lambda _month, include_config=True: [301])
+
+    def fixed_live_whale_metrics(_room_id: int, _month: str) -> WhaleMetrics:
+        return metrics
+
+    monkeypatch.setattr(api_app, "get_live_whale_metrics", fixed_live_whale_metrics)
+    monkeypatch.setattr(
+        api_app,
+        "inspect",
+        lambda _connection: SimpleNamespace(
+            has_table=lambda _name: False,
+            get_columns=lambda _name: [],
+        ),
+    )
+    monkeypatch.setattr(gift_module, "_room_ids_for_month", _room_ids_for_current_whale_report)
     monkeypatch.setattr(gift_module, "Session", lambda: _RouteSession())
     monkeypatch.setattr(
         gift_module.RoomLiveStats,
         "month_aggregate_for_month",
-        classmethod(lambda _cls, _room_id, _month: (0, 0)),
+        classmethod(_empty_duration_aggregates),
     )
     monkeypatch.setattr(
         gift_module.RoomLiveStats,
         "month_steel_coin_for_month",
-        classmethod(lambda _cls, _room_id, _month: 0),
+        classmethod(_empty_steel_coin_aggregates),
     )
 
     # When: the public current-month route is requested.
@@ -213,6 +264,9 @@ def test_gift_records_blind_box_actual_price_once(monkeypatch) -> None:
 
 
 class _RouteSession:
+    def connection(self) -> _RouteSession:
+        return self
+
     def query(self, *_args):
         return _RouteQuery()
 

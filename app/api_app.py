@@ -29,20 +29,23 @@ import asyncio
 import datetime
 import logging
 import sys
+from collections.abc import Callable, Iterator
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Optional, Tuple, TypedDict, assert_never
+from threading import BoundedSemaphore
+from typing import Any, Optional, Protocol, Tuple, TypedDict, assert_never
 
-from fastapi import Body, FastAPI, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import JsonValue
 from sqlalchemy import Column, and_, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session as OrmSession
 
 from . import room_config, runtime_state
-from .config import API_SECRET
+from .config import API_SECRET, REPORT_ACQUIRE_TIMEOUT_SECONDS, REPORT_MAX_CONCURRENCY
 from .database import Session as _default_Session
-from .database import engine
+from .database import engine, log_pool_status
 from .models import (
     Attention,
     LiveSession,
@@ -54,6 +57,7 @@ from .models import (
     SuperChatLog,
 )
 from .repositories.tables import (
+    ReportTableMetadata,
     attention_table_name,
     is_current_month,
     live_session_15m_stats_table_name,
@@ -74,6 +78,35 @@ from .whale_metrics import (
 
 # ------------------ FastAPI app (Todo 5 canonical owner) ------------------ #
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+_report_gate = BoundedSemaphore(REPORT_MAX_CONCURRENCY)
+
+
+class ReportCapacityExceeded(HTTPException):
+    pass
+
+
+@app.exception_handler(ReportCapacityExceeded)
+async def report_capacity_exceeded_handler(
+    _request: Request, exc: ReportCapacityExceeded
+) -> JSONResponse:
+    return JSONResponse(
+        {"error": "报表请求繁忙"},
+        status_code=exc.status_code,
+        headers=exc.headers,
+    )
+
+
+def report_admission() -> Iterator[None]:
+    if not _report_gate.acquire(timeout=REPORT_ACQUIRE_TIMEOUT_SECONDS):
+        raise ReportCapacityExceeded(
+            status_code=503,
+            detail="报表请求繁忙",
+            headers={"Retry-After": "1"},
+        )
+    try:
+        yield
+    finally:
+        _report_gate.release()
 
 
 class RoomPayload(TypedDict, total=False):
@@ -88,6 +121,17 @@ class MonthlyDanmakuPayload(TypedDict):
     admiral: int | None
     governor: int | None
     normal: int | None
+
+
+class RoomIdsForMonth(Protocol):
+    def __call__(
+        self,
+        m: str,
+        include_config: bool = True,
+        session: OrmSession | None = None,
+        *,
+        metadata: ReportTableMetadata | None = None,
+    ) -> list[int]: ...
 
 
 # ------------------ Runtime dependency resolution ------------------ #
@@ -105,21 +149,36 @@ def _gift() -> Any:
     return sys.modules.get("app.gift")
 
 
-def _resolved_session_factory():
+def _resolved_session_factory() -> Callable[[], OrmSession]:
     gift = _gift()
     if gift is not None and hasattr(gift, "Session"):
         return gift.Session
     return _default_Session
 
 
-def _resolved_sc_log_table_exists():
+def _resolved_sc_log_table_exists() -> Callable[[str], bool]:
     gift = _gift()
     if gift is not None and hasattr(gift, "sc_log_table_exists"):
         return gift.sc_log_table_exists
     return _default_sc_log_table_exists
 
 
-def _resolved_room_ids_for_month():
+def _report_table_metadata(session: OrmSession) -> ReportTableMetadata:
+    inspector = inspect(session.connection())
+
+    def table_exists(table_name: str) -> bool:
+        return inspector.has_table(table_name)
+
+    def reflect_columns(table_name: str) -> frozenset[str]:
+        return frozenset(
+            str(column["name"])
+            for column in inspector.get_columns(table_name)
+        )
+
+    return ReportTableMetadata(table_exists, reflect_columns)
+
+
+def _resolved_room_ids_for_month() -> RoomIdsForMonth:
     gift = _gift()
     if gift is not None and hasattr(gift, "_room_ids_for_month"):
         return gift._room_ids_for_month
@@ -308,11 +367,19 @@ async def delete_room_async(room_id: int) -> Tuple[bool, str]:
 
 
 # ------------------ Room-set enumeration ------------------ #
-def _room_ids_for_month(m: str, include_config: bool = True) -> list[int]:
+def _room_ids_for_month(
+    m: str,
+    include_config: bool = True,
+    session: OrmSession | None = None,
+    *,
+    metadata: ReportTableMetadata | None = None,
+) -> list[int]:
     """返回指定月份应展示的房间集合：DB出现过的房间 ∪ (可选) ROOM_IDS"""
-    session_factory = _resolved_session_factory()
-    session = session_factory()
-    sc_log_table_exists = _resolved_sc_log_table_exists()
+    owns_session = session is None
+    if owns_session:
+        session_factory = _resolved_session_factory()
+        session = session_factory()
+    sc_log_table_exists = metadata.has_table if metadata is not None else _resolved_sc_log_table_exists()
     try:
         start, end = month_range(m)
         ids = set(room_config.get_room_ids()) if include_config else set()
@@ -367,11 +434,21 @@ def _room_ids_for_month(m: str, include_config: bool = True) -> list[int]:
                 ids.update(rid for (rid,) in q3)
 
         return sorted(ids)
+    except SQLAlchemyError:
+        if owns_session:
+            session.rollback()
+        raise
     finally:
-        session.close()
+        if owns_session:
+            session.close()
 
 
-def _daily_metrics_for_room(session, room_id: int, month: str) -> dict[str, dict[str, float | int]]:
+def _daily_metrics_for_room(
+    session,
+    room_id: int,
+    month: str,
+    metadata: ReportTableMetadata | None = None,
+) -> dict[str, dict[str, float | int]]:
     start_date, end_date = month_range(month)
     if is_current_month(month):
         rows = (
@@ -394,7 +471,8 @@ def _daily_metrics_for_room(session, room_id: int, month: str) -> dict[str, dict
         )
     else:
         table_name = room_live_stats_table_name(month)
-        if not _resolved_sc_log_table_exists()(table_name):
+        table_exists = metadata.has_table(table_name) if metadata else _resolved_sc_log_table_exists()(table_name)
+        if not table_exists:
             rows = (
                 session.query(
                     RoomLiveStats.date,
@@ -414,7 +492,10 @@ def _daily_metrics_for_room(session, room_id: int, month: str) -> dict[str, dict
                 .all()
             )
         else:
-            archive_columns = {col.get("name") for col in inspect(engine).get_columns(table_name)}
+            archive_columns = metadata.column_names(table_name) if metadata else frozenset(
+                str(column["name"])
+                for column in inspect(engine).get_columns(table_name)
+            )
             metric_names = ("gift", "guard", "super_chat", "payer_count", "steel_coin_count")
             metric_select = ", ".join(
                 f"`{name}`" if name in archive_columns else f"0 AS `{name}`"
@@ -483,7 +564,12 @@ def _format_15m_stats(row: Any) -> dict[str, Any]:
     }
 
 
-def _session_15m_stats(session, session_id: int | Column[int], month: str) -> list[dict[str, Any]]:
+def _session_15m_stats(
+    session,
+    session_id: int | Column[int],
+    month: str,
+    metadata: ReportTableMetadata | None = None,
+) -> list[dict[str, Any]]:
     if is_current_month(month):
         rows = (
             session.query(LiveSession15mStats)
@@ -511,7 +597,8 @@ def _session_15m_stats(session, session_id: int | Column[int], month: str) -> li
             "payer_count": row.payer_count,
         }) for row in rows]
     table_name = live_session_15m_stats_table_name(month)
-    if not _resolved_sc_log_table_exists()(table_name):
+    table_exists = metadata.has_table(table_name) if metadata else _resolved_sc_log_table_exists()(table_name)
+    if not table_exists:
         rows = (
             session.query(LiveSession15mStats)
             .filter_by(session_id=session_id)
@@ -537,7 +624,10 @@ def _session_15m_stats(session, session_id: int | Column[int], month: str) -> li
             "sample_count": row.sample_count,
             "payer_count": row.payer_count,
         }) for row in rows]
-    archive_columns = {col.get("name") for col in inspect(engine).get_columns(table_name)}
+    archive_columns = metadata.column_names(table_name) if metadata else frozenset(
+        str(column["name"])
+        for column in inspect(engine).get_columns(table_name)
+    )
     category_select = ", ".join(
         f"`{name}`" if name in archive_columns else f"NULL AS {name}"
         for name in (
@@ -599,7 +689,7 @@ def delete_room_api(request: Request, payload: RoomPayload = Body(default={})):
 
 
 @app.get("/gift")
-def get_stats_current_month():
+def get_stats_current_month(_: None = Depends(report_admission)):
     """
     当月汇总：
       - room_stats_monthly 当月 gift/guard/super_chat
@@ -613,7 +703,21 @@ def get_stats_current_month():
     session = session_factory()
     m = month_str()  # 当前月
     try:
-        for room_id in room_ids_for_month(m, include_config=True):
+        metadata = _report_table_metadata(session)
+        room_ids: list[int] = room_ids_for_month(
+            m, include_config=True, session=session, metadata=metadata
+        )
+        aggregate_by_room = (
+            RoomLiveStats.month_aggregate_for_month(room_ids, m, session=session, metadata=metadata)
+            if room_ids
+            else {}
+        )
+        steel_coin_by_room = (
+            RoomLiveStats.month_steel_coin_for_month(room_ids, m, session=session, metadata=metadata)
+            if room_ids
+            else {}
+        )
+        for room_id in room_ids:
             # 读当月累计
             rsm = session.query(RoomStatsMonthly).filter_by(room_id=room_id, month=m).first()
             g = rsm.gift if rsm else 0.0
@@ -631,8 +735,8 @@ def get_stats_current_month():
                 session.query(RoomInfo.attention).filter_by(room_id=room_id).scalar()
             ) or 0
 
-            total_sec, eff_days = RoomLiveStats.month_aggregate_for_month(room_id, m)
-            steel_coin_count = RoomLiveStats.month_steel_coin_for_month(room_id, m)
+            total_sec, eff_days = aggregate_by_room.get(room_id, (0, 0))
+            steel_coin_count = steel_coin_by_room.get(room_id, 0)
             live_dur_str = _seconds_to_hms(total_sec)
 
             info = runtime_state.LIVE_INFO.get(room_id, {})
@@ -686,26 +790,47 @@ def get_stats_current_month():
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_stats_current_month] 数据库查询出错: {e}")
+        log_pool_status("get_stats_current_month")
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
         session.close()
 
 
 @app.get("/gift/by_month")
-def get_stats_by_month(request: Request):
+def get_stats_by_month(request: Request, _: None = Depends(report_admission)):
     """
     指定月份汇总：
     GET ?month=YYYYMM
     历史月不返回实时 live_time/title/status（置空/0）
     """
-    m = request.query_params.get("month") or month_str()
+    month_param = request.query_params.get("month")
+    if month_param:
+        m = normalize_month_code(month_param)
+        if not m:
+            return JSONResponse({"error": "month 参数无效，支持 YYYYMM 或 YYYY-MM"}, status_code=400)
+    else:
+        m = month_str()
     results = []
     session_factory = _resolved_session_factory()
     room_ids_for_month = _resolved_room_ids_for_month()
     session = session_factory()
     try:
         is_current = m == month_str()
-        for room_id in room_ids_for_month(m, include_config=True):
+        metadata = _report_table_metadata(session)
+        room_ids: list[int] = room_ids_for_month(
+            m, include_config=True, session=session, metadata=metadata
+        )
+        aggregate_by_room = (
+            RoomLiveStats.month_aggregate_for_month(room_ids, m, session=session, metadata=metadata)
+            if room_ids
+            else {}
+        )
+        steel_coin_by_room = (
+            RoomLiveStats.month_steel_coin_for_month(room_ids, m, session=session, metadata=metadata)
+            if room_ids
+            else {}
+        )
+        for room_id in room_ids:
             rsm = session.query(RoomStatsMonthly).filter_by(room_id=room_id, month=m).first()
             g = rsm.gift if rsm else 0.0
             gd = rsm.guard if rsm else 0.0
@@ -722,8 +847,8 @@ def get_stats_by_month(request: Request):
                 session.query(RoomInfo.attention).filter_by(room_id=room_id).scalar()
             ) or 0
 
-            total_sec, eff_days = RoomLiveStats.month_aggregate_for_month(room_id, m)
-            steel_coin_count = RoomLiveStats.month_steel_coin_for_month(room_id, m)
+            total_sec, eff_days = aggregate_by_room.get(room_id, (0, 0))
+            steel_coin_count = steel_coin_by_room.get(room_id, 0)
             live_dur_str = _seconds_to_hms(total_sec)
 
             if is_current:
@@ -777,13 +902,14 @@ def get_stats_by_month(request: Request):
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_stats_by_month] 数据库查询出错: {e}")
+        log_pool_status("get_stats_by_month")
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
         session.close()
 
 
 @app.get("/gift/live_sessions")
-def get_live_sessions_by_room_month(request: Request):
+def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_admission)):
     """
     指定房间 + 月份的单场直播清单：
     GET ?room_id=xxx&month=YYYYMM
@@ -795,13 +921,20 @@ def get_live_sessions_by_room_month(request: Request):
     if room_id <= 0:
         return JSONResponse({"error": "room_id 必填且需为正整数"}, status_code=400)
 
-    m = request.query_params.get("month") or month_str()
+    month_param = request.query_params.get("month")
+    if month_param:
+        m = normalize_month_code(month_param)
+        if not m:
+            return JSONResponse({"error": "month 参数无效，支持 YYYYMM 或 YYYY-MM"}, status_code=400)
+    else:
+        m = month_str()
     session_factory = _resolved_session_factory()
-    sc_log_table_exists = _resolved_sc_log_table_exists()
     session = session_factory()
+    is_current = is_current_month(m)
+    metadata = _report_table_metadata(session)
     try:
         out = []
-        if is_current_month(m):
+        if is_current:
             rows = (
                 session.query(LiveSession)
                 .filter(and_(LiveSession.room_id == room_id, LiveSession.month == m))
@@ -852,13 +985,13 @@ def get_live_sessions_by_room_month(request: Request):
                         "avg_concurrency": avg_concurrency,
                         "max_concurrency": max_concurrency,
                         "current_concurrency": current_concurrency,
-                        "stats_15m": _session_15m_stats(session, r.id, m),
+                        "stats_15m": _session_15m_stats(session, r.id, m, metadata),
                     }
                 )
         else:
             table_name = live_session_table_name(m)
-            if sc_log_table_exists(table_name):
-                archive_columns = {col.get("name") for col in inspect(engine).get_columns(table_name)}
+            if metadata.has_table(table_name):
+                archive_columns = metadata.column_names(table_name)
                 payer_select = "`payer_count`" if "payer_count" in archive_columns else "0 AS payer_count"
                 category_select = ", ".join(
                     f"`{name}`" if name in archive_columns else f"NULL AS {name}"
@@ -913,7 +1046,7 @@ def get_live_sessions_by_room_month(request: Request):
                             "avg_concurrency": row[24],
                             "max_concurrency": row[25],
                             "current_concurrency": None,
-                            "stats_15m": _session_15m_stats(session, row[0], m),
+                            "stats_15m": _session_15m_stats(session, row[0], m, metadata),
                         }
                     )
             else:
@@ -953,7 +1086,7 @@ def get_live_sessions_by_room_month(request: Request):
                             "avg_concurrency": r.avg_concurrency,
                             "max_concurrency": r.max_concurrency,
                             "current_concurrency": None,
-                            "stats_15m": _session_15m_stats(session, r.id, m),
+                            "stats_15m": _session_15m_stats(session, r.id, m, metadata),
                         }
                     )
         payload = {"room_id": room_id, "month": m, "sessions": out}
@@ -961,13 +1094,14 @@ def get_live_sessions_by_room_month(request: Request):
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_live_sessions_by_room_month] 查询失败: {e}")
+        log_pool_status("get_live_sessions_by_room_month")
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
         session.close()
 
 
 @app.get("/gift/attention")
-def get_attention_logs(request: Request):
+def get_attention_logs(request: Request, _: None = Depends(report_admission)):
     """
     粉丝数、守护与粉丝团日快照查询：
       GET /gift/attention?room_id=1111&month=202603
@@ -990,11 +1124,12 @@ def get_attention_logs(request: Request):
 
     start_date, end_date = month_range(m)
     session_factory = _resolved_session_factory()
-    sc_log_table_exists = _resolved_sc_log_table_exists()
     session = session_factory()
+    is_current = is_current_month(m)
+    metadata = _report_table_metadata(session)
     try:
-        daily_metrics = _daily_metrics_for_room(session, room_id, m)
-        if is_current_month(m):
+        daily_metrics = _daily_metrics_for_room(session, room_id, m, metadata)
+        if is_current:
             rows = (
                 session.query(
                     Attention.date,
@@ -1016,10 +1151,8 @@ def get_attention_logs(request: Request):
             )
         else:
             table_name = attention_table_name(m)
-            if sc_log_table_exists(table_name):
-                archive_columns = {
-                    col.get("name") for col in inspect(engine).get_columns(table_name)
-                }
+            if metadata.has_table(table_name):
+                archive_columns = metadata.column_names(table_name)
                 metric_select = ", ".join(
                     f"`{name}`" if name in archive_columns else f"NULL AS `{name}`"
                     for name in ("guard_1", "guard_2", "guard_3", "fans_count")
@@ -1078,13 +1211,14 @@ def get_attention_logs(request: Request):
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_attention_logs] 查询失败: {e}")
+        log_pool_status("get_attention_logs")
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
         session.close()
 
 
 @app.get("/gift/sc")
-def get_sc_logs(request: Request):
+def get_sc_logs(request: Request, _: None = Depends(report_admission)):
     """
     SC 日志查询：
       GET /gift/sc?room_id=1111&month=202511
@@ -1116,11 +1250,12 @@ def get_sc_logs(request: Request):
     end_dt = datetime.datetime.combine(end_date, datetime.time.min)
 
     session_factory = _resolved_session_factory()
-    sc_log_table_exists = _resolved_sc_log_table_exists()
     session = session_factory()
+    is_current = is_current_month(month_code)
+    metadata = _report_table_metadata(session)
     try:
         out = []
-        if is_current_month(month_code):
+        if is_current:
             rows = (
                 session.query(SuperChatLog)
                 .filter(
@@ -1143,7 +1278,7 @@ def get_sc_logs(request: Request):
                 )
         else:
             table_name = sc_log_table_name(month_code)
-            if sc_log_table_exists(table_name):
+            if metadata.has_table(table_name):
                 rows = session.execute(
                     text(
                         f"SELECT send_time, uname, uid, price, message "
@@ -1197,6 +1332,7 @@ def get_sc_logs(request: Request):
     except SQLAlchemyError as e:
         session.rollback()
         logging.error(f"[get_sc_logs] 查询失败: {e}")
+        log_pool_status("get_sc_logs")
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
         session.close()

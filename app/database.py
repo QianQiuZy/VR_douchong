@@ -5,18 +5,45 @@ import logging
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import QueuePool
 
-from .config import DB_CONFIG
+from .config import (
+    DB_CONFIG,
+    DB_POOL_MAX_OVERFLOW,
+    DB_POOL_RECYCLE,
+    DB_POOL_SIZE,
+    DB_POOL_TIMEOUT,
+)
 
 engine = create_engine(
     f"mysql+pymysql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
     f"{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['db']}",
     echo=False,
-    pool_recycle=1800,
+    pool_size=DB_POOL_SIZE,
+    max_overflow=DB_POOL_MAX_OVERFLOW,
+    pool_timeout=DB_POOL_TIMEOUT,
+    pool_recycle=DB_POOL_RECYCLE,
     pool_pre_ping=True,
 )
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
+
+
+def log_pool_status(label: str, level: int = logging.WARNING) -> None:
+    """Log safe QueuePool counters at an internal report or job boundary."""
+    pool = engine.pool
+    if not isinstance(pool, QueuePool):
+        return
+    logging.log(
+        level,
+        "[pool] label=%s size=%d checked_out=%d overflow=%d timeout=%d recycle=%d",
+        label,
+        pool.size(),
+        pool.checkedout(),
+        pool.overflow(),
+        DB_POOL_TIMEOUT,
+        DB_POOL_RECYCLE,
+    )
 
 
 def create_schema() -> None:

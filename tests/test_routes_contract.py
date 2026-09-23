@@ -23,6 +23,9 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from app.models import RoomLiveStats
 
 
 class _StubQuery:
@@ -65,6 +68,9 @@ class _StubResult:
 
 
 class _StubSession:
+    def connection(self) -> _StubSession:
+        return self
+
     def query(self, *_args: Any, **_kwargs: Any) -> _StubQuery:
         return _StubQuery()
 
@@ -81,6 +87,30 @@ class _StubSession:
         return None
 
 
+def _empty_month_aggregate(
+    _cls: type[RoomLiveStats],
+    room_ids: list[int],
+    _month: str,
+    session: Session | None = None,
+    metadata=None,
+) -> dict[int, tuple[int, int]]:
+    _ = session
+    _ = metadata
+    return {room_id: (0, 0) for room_id in room_ids}
+
+
+def _empty_month_steel_coin(
+    _cls: type[RoomLiveStats],
+    room_ids: list[int],
+    _month: str,
+    session: Session | None = None,
+    metadata=None,
+) -> dict[int, int]:
+    _ = session
+    _ = metadata
+    return {room_id: 0 for room_id in room_ids}
+
+
 @pytest.fixture()
 def client(gift_module) -> TestClient:
     return TestClient(gift_module.app)
@@ -93,14 +123,24 @@ def isolated_db(gift_module, monkeypatch):
     monkeypatch.setattr(
         gift_module.RoomLiveStats,
         "month_aggregate_for_month",
-        classmethod(lambda cls, room_id, month: (0, 0)),
+        classmethod(_empty_month_aggregate),
     )
     monkeypatch.setattr(
         gift_module.RoomLiveStats,
         "month_steel_coin_for_month",
-        classmethod(lambda cls, room_id, month: 0),
+        classmethod(_empty_month_steel_coin),
     )
     monkeypatch.setattr(gift_module, "sc_log_table_exists", lambda name: False)
+    from app import api_app
+
+    monkeypatch.setattr(
+        api_app,
+        "inspect",
+        lambda _connection: SimpleNamespace(
+            has_table=lambda _name: False,
+            get_columns=lambda _name: [],
+        ),
+    )
 
 
 class TestAddRoomRoute:
@@ -267,7 +307,7 @@ class TestDeleteRoomRoute:
 
 class TestGiftCurrentMonthRoute:
     def test_empty_rooms_returns_empty_list(self, client, gift_module, isolated_db, monkeypatch):
-        monkeypatch.setattr(gift_module, "_room_ids_for_month", lambda m, include_config=True: [])
+        monkeypatch.setattr(gift_module, "_room_ids_for_month", lambda m, include_config=True, session=None, *, metadata=None: [])
         response = client.get("/gift")
         assert response.status_code == 200
         assert response.json() == []
@@ -275,7 +315,7 @@ class TestGiftCurrentMonthRoute:
     def test_one_room_returns_frozen_key_set_including_current_concurrency(
         self, client, gift_module, isolated_db, monkeypatch
     ):
-        monkeypatch.setattr(gift_module, "_room_ids_for_month", lambda m, include_config=True: [111111])
+        monkeypatch.setattr(gift_module, "_room_ids_for_month", lambda m, include_config=True, session=None, *, metadata=None: [111111])
         response = client.get("/gift")
         assert response.status_code == 200
         payload = response.json()
@@ -331,7 +371,7 @@ class TestGiftCurrentMonthRoute:
 
 class TestGiftByMonthRoute:
     def test_current_month_shape_matches_gift(self, client, gift_module, isolated_db, monkeypatch):
-        monkeypatch.setattr(gift_module, "_room_ids_for_month", lambda m, include_config=True: [111111])
+        monkeypatch.setattr(gift_module, "_room_ids_for_month", lambda m, include_config=True, session=None, *, metadata=None: [111111])
         response = client.get("/gift/by_month")
         assert response.status_code == 200
         payload = response.json()
@@ -367,7 +407,7 @@ class TestGiftByMonthRoute:
     def test_historical_month_uses_placeholder_live_time_and_null_metrics(
         self, client, gift_module, isolated_db, monkeypatch
     ):
-        monkeypatch.setattr(gift_module, "_room_ids_for_month", lambda m, include_config=True: [111111])
+        monkeypatch.setattr(gift_module, "_room_ids_for_month", lambda m, include_config=True, session=None, *, metadata=None: [111111])
         response = client.get("/gift/by_month", params={"month": "190001"})
         assert response.status_code == 200
         item = response.json()[0]
@@ -439,6 +479,9 @@ class TestGiftLiveSessionsRoute:
             def query(self, *_args):
                 return _Query()
 
+            def connection(self):
+                return self
+
             def close(self) -> None:
                 return None
 
@@ -447,6 +490,14 @@ class TestGiftLiveSessionsRoute:
 
         monkeypatch.setattr(gift_module, "Session", lambda: _Session())
         monkeypatch.setattr(api_app, "_session_15m_stats", lambda *_args: [])
+        monkeypatch.setattr(
+            api_app,
+            "inspect",
+            lambda _connection: SimpleNamespace(
+                has_table=lambda _name: False,
+                get_columns=lambda _name: [],
+            ),
+        )
 
         response = client.get(
             "/gift/live_sessions",
@@ -476,11 +527,17 @@ class TestGiftLiveSessionsRoute:
                 captured["sql"] = str(statement)
                 return _Result()
 
+            def connection(self):
+                return self
+
         monkeypatch.setattr(gift_module, "sc_log_table_exists", lambda _name: True)
         monkeypatch.setattr(
             api_app,
             "inspect",
-            lambda _engine: SimpleNamespace(get_columns=lambda _table: []),
+            lambda _connection: SimpleNamespace(
+                has_table=lambda _table: True,
+                get_columns=lambda _table: [],
+            ),
         )
 
         api_app._session_15m_stats(_Session(), 14500, "202608")
@@ -546,6 +603,9 @@ class TestGiftLiveSessionsRoute:
                 captured["sql"] = str(statement)
                 return _Result()
 
+            def connection(self):
+                return self
+
             def rollback(self) -> None:
                 return None
 
@@ -564,7 +624,8 @@ class TestGiftLiveSessionsRoute:
         monkeypatch.setattr(
             api_app,
             "inspect",
-            lambda _engine: SimpleNamespace(
+            lambda _connection: SimpleNamespace(
+                has_table=lambda _table: True,
                 get_columns=lambda _table: [{"name": name} for name in old_columns]
             ),
         )

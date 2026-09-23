@@ -61,3 +61,4 @@ VR斗虫排行榜，每月最后一天24点归档
    python main.py
    ```
    运行后 FastAPI 会通过 Uvicorn 在 `APP_HOST:APP_PORT` 对外提供接口。
+   主进程每 5 分钟以 INFO 级别记录一次连接池状态；服务退出时该观察任务随主运行协程取消。

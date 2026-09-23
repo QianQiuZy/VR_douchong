@@ -1,6 +1,7 @@
 """Environment-backed settings shared by the application bootstrap."""
 
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -27,16 +28,20 @@ def load_env_file(env_path: str | Path = DEFAULT_ENV_FILE) -> None:
         logging.error(f"[env] 加载 .env 失败: {exc}")
 
 
-def get_env_int(name: str, default: int) -> int:
+def get_env_int(name: str, default: int, minimum: int = 1) -> int:
     """Read an integer setting, retaining the launcher's fallback behavior."""
     raw = os.getenv(name)
     if raw is None or raw == "":
         return default
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         logging.warning(f"[env] {name} 不是有效整数，使用默认值 {default}")
         return default
+    if value < minimum:
+        logging.warning(f"[env] {name} 超出允许范围，使用默认值 {default}")
+        return default
+    return value
 
 
 _env_file_override = os.getenv("ENV_FILE")
@@ -49,6 +54,29 @@ DB_CONFIG = {
     "db": os.getenv("DB_NAME", "111"),
     "port": get_env_int("DB_PORT", 3306),
 }
+DB_POOL_SIZE = get_env_int("DB_POOL_SIZE", 5)
+DB_POOL_MAX_OVERFLOW = get_env_int("DB_POOL_MAX_OVERFLOW", 10, minimum=0)
+DB_POOL_TIMEOUT = get_env_int("DB_POOL_TIMEOUT", 30)
+DB_POOL_RECYCLE = get_env_int("DB_POOL_RECYCLE", 1800)
+REPORT_MAX_CONCURRENCY = get_env_int("REPORT_MAX_CONCURRENCY", 2)
+
+
+def get_env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logging.warning(f"[env] {name} 不是有效数值，使用默认值 {default}")
+        return default
+    if not math.isfinite(value) or value <= minimum:
+        logging.warning(f"[env] {name} 超出允许范围，使用默认值 {default}")
+        return default
+    return value
+
+
+REPORT_ACQUIRE_TIMEOUT_SECONDS = get_env_float("REPORT_ACQUIRE_TIMEOUT_SECONDS", 0.1)
 
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
