@@ -276,9 +276,10 @@ class TestSchemaTablesAndColumns:
         }
         assert columns["duration"]["type"] == Integer.__name__
         assert columns["duration"]["default"] == 0
-        for metric in ("gift", "guard", "super_chat"):
-            assert columns[metric]["type"] == Float.__name__
-            assert columns[metric]["default"] == 0.0
+        for metric, scale in (("gift", 1), ("guard", 0), ("super_chat", 0)):
+            assert columns[metric]["type"] == Numeric.__name__
+            assert (table.c[metric].type.precision, table.c[metric].type.scale) == (20, scale)
+            assert columns[metric]["default"] == 0
         for metric in ("payer_count", "steel_coin_count"):
             assert columns[metric]["type"] == Integer.__name__
             assert columns[metric]["default"] == 0

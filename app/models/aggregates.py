@@ -108,9 +108,9 @@ class RoomLiveStats(Base):
     room_id = Column(Integer, nullable=False)
     date = Column(Date, nullable=False)
     duration = Column(Integer, default=0, nullable=False)
-    gift = Column(Float, default=0.0, nullable=False)
-    guard = Column(Float, default=0.0, nullable=False)
-    super_chat = Column(Float, default=0.0, nullable=False)
+    gift = Column(Numeric(20, 1), default=0, nullable=False)
+    guard = Column(Numeric(20, 0), default=0, nullable=False)
+    super_chat = Column(Numeric(20, 0), default=0, nullable=False)
     payer_count = Column(Integer, default=0, nullable=False)
     steel_coin_count = Column(Integer, default=0, nullable=False)
     __table_args__ = (

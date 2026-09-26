@@ -107,9 +107,9 @@ def ensure_runtime_schema() -> None:
             "whale_calculated_at": "DATETIME NULL",
         },
         "room_live_stats": {
-            "gift": "FLOAT NOT NULL DEFAULT 0",
-            "guard": "FLOAT NOT NULL DEFAULT 0",
-            "super_chat": "FLOAT NOT NULL DEFAULT 0",
+            "gift": "DECIMAL(20,1) NOT NULL DEFAULT 0",
+            "guard": "DECIMAL(20,0) NOT NULL DEFAULT 0",
+            "super_chat": "DECIMAL(20,0) NOT NULL DEFAULT 0",
             "payer_count": "INT NOT NULL DEFAULT 0",
             "steel_coin_count": "INT NOT NULL DEFAULT 0",
         },
