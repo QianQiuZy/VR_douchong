@@ -46,7 +46,6 @@ USER_AGENT = (
 )
 LIVE_STATUS_API = "https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids"
 ROOM_INFO_API = "https://api.live.bilibili.com/room/v1/Room/get_info"
-ROOM_INIT_API = "https://api.live.bilibili.com/room/v1/Room/room_init"
 FANS_API = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getFansMembersRank"
 GUARD_API = "https://api.live.bilibili.com/xlive/general-interface/v1/guard/GuardActive"
 CONTRIBUTION_RANK_API = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/queryContributionRank"
@@ -151,32 +150,6 @@ async def fetch_room_info_and_update(room_id: int, update_uid: bool) -> bool:
     return True
 
 
-async def fetch_room_init(room_id: int) -> Optional[dict[str, object]]:
-    """Fetch the fallback room-lock state used by the status monitor."""
-    session = runtime_state.aiohttp_session
-    if session is None:
-        logging.error("[RoomInit] aiohttp_session 未初始化")
-        return None
-    try:
-        async with session.get(ROOM_INIT_API, params={"id": str(room_id)}, timeout=aiohttp.ClientTimeout(total=5), headers={"User-Agent": USER_AGENT, "Referer": "https://live.bilibili.com"}) as response:
-            if response.status != 200:
-                logging.warning("[RoomInit] room_id=%s HTTP %s", room_id, response.status)
-                return None
-            try:
-                payload = await response.json(content_type=None)
-            except ContentTypeError:
-                logging.warning("[RoomInit] room_id=%s 返回非 JSON，前 200 字：%s", room_id, (await response.text())[:200])
-                return None
-    except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-        logging.error("[RoomInit] room_id=%s 请求异常: %s", room_id, exc)
-        return None
-    if payload.get("code") != 0:
-        logging.warning("[RoomInit] room_id=%s 接口返回异常: %s", room_id, payload)
-        return None
-    data = payload.get("data")
-    return data if isinstance(data, dict) else None
-
-
 async def fetch_guard_counts(uid: int, room_id: int) -> Optional[tuple[int, int, int]]:
     """Fetch captain, admiral, and governor totals in the existing API order."""
     session = runtime_state.aiohttp_session
@@ -263,7 +236,6 @@ async def fetch_contribution_count(uid: int, room_id: int) -> Optional[int]:
 
 
 _fetch_room_info_and_update = fetch_room_info_and_update
-_fetch_room_init = fetch_room_init
 _fetch_guard_counts = fetch_guard_counts
 _fetch_fans_count = fetch_fans_count
 _fetch_contribution_count = fetch_contribution_count

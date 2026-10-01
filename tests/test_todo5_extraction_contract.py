@@ -300,7 +300,7 @@ class TestGiftCompatibilitySurface:
         assert callable(gift_module.init_session)
         assert callable(gift_module.ensure_bili_ticket)
         assert callable(gift_module._fetch_room_info_and_update)
-        assert callable(gift_module._fetch_room_init)
+        assert not hasattr(gift_module, "_fetch_room_init")
         assert callable(gift_module._fetch_guard_counts)
         assert callable(gift_module._fetch_fans_count)
         assert callable(gift_module._fetch_contribution_count)

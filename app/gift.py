@@ -114,7 +114,6 @@ BILI_TICKET_EXPIRES = bilibili_gateway.BILI_TICKET_EXPIRES
 USER_AGENT = bilibili_gateway.USER_AGENT
 LIVE_STATUS_API = bilibili_gateway.LIVE_STATUS_API
 ROOM_INFO_API = bilibili_gateway.ROOM_INFO_API
-ROOM_INIT_API = bilibili_gateway.ROOM_INIT_API
 FANS_API = bilibili_gateway.FANS_API
 GUARD_API = bilibili_gateway.GUARD_API
 CONTRIBUTION_RANK_API = bilibili_gateway.CONTRIBUTION_RANK_API
@@ -313,7 +312,6 @@ async def ensure_bili_ticket(force: bool = False) -> str:
 
 
 _fetch_room_info_and_update = bilibili_gateway.fetch_room_info_and_update
-_fetch_room_init = bilibili_gateway.fetch_room_init
 _fetch_guard_counts = bilibili_gateway.fetch_guard_counts
 _fetch_fans_count = bilibili_gateway.fetch_fans_count
 _fetch_contribution_count = bilibili_gateway.fetch_contribution_count

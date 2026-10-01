@@ -20,6 +20,7 @@ from .models import (
     SuperChatLog,
 )
 from .redis_metrics import register_payer
+from . import room_lock_events
 from .whale_metrics import record_whale_revenue
 
 COMMON_NOTICE_GIFT_COIN_MAP = {
@@ -69,6 +70,12 @@ def _timestamp_to_datetime(value: int | float | str | None) -> datetime.datetime
 
 
 class MyHandler(blivedm.BaseHandler):
+    _CMD_CALLBACK_DICT = {
+        **blivedm.BaseHandler._CMD_CALLBACK_DICT,
+        "ROOM_LOCK": room_lock_events.handle_room_lock,
+        "CUT_OFF": room_lock_events.handle_cut_off,
+    }
+
     def _resolve_session(self, client, session_id: int | None, event_time: datetime.datetime) -> int | None:
         if session_id is not None:
             return session_id

@@ -16,6 +16,7 @@ from . import (
     bilibili_gateway,
     blivedm,
     event_ingestion,
+    room_lock_events,
     room_config,
     runtime_state,
 )
@@ -304,7 +305,8 @@ async def concurrency_poll_scheduler() -> None:
             if uid is None or session_id is None:
                 continue
             count = await bilibili_gateway.fetch_contribution_count(uid, room_id)
-            if count is not None:
+            if (count is not None and runtime_state.CURRENT_SESSIONS.get(room_id) == session_id
+                    and runtime_state.LAST_STATUS.get(room_id, 0) == 1):
                 update_concurrency_cache(room_id, session_id, count)
             await asyncio.sleep(0.1)
         await asyncio.sleep(15)
@@ -379,6 +381,11 @@ async def monitor_all_rooms_status() -> None:
             room_lifecycle.finish_expired_live_sessions(now, lifecycle_dependencies())
             data = payload.get("data") or {}
             for room_id in room_config.get_room_ids():
+                locked_until = runtime_state.LOCKED_ROOM_UNTIL.get(room_id)
+                if locked_until is not None:
+                    if now.timestamp() < locked_until:
+                        continue
+                    runtime_state.LOCKED_ROOM_UNTIL.pop(room_id, None)
                 uid = runtime_state.ROOM_UIDS.get(room_id)
                 info = data.get(str(uid)) if uid is not None else None
                 previous = runtime_state.LAST_STATUS.get(room_id, 0)
@@ -430,3 +437,6 @@ def _record_stream_segment(room_id: int, end_dt: datetime.datetime) -> Optional[
 def lifecycle_dependencies():
     from . import room_lifecycle
     return room_lifecycle.LifecycleDependencies(_record_stream_segment, flush_pending_danmaku_for_room, finalize_concurrency_cache, _now, init_uid_and_attention_for_room, start_client)
+
+
+room_lock_events.configure(lifecycle_dependencies)

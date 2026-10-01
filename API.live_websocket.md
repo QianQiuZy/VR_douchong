@@ -120,11 +120,14 @@ wss://{host}:{wss_port}/sub
 | `PREPARING` | 下播。 |
 | `ROOM_CHANGE` | 房间信息变更（标题/分区）。 |
 | `ROOM_BLOCK_MSG` | 用户被封禁。 |
+| `ROOM_LOCK` | 直播间被封禁；立即结束当前场次，以 `send_time` 为下播时间。 |
 | `ROOM_SILENT_ON` | 全员禁言开启。 |
 | `ROOM_SILENT_OFF` | 全员禁言关闭。 |
-| `CUT_OFF` | 直播被切断。 |
+| `CUT_OFF` | 超管掐断直播；以 `send_time` 记为下播，保留三分钟宽限期，期内复播沿用原场次。 |
 | `STOP_LIVE_ROOM_LIST` | 下播房间列表。 |
 | `LIVE_INTERACTIVE_GAME` | 互动游戏。 |
+
+`ROOM_LOCK` 的 `room_id`、`send_time`（毫秒时间戳）和 `expire`（北京时间的解封时间）位于消息顶层，不在 `data` 中。采集器在解封前忽略该房间的滞后在播状态；不再通过 `room_init` 推断封禁。
 
 ### 活动/抽奖
 

@@ -455,7 +455,8 @@ class SendGiftV2Message:
         for gift in proto.gift:
             if gift.gift_id <= 0 or gift.num <= 0 or not gift.gift_name:
                 raise SendGiftV2DecodeError
-            total_price = gift.price * gift.num if is_blind_box else gift.total_coin
+            total_price = gift.price * gift.num if is_blind_box or (gift.num != 1 and gift.total_coin > 0) else gift.total_coin
+            total_coin = gift.total_coin if is_blind_box else total_price
             messages.append(
                 GiftMessage(
                     gift_name=gift.gift_name,
@@ -472,7 +473,7 @@ class SendGiftV2Message:
                     price=gift.price,
                     rnd=gift.rnd,
                     coin_type=gift.coin_type,
-                    total_coin=gift.total_coin,
+                    total_coin=total_coin,
                     total_price=total_price,
                     tid=gift.tid,
                     medal_level=proto.medal.medal_level,
