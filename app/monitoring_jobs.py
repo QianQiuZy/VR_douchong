@@ -5,16 +5,17 @@
 
 import asyncio
 import datetime
+import json
 import logging
 import random
 from typing import Optional
 
 import aiohttp
+from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import (
     bilibili_gateway,
-    blivedm,
     event_ingestion,
     room_lock_events,
     room_config,
@@ -22,6 +23,9 @@ from . import (
 )
 from .config import ATTENTION_DAILY_ROOM_SLEEP_SECONDS
 from .database import Session
+from .live_client import AuthenticatedLiveClient
+from .live_startup import LiveStatusUnavailable, fetch_live_room_ids
+from .blivedm.clients.ws_base import InitError
 from .metrics_runtime import record_concurrency, start_session
 from .models import (
     Attention,
@@ -52,12 +56,12 @@ async def _sleep_until(target: datetime.datetime) -> None:
 
 async def start_client(room_id: int) -> None:
     """Start and register one BLive client using the canonical handler."""
-    client = blivedm.BLiveClient(room_id, session=runtime_state.aiohttp_session)
+    client = AuthenticatedLiveClient(room_id, session=runtime_state.aiohttp_session)
     client.set_handler(event_ingestion.MyHandler())
     client.start()
     runtime_state.ROOM_CLIENTS[room_id] = client
     runtime_state.LAST_RECONNECT.setdefault(room_id, _now() - datetime.timedelta(days=random.random() * 3.0))
-    logging.info("[connect] 已连接房间 %s", room_id)
+    logging.info("[connect] 已启动房间连接 room_id=%s", room_id)
 
 
 async def reconnect_one(room_id: int) -> None:
@@ -79,7 +83,39 @@ async def reconnect_one(room_id: int) -> None:
 
 
 async def run_clients_loop() -> None:
+    while True:
+        try:
+            if any(room_id not in runtime_state.ROOM_UIDS for room_id in room_config.get_room_ids()):
+                await init_uids_and_attention_once()
+            live_rooms = await fetch_live_room_ids()
+            break
+        except (LiveStatusUnavailable, aiohttp.ClientError, TimeoutError, ValidationError, json.JSONDecodeError) as exc:
+            logging.warning("[connect] 直播状态未就绪，暂缓启动连接 error_type=%s", type(exc).__name__)
+            await asyncio.sleep(3)
+    room_ids = room_config.get_room_ids()
+    for room_id in room_ids:
+        if room_id in live_rooms:
+            await start_client(room_id)
+            await asyncio.sleep(3)
+    for room_id in room_ids:
+        if room_id not in live_rooms:
+            continue
+        while room_id in room_config.get_room_ids():
+            client = runtime_state.ROOM_CLIENTS.get(room_id)
+            if client is None:
+                break
+            try:
+                await client.wait_connected()
+                logging.info("[connect] 在播房间鉴权成功 room_id=%s", room_id)
+                break
+            except InitError:
+                logging.warning("[connect] 在播房间初始化失败，重试 room_id=%s", room_id)
+                await asyncio.sleep(3)
+                await start_client(room_id)
+    logging.info("[connect] 在播房间连接完成，开始连接其余房间")
     for room_id in room_config.get_room_ids():
+        if room_id in live_rooms:
+            continue
         await start_client(room_id)
         await asyncio.sleep(3)
 
@@ -351,7 +387,7 @@ async def reconnect_scheduler() -> None:
         target = _next_daily_target(_now(), 6, 0)
         await asyncio.sleep(max(1.0, (target - _now()).total_seconds()))
         for room_id in room_config.get_room_ids():
-            if runtime_state.LAST_STATUS.get(room_id, 0) != 1:
+            if room_id in runtime_state.ROOM_CLIENTS and runtime_state.LAST_STATUS.get(room_id, 0) != 1:
                 try:
                     await reconnect_one(room_id)
                 except asyncio.CancelledError:

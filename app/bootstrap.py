@@ -26,6 +26,8 @@ import logging
 import threading
 from typing import Optional
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from . import api_app, archive_service, monitoring_jobs, runtime_state
 from .config import APP_HOST, APP_PORT
 from .database import create_schema, ensure_runtime_schema, log_pool_status
@@ -34,6 +36,9 @@ from .models import RoomInfo
 from .whale_archive import archive_whale_month
 
 POOL_STATUS_INTERVAL_SECONDS = 300
+SESSION_ARCHIVE_INTERVAL_SECONDS = 300
+SESSION_ARCHIVE_GRACE_SECONDS = 600
+SESSION_ARCHIVE_DRAIN_TIMEOUT_SECONDS = 120
 
 
 # ------------------ time helpers ------------------ #
@@ -73,7 +78,7 @@ async def _archive_month(target_month: Optional[str] = None) -> None:
                 type(exc).__name__,
             )
     try:
-        await asyncio.to_thread(archive_service.archive_live_session, target_month)
+        await _archive_closed_sessions(target_month)
     except Exception as exc:
         logging.error(
             "[archive] job failed; continuing job=%s error_type=%s",
@@ -81,6 +86,34 @@ async def _archive_month(target_month: Optional[str] = None) -> None:
             type(exc).__name__,
         )
     log_pool_status("monthly_archive")
+
+
+async def _archive_closed_sessions(target_month: str | None = None) -> None:
+    cutoff = _now() - datetime.timedelta(seconds=SESSION_ARCHIVE_GRACE_SECONDS)
+    try:
+        session_ids = archive_service.closed_session_ids(cutoff)
+    except SQLAlchemyError as exc:
+        logging.error("[archive] 读取候选场次失败 error_type=%s", type(exc).__name__)
+        return
+    if not session_ids:
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(runtime_state.GUARD_FANS_QUEUE.join(), runtime_state.ATTENTION_QUEUE.join()),
+            timeout=SESSION_ARCHIVE_DRAIN_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logging.warning("[archive] 结束快照队列未排空，暂缓场次归档")
+        return
+    for room_id in tuple(runtime_state.DANMAKU_PENDING):
+        monitoring_jobs.flush_pending_danmaku_for_room(room_id)
+    if any(pending.sessions or pending.buckets for pending in runtime_state.DANMAKU_PENDING.values()):
+        logging.warning("[archive] 场次弹幕仍待写入，暂缓场次归档")
+        return
+    try:
+        await asyncio.to_thread(archive_service.archive_live_session, target_month, end_time_before=cutoff, session_ids=session_ids)
+    except Exception as exc:
+        logging.error("[archive] 场次补归档失败 error_type=%s", type(exc).__name__)
 
 
 async def monthly_reset_scheduler() -> None:
@@ -137,7 +170,11 @@ async def monthly_reset_scheduler() -> None:
                 microsecond=0,
             )
 
-        await _sleep_until(target)
+        wake_at = min(target, now + datetime.timedelta(seconds=SESSION_ARCHIVE_INTERVAL_SECONDS))
+        await _sleep_until(wake_at)
+        if _now() < target:
+            await _archive_closed_sessions()
+            continue
         previous_month = _month_str_now_at(target - datetime.timedelta(days=1))
         drift_seconds = max(0.0, (_now() - target).total_seconds())
         logging.info(

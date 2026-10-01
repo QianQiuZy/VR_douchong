@@ -128,10 +128,11 @@ def test_pool_status_log_is_limited_to_label_and_numeric_counters(caplog) -> Non
 
 
 def test_monthly_archive_jobs_do_not_overlap(monkeypatch) -> None:
+    monkeypatch.setattr(bootstrap.archive_service, "closed_session_ids", lambda _cutoff: (1,))
     active = 0
     maximum_active = 0
 
-    async def fake_to_thread(_job, _month):
+    async def fake_to_thread(_job, _month, **_kwargs):
         nonlocal active, maximum_active
         active += 1
         maximum_active = max(maximum_active, active)
@@ -149,13 +150,14 @@ def test_monthly_archive_jobs_do_not_overlap(monkeypatch) -> None:
 
 
 def test_monthly_archive_failure_does_not_skip_following_jobs(monkeypatch) -> None:
+    monkeypatch.setattr(bootstrap.archive_service, "closed_session_ids", lambda _cutoff: (1,))
     calls: list[str] = []
 
     def fail(_month: str) -> None:
         calls.append("archive_super_chat_log")
         raise RuntimeError("synthetic archive failure")
 
-    async def fake_to_thread(job, _month):
+    async def fake_to_thread(job, _month, **_kwargs):
         calls.append(job.__name__)
         if job is fail:
             raise RuntimeError("synthetic archive failure")

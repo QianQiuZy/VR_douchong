@@ -131,14 +131,30 @@ def archive_super_chat_log(target_month: Optional[str] = None) -> int:
     return moved_total
 
 
-def archive_live_session(target_month: Optional[str] = None) -> int:
+def closed_session_ids(end_time_before: datetime.datetime) -> tuple[int, ...]:
+    with Session() as session:
+        rows = session.execute(
+            text("SELECT id FROM live_session WHERE month < :current_month AND end_time < :cutoff"),
+            {"current_month": month_str(), "cutoff": end_time_before},
+        ).scalars()
+        return tuple(int(session_id) for session_id in rows)
+
+
+def archive_live_session(
+    target_month: Optional[str] = None,
+    *,
+    end_time_before: datetime.datetime | None = None,
+    session_ids: tuple[int, ...] | None = None,
+) -> int:
     """
     将 live_session 中历史月份数据迁移到归档表。
     - target_month: 指定归档月份（YYYYMM）；None 表示归档所有早于当前月的数据
     返回迁移的记录数（预估）。
     """
     # Keep the child rows available while their parent remains in the hot table.
-    archive_live_session_15m_stats(target_month)
+    if session_ids is not None and not session_ids:
+        return 0
+    archive_live_session_15m_stats(target_month, end_time_before=end_time_before, session_ids=session_ids)
     current_month = month_str()
     months: list[str] = []
     if target_month:
@@ -177,6 +193,17 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
     moved_total = 0
     for month_code in sorted(set(months)):
         table_name = ensure_live_session_archive_table(month_code)
+        params: dict[str, str | datetime.datetime | tuple[int, ...]] = {"month": month_code}
+        predicate = "month = :month AND end_time IS NOT NULL"
+        child_predicate = "stats.month = :month AND parent.month = :month AND parent.end_time IS NOT NULL"
+        if end_time_before is not None:
+            params["cutoff"] = end_time_before
+            predicate += " AND end_time < :cutoff"
+            child_predicate += " AND parent.end_time < :cutoff"
+        if session_ids is not None:
+            params["session_ids"] = session_ids
+            predicate += " AND id IN :session_ids"
+            child_predicate += " AND parent.id IN :session_ids"
         try:
             has_child_table = inspect(engine).has_table("live_session_15m_stats")
             with engine.begin() as conn:
@@ -185,10 +212,9 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
                         text(
                             "SELECT COUNT(1) FROM `live_session_15m_stats` AS stats "
                             "JOIN `live_session` AS parent ON parent.id = stats.session_id "
-                            "WHERE stats.month = :month AND parent.month = :month "
-                            "AND parent.end_time IS NOT NULL"
+                            f"WHERE {child_predicate}"
                         ),
-                        {"month": month_code},
+                        params,
                     ).scalar()
                     if child_count:
                         logging.error(
@@ -200,9 +226,9 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
                 count = conn.execute(
                     text(
                         "SELECT COUNT(1) FROM `live_session` "
-                        "WHERE month = :month AND end_time IS NOT NULL"
+                        f"WHERE {predicate}"
                     ),
-                    {"month": month_code},
+                    params,
                 ).scalar()
                 if not count:
                     continue
@@ -224,16 +250,16 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
                     text(
                         f"INSERT IGNORE INTO `{table_name}` ({quoted_columns}) "
                         f"SELECT {quoted_columns} FROM `live_session` "
-                        "WHERE month = :month AND end_time IS NOT NULL"
+                        f"WHERE {predicate}"
                     ),
-                    {"month": month_code},
+                    params,
                 )
                 conn.execute(
                     text(
                         "DELETE FROM `live_session` "
-                        "WHERE month = :month AND end_time IS NOT NULL"
+                        f"WHERE {predicate}"
                     ),
-                    {"month": month_code},
+                    params,
                 )
                 moved_total += int(count or 0)
             logging.info(f"[LiveSession] 已归档 {month_code}，记录数 ~{count}")
@@ -242,9 +268,23 @@ def archive_live_session(target_month: Optional[str] = None) -> int:
     return moved_total
 
 
-def archive_live_session_15m_stats(target_month: Optional[str] = None) -> int:
+def archive_live_session_15m_stats(
+    target_month: Optional[str] = None,
+    *,
+    end_time_before: datetime.datetime | None = None,
+    session_ids: tuple[int, ...] | None = None,
+) -> int:
     """Archive closed session-relative 15-minute rows before their parents."""
+    if session_ids is not None and not session_ids:
+        return 0
     current_month = month_str()
+    cutoff_filter = " AND parent.end_time < :cutoff" if end_time_before is not None else ""
+    month_params: dict[str, str | datetime.datetime | tuple[int, ...]] = {"current_month": current_month}
+    if end_time_before is not None:
+        month_params["cutoff"] = end_time_before
+    if session_ids is not None:
+        cutoff_filter += " AND parent.id IN :session_ids"
+        month_params["session_ids"] = session_ids
     months: list[str] = []
     if target_month:
         normalized = normalize_month_code(target_month)
@@ -266,8 +306,9 @@ def archive_live_session_15m_stats(target_month: Optional[str] = None) -> int:
                     "WHERE stats.month < :current_month "
                     "AND parent.month = stats.month "
                     "AND parent.end_time IS NOT NULL"
+                    f"{cutoff_filter}"
                 ),
-                {"current_month": current_month},
+                month_params,
             ).fetchall()
             for (month_code,) in rows:
                 normalized = normalize_month_code(month_code)
@@ -282,11 +323,17 @@ def archive_live_session_15m_stats(target_month: Optional[str] = None) -> int:
     moved_total = 0
     for month_code in sorted(set(months)):
         table_name = ensure_live_session_15m_stats_archive_table(month_code)
+        params: dict[str, str | datetime.datetime | tuple[int, ...]] = {"month": month_code}
+        if end_time_before is not None:
+            params["cutoff"] = end_time_before
+        if session_ids is not None:
+            params["session_ids"] = session_ids
         try:
             with engine.begin() as conn:
                 predicate = (
                     "stats.month = :month AND parent.month = :month "
                     "AND parent.end_time IS NOT NULL"
+                    f"{cutoff_filter}"
                 )
                 count = conn.execute(
                     text(
@@ -294,7 +341,7 @@ def archive_live_session_15m_stats(target_month: Optional[str] = None) -> int:
                         "JOIN `live_session` AS parent ON parent.id = stats.session_id "
                         f"WHERE {predicate}"
                     ),
-                    {"month": month_code},
+                    params,
                 ).scalar()
                 if not count:
                     continue
@@ -317,7 +364,7 @@ def archive_live_session_15m_stats(target_month: Optional[str] = None) -> int:
                         "JOIN `live_session` AS parent ON parent.id = stats.session_id "
                         f"WHERE {predicate}"
                     ),
-                    {"month": month_code},
+                    params,
                 )
                 conn.execute(
                     text(
@@ -325,7 +372,7 @@ def archive_live_session_15m_stats(target_month: Optional[str] = None) -> int:
                         "JOIN `live_session` AS parent ON parent.id = stats.session_id "
                         f"WHERE {predicate}"
                     ),
-                    {"month": month_code},
+                    params,
                 )
                 moved_total += int(count or 0)
             logging.info(f"[LiveSession15m] 已归档 {month_code}，记录数 ~{count}")

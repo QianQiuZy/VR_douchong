@@ -9,7 +9,8 @@ from typing import Optional
 
 import aiohttp
 
-from . import PendingDanmaku, blivedm
+from . import PendingDanmaku
+from .live_client import AuthenticatedLiveClient
 
 DEFAULT_ROOMS_JSON_PATH = Path(__file__).resolve().parents[1] / "rooms.json"
 ROOMS_JSON_PATH = os.getenv("ROOMS_JSON_PATH", str(DEFAULT_ROOMS_JSON_PATH))
@@ -20,7 +21,7 @@ ROOM_UIDS: dict[int, int] = {}
 
 aiohttp_session: Optional[aiohttp.ClientSession] = None
 CURRENT_SESSIONS: dict[int, int] = {}
-ROOM_CLIENTS: dict[int, blivedm.BLiveClient] = {}
+ROOM_CLIENTS: dict[int, AuthenticatedLiveClient] = {}
 LAST_RECONNECT: dict[int, datetime.datetime] = {}
 RECONNECT_DAILY_STATE = {"date": None, "done": set()}
 

@@ -24,8 +24,9 @@ def test_default_engine_pool_contract_is_current_sqlalchemy_default() -> None:
 
 def test_archive_scheduler_current_dispatch_order(monkeypatch) -> None:
     calls: list[str] = []
+    monkeypatch.setattr(bootstrap.archive_service, "closed_session_ids", lambda _cutoff: (1,))
 
-    async def fake_to_thread(job, _month):
+    async def fake_to_thread(job, _month, **_kwargs):
         calls.append(job.__name__)
 
     monkeypatch.setattr(bootstrap.asyncio, "to_thread", fake_to_thread)
