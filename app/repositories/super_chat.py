@@ -7,6 +7,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..database import Session
 from .tables import ensure_sc_archive_table, is_current_month, month_str
 
+logger = logging.getLogger(__name__)
+
 
 def log_super_chat(
     model,
@@ -19,9 +21,9 @@ def log_super_chat(
 ) -> None:
     session = Session()
     try:
-        final_time = send_time or datetime.datetime.now()
+        final_time = send_time or datetime.datetime.now().astimezone().replace(tzinfo=None)
         if final_time.year < 2000:
-            final_time = datetime.datetime.now()
+            final_time = datetime.datetime.now().astimezone().replace(tzinfo=None)
         month_code = month_str(final_time)
         if is_current_month(month_code):
             session.add(model(
@@ -52,9 +54,9 @@ def log_super_chat(
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[SuperChatLog] 写入失败: {exc}")
+        logger.error(f"[SuperChatLog] 写入失败: {exc}")
     finally:
         try:
             session.close()
-        except Exception:
-            pass
+        except Exception as close_error:
+            logger.exception("[db] session close failed error_type=%s", type(close_error).__name__, exc_info=False)

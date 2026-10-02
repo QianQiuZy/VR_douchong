@@ -3,21 +3,34 @@ import logging
 from collections.abc import Sequence
 from typing import ClassVar, Protocol, SupportsInt
 
-from sqlalchemy import Column, Integer, and_, bindparam, case, column, func, inspect, text, type_coerce
+from sqlalchemy import (
+    Column,
+    Integer,
+    and_,
+    bindparam,
+    case,
+    column,
+    func,
+    inspect,
+    text,
+    type_coerce,
+)
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as OrmSession
 
 from ..database import Session, engine
 from .tables import (
+    ReportTableMetadata,
     ensure_room_live_stats_archive_table,
     is_current_month,
     month_range,
     month_str,
     room_live_stats_table_name,
     sc_log_table_exists,
-    ReportTableMetadata,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _LiveStatsAggregateModel(Protocol):
@@ -79,12 +92,12 @@ def add_duration(model, room_id: int, date_value: datetime.date, seconds: int) -
                 return
             except SQLAlchemyError as exc:
                 session.rollback()
-                logging.warning(f"[RoomLiveStats] 第 {attempt + 1} 次尝试 add_duration 失败: {exc}")
+                logger.warning(f"[RoomLiveStats] 第 {attempt + 1} 次尝试 add_duration 失败: {exc}")
             finally:
                 try:
                     session.close()
-                except Exception:
-                    pass
+                except Exception as close_error:
+                    logger.exception("[db] session close failed error_type=%s", type(close_error).__name__, exc_info=False)
     else:
         table_name = ensure_room_live_stats_archive_table(month_code)
         for attempt in range(3):
@@ -102,13 +115,13 @@ def add_duration(model, room_id: int, date_value: datetime.date, seconds: int) -
                 return
             except SQLAlchemyError as exc:
                 session.rollback()
-                logging.warning(f"[RoomLiveStats] 第 {attempt + 1} 次尝试 add_duration 失败: {exc}")
+                logger.warning(f"[RoomLiveStats] 第 {attempt + 1} 次尝试 add_duration 失败: {exc}")
             finally:
                 try:
                     session.close()
-                except Exception:
-                    pass
-    logging.error("[RoomLiveStats] add_duration 最终失败，数据可能不完整。")
+                except Exception as close_error:
+                    logger.exception("[db] session close failed error_type=%s", type(close_error).__name__, exc_info=False)
+    logger.error("[RoomLiveStats] add_duration 最终失败，数据可能不完整。")
 
 
 def add_daily_metrics(
@@ -165,7 +178,7 @@ def add_daily_metrics(
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error("[RoomLiveStats] 日统计写入失败 room_id=%s date=%s: %s", room_id, date_value, exc)
+        logger.error("[RoomLiveStats] 日统计写入失败 room_id=%s date=%s: %s", room_id, date_value, exc)
     finally:
         session.close()
 
@@ -188,7 +201,7 @@ def month_aggregate_for_month(
             if isinstance(room_id, list):
                 archive_rows: Sequence[tuple[int, int, int]] = _tuple_rows(session.execute(
                     text("".join((
-                        f"SELECT room_id, COALESCE(SUM(duration), 0), ",
+                        "SELECT room_id, COALESCE(SUM(duration), 0), ",
                         "COALESCE(SUM(CASE WHEN duration >= 7200 THEN 1 ELSE 0 END), 0) ",
                         f"FROM `{table_name}` WHERE room_id IN :room_ids ",
                         "AND date >= :start AND date < :end GROUP BY room_id",
@@ -222,7 +235,7 @@ def month_aggregate_for_month(
     except SQLAlchemyError as exc:
         if not owns_session: raise
         session.rollback()
-        logging.error(f"[RoomLiveStats] month_aggregate_for_month 读取失败: {exc}")
+        logger.error(f"[RoomLiveStats] month_aggregate_for_month 读取失败: {exc}")
         return {} if isinstance(room_id, list) else (0, 0)
     finally:
         if owns_session: session.close()
@@ -253,7 +266,7 @@ def month_steel_coin_for_month(
             if isinstance(room_id, list):
                 archive_rows: Sequence[tuple[int, int]] = _tuple_rows(session.execute(
                     text("".join((
-                        f"SELECT room_id, COALESCE(SUM(`steel_coin_count`), 0) ",
+                        "SELECT room_id, COALESCE(SUM(`steel_coin_count`), 0) ",
                         f"FROM `{table_name}` WHERE room_id IN :room_ids ",
                         "AND date >= :start AND date < :end GROUP BY room_id",
                     ))).bindparams(bindparam("room_ids", expanding=True)).columns(column("room_id", Integer), column("steel_coin_count", Integer)),
@@ -283,7 +296,7 @@ def month_steel_coin_for_month(
     except SQLAlchemyError as exc:
         if not owns_session: raise
         session.rollback()
-        logging.error(f"[RoomLiveStats] month_steel_coin_for_month 读取失败: {exc}")
+        logger.error(f"[RoomLiveStats] month_steel_coin_for_month 读取失败: {exc}")
         return {} if isinstance(room_id, list) else 0
     finally:
         if owns_session: session.close()

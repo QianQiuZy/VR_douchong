@@ -14,8 +14,8 @@ import pytest
 
 class TestMonthHelpers:
     def test_month_str_from_datetime_returns_yyyymm(self, gift_module):
-        assert gift_module.month_str(datetime.datetime(2026, 1, 15, 12, 34)) == "202601"
-        assert gift_module.month_str(datetime.datetime(2025, 12, 31, 23, 59)) == "202512"
+        assert gift_module.month_str(datetime.datetime(2026, 1, 15, 12, 34).astimezone().replace(tzinfo=None)) == "202601"
+        assert gift_module.month_str(datetime.datetime(2025, 12, 31, 23, 59).astimezone().replace(tzinfo=None)) == "202512"
 
     def test_month_str_default_is_now_in_yyyymm(self, gift_module):
         result = gift_module.month_str()

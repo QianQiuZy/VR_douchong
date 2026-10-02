@@ -43,7 +43,7 @@ def test_pending_danmaku_keeps_original_15m_bucket_across_flush_boundary(monkeyp
         "LiveSession",
         SimpleNamespace(add_danmaku_by_id=lambda *_args: True),
     )
-    start = datetime.datetime(2026, 8, 30, 12, 0, 0)
+    start = datetime.datetime(2026, 8, 30, 12, 0, 0).astimezone().replace(tzinfo=None)
     metrics_runtime.start_session(44, 301, start)
     runtime_state.CURRENT_SESSIONS[301] = 44
     runtime_state.LAST_STATUS[301] = 1
@@ -79,7 +79,7 @@ def test_failed_monthly_danmaku_write_remains_pending(monkeypatch):
         SimpleNamespace(add_danmaku_by_id=lambda *_args: True),
     )
     runtime_state.LAST_STATUS[301] = 1
-    event_time = datetime.datetime(2026, 8, 30, 12, 1, 0)
+    event_time = datetime.datetime(2026, 8, 30, 12, 1, 0).astimezone().replace(tzinfo=None)
     metrics_runtime.start_session(44, 301, event_time)
     runtime_state.CURRENT_SESSIONS[301] = 44
 
@@ -117,7 +117,7 @@ def test_late_pending_danmaku_backfills_its_original_bucket(monkeypatch):
         "LiveSession",
         SimpleNamespace(add_danmaku_by_id=lambda *_args: True),
     )
-    start = datetime.datetime(2026, 8, 30, 12, 0, 0)
+    start = datetime.datetime(2026, 8, 30, 12, 0, 0).astimezone().replace(tzinfo=None)
     metrics_runtime.start_session(44, 301, start)
     runtime_state.CURRENT_SESSIONS[301] = 44
     runtime_state.LAST_STATUS[301] = 1
@@ -154,7 +154,7 @@ def test_failed_15m_danmaku_write_remains_pending(monkeypatch):
         "LiveSession",
         SimpleNamespace(add_danmaku_by_id=lambda *_args: True),
     )
-    start = datetime.datetime(2026, 8, 30, 12, 0, 0)
+    start = datetime.datetime(2026, 8, 30, 12, 0, 0).astimezone().replace(tzinfo=None)
     metrics_runtime.start_session(44, 301, start)
     runtime_state.CURRENT_SESSIONS[301] = 44
     runtime_state.LAST_STATUS[301] = 1
@@ -192,7 +192,7 @@ def test_failed_final_bucket_retry_keeps_original_session(monkeypatch):
         "LiveSession",
         SimpleNamespace(add_danmaku_by_id=lambda *_args: True),
     )
-    start = datetime.datetime(2026, 8, 30, 12, 0, 0)
+    start = datetime.datetime(2026, 8, 30, 12, 0, 0).astimezone().replace(tzinfo=None)
     metrics_runtime.start_session(44, 301, start)
     runtime_state.CURRENT_SESSIONS[301] = 44
     runtime_state.LAST_STATUS[301] = 1

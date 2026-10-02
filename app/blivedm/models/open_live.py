@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import dataclasses
 from typing import *
 
@@ -6,9 +5,9 @@ __all__ = (
     'DanmakuMessage',
     'GiftMessage',
     'GuardBuyMessage',
-    'SuperChatMessage',
-    'SuperChatDeleteMessage',
     'LikeMessage',
+    'SuperChatDeleteMessage',
+    'SuperChatMessage',
 )
 
 # 注释都是复制自官方文档的，看不懂的话问B站

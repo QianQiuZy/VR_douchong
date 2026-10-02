@@ -81,7 +81,7 @@ def test_runtime_flushes_relative_buckets_and_keeps_launch_month(monkeypatch):
         "upsert",
         lambda **values: writes.append(values) or True,
     )
-    start = datetime.datetime(2026, 8, 31, 23, 55, 0)
+    start = datetime.datetime(2026, 8, 31, 23, 55, 0).astimezone().replace(tzinfo=None)
 
     metrics_runtime.start_session(44, 301, start)
     metrics_runtime.record_concurrency(44, start + datetime.timedelta(minutes=1), 10)
@@ -118,7 +118,7 @@ def test_shutdown_flush_drains_pending_danmaku_before_metrics(monkeypatch):
     )
     monkeypatch.setattr(bootstrap, "flush_session", lambda *_args: calls.append("metrics"))
 
-    bootstrap._flush_active_metrics(datetime.datetime(2026, 8, 30, 12, 0, 0))
+    bootstrap._flush_active_metrics(datetime.datetime(2026, 8, 30, 12, 0, 0).astimezone().replace(tzinfo=None))
 
     assert calls == ["danmaku", "metrics"]
     runtime_state.CURRENT_SESSIONS.pop(301, None)
@@ -154,7 +154,7 @@ def test_pending_danmaku_flush_updates_parent_and_15m_bucket(monkeypatch):
             or True
         ),
     )
-    start = datetime.datetime(2026, 8, 30, 12, 0, 0)
+    start = datetime.datetime(2026, 8, 30, 12, 0, 0).astimezone().replace(tzinfo=None)
     handler = event_ingestion.MyHandler()
     runtime_state.LAST_STATUS[301] = 1
     metrics_runtime.start_session(44, 301, start)
@@ -212,7 +212,7 @@ def test_danmaku_monthly_counts_follow_event_calendar_month(monkeypatch):
     )
     handler = event_ingestion.MyHandler()
     runtime_state.LAST_STATUS[301] = 1
-    first_event_time = datetime.datetime.fromtimestamp(1_798_732_799)
+    first_event_time = datetime.datetime.fromtimestamp(1_798_732_799).astimezone().replace(tzinfo=None)
     metrics_runtime.start_session(44, 301, first_event_time)
     runtime_state.CURRENT_SESSIONS[301] = 44
 

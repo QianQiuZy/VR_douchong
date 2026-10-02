@@ -24,7 +24,6 @@ import asyncio
 import datetime
 import logging
 import threading
-from typing import Optional
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -35,6 +34,8 @@ from .metrics_runtime import flush_session
 from .models import RoomInfo
 from .whale_archive import archive_whale_month
 
+logger = logging.getLogger(__name__)
+
 POOL_STATUS_INTERVAL_SECONDS = 300
 SESSION_ARCHIVE_INTERVAL_SECONDS = 300
 SESSION_ARCHIVE_GRACE_SECONDS = 600
@@ -43,7 +44,7 @@ SESSION_ARCHIVE_DRAIN_TIMEOUT_SECONDS = 120
 
 # ------------------ time helpers ------------------ #
 def _now() -> datetime.datetime:
-    return datetime.datetime.now()
+    return datetime.datetime.now().astimezone().replace(tzinfo=None)
 
 
 async def _sleep_until(target: datetime.datetime) -> None:
@@ -61,7 +62,7 @@ def _month_str_now() -> str:
 
 
 # ------------------ archive scheduler ------------------ #
-async def _archive_month(target_month: Optional[str] = None) -> None:
+async def _archive_month(target_month: str | None = None) -> None:
     """Run archive jobs serially, reporting failures before continuing."""
     for archive_job in (
         archive_service.archive_super_chat_log,
@@ -72,20 +73,25 @@ async def _archive_month(target_month: Optional[str] = None) -> None:
         try:
             await asyncio.to_thread(archive_job, target_month)
         except Exception as exc:
-            logging.error(
+            logger.exception(
                 "[archive] job failed; continuing job=%s error_type=%s",
                 archive_job.__name__,
                 type(exc).__name__,
+                exc_info=False,
             )
     try:
         await _archive_closed_sessions(target_month)
     except Exception as exc:
-        logging.error(
+        logger.exception(
             "[archive] job failed; continuing job=%s error_type=%s",
             archive_service.archive_live_session.__name__,
             type(exc).__name__,
+            exc_info=False,
         )
     log_pool_status("monthly_archive")
+    from .api_cache import invalidate_history
+
+    invalidate_history(target_month)
 
 
 async def _archive_closed_sessions(target_month: str | None = None) -> None:
@@ -93,7 +99,7 @@ async def _archive_closed_sessions(target_month: str | None = None) -> None:
     try:
         session_ids = archive_service.closed_session_ids(cutoff)
     except SQLAlchemyError as exc:
-        logging.error("[archive] 读取候选场次失败 error_type=%s", type(exc).__name__)
+        logger.error("[archive] 读取候选场次失败 error_type=%s", type(exc).__name__)
         return
     if not session_ids:
         return
@@ -103,17 +109,20 @@ async def _archive_closed_sessions(target_month: str | None = None) -> None:
             timeout=SESSION_ARCHIVE_DRAIN_TIMEOUT_SECONDS,
         )
     except TimeoutError:
-        logging.warning("[archive] 结束快照队列未排空，暂缓场次归档")
+        logger.warning("[archive] 结束快照队列未排空，暂缓场次归档")
         return
     for room_id in tuple(runtime_state.DANMAKU_PENDING):
         monitoring_jobs.flush_pending_danmaku_for_room(room_id)
     if any(pending.sessions or pending.buckets for pending in runtime_state.DANMAKU_PENDING.values()):
-        logging.warning("[archive] 场次弹幕仍待写入，暂缓场次归档")
+        logger.warning("[archive] 场次弹幕仍待写入，暂缓场次归档")
         return
     try:
         await asyncio.to_thread(archive_service.archive_live_session, target_month, end_time_before=cutoff, session_ids=session_ids)
+        from .api_cache import invalidate_history
+
+        invalidate_history(target_month)
     except Exception as exc:
-        logging.error("[archive] 场次补归档失败 error_type=%s", type(exc).__name__)
+        logger.exception("[archive] 场次补归档失败 error_type=%s", type(exc).__name__, exc_info=False)
 
 
 async def monthly_reset_scheduler() -> None:
@@ -177,7 +186,7 @@ async def monthly_reset_scheduler() -> None:
             continue
         previous_month = _month_str_now_at(target - datetime.timedelta(days=1))
         drift_seconds = max(0.0, (_now() - target).total_seconds())
-        logging.info(
+        logger.info(
             f"[archive] 月切触发，month={previous_month} drift={drift_seconds:.3f}s"
         )
         await _archive_month(previous_month)
@@ -262,7 +271,8 @@ async def main() -> None:
 def _run_api_server() -> None:
     import uvicorn
 
-    config = uvicorn.Config(api_app.app, host=APP_HOST, port=APP_PORT, log_level="info")
+    config = uvicorn.Config(api_app.app, host=APP_HOST, port=APP_PORT, log_level="info",
+                            forwarded_allow_ips="127.0.0.1,::1")
     server = uvicorn.Server(config)
     server.run()
 

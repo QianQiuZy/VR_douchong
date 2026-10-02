@@ -17,7 +17,6 @@ from app.models import RoomLiveStats
 from app.repositories import live_stats
 from app.repositories.tables import month_str
 
-
 CURRENT_REPORT_KEYS = frozenset(
     {
         "room_id",

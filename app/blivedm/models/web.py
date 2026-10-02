@@ -1,8 +1,8 @@
-# -*- coding: utf-8 -*-
 import base64
 import binascii
 import dataclasses
 import json
+import logging
 from typing import *
 
 import pure_protobuf.annotations as pb_anno
@@ -10,18 +10,20 @@ import pure_protobuf.message as pb_msg
 
 from . import pb
 
+logger = logging.getLogger(__name__)
+
 __all__ = (
-    'HeartbeatMessage',
+    'CommonNoticeDanmakuMessage',
     'DanmakuMessage',
     'GiftMessage',
-    'SendGiftV2Message',
-    'SendGiftV2DecodeError',
     'GuardBuyMessage',
-    'SuperChatMessage',
-    'SuperChatDeleteMessage',
+    'HeartbeatMessage',
     'InteractWordMessage',
     'InteractWordV2Message',
-    'CommonNoticeDanmakuMessage',
+    'SendGiftV2DecodeError',
+    'SendGiftV2Message',
+    'SuperChatDeleteMessage',
+    'SuperChatMessage',
 )
 
 
@@ -330,7 +332,7 @@ class GiftMessage:
         def _to_int(v, default=0) -> int:
             try:
                 return int(v)
-            except Exception:
+            except (TypeError, ValueError, OverflowError):
                 return default
 
         price = _to_int(data.get('price'), 0)
@@ -781,7 +783,8 @@ class InteractWordV2Message:
     def from_command(cls, data: dict):
         try:
             proto = pb.InteractWordV2.loads(base64.b64decode(data['pb']))
-        except Exception:
+        except Exception as exc:
+            logger.exception("[InteractWordV2] decode failed error_type=%s", type(exc).__name__, exc_info=False)
             return cls(
                 uid=data.get('uid', 0),
                 username=data.get('uname') or data.get('username', ''),

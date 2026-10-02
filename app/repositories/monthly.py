@@ -9,6 +9,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from .. import DanmakuCounts
 from ..database import Session
 
+logger = logging.getLogger(__name__)
+
 
 def add_room_stats_amounts(model, room_id: int, month: str, gift: float = 0.0, guard: float = 0.0, super_chat: float = 0.0) -> None:
     if not gift and not guard and not super_chat:
@@ -32,17 +34,17 @@ def add_room_stats_amounts(model, room_id: int, month: str, gift: float = 0.0, g
             code = getattr(err, "args", [None])[0] if err else None
             if code in (1205, 1213):
                 sleep = 0.05 * (2 ** (attempt - 1)) + random.uniform(0, 0.1)
-                logging.warning(f"[RoomStatsMonthly] 死锁/锁超时，第 {attempt} 次退避 {sleep:.3f}s；code={code}")
+                logger.warning(f"[RoomStatsMonthly] 死锁/锁超时，第 {attempt} 次退避 {sleep:.3f}s；code={code}")
                 time.sleep(sleep)
                 continue
-            logging.error(f"[RoomStatsMonthly] 写入失败（非可重试）: {repr(exc)} orig={repr(err)}")
+            logger.error(f"[RoomStatsMonthly] 写入失败（非可重试）: {exc!r} orig={err!r}")
             return
         finally:
             try:
                 session.close()
-            except Exception:
-                pass
-    logging.error("[RoomStatsMonthly] 多次重试仍失败，数据可能不完整。")
+            except Exception as close_error:
+                logger.exception("[db] session close failed error_type=%s", type(close_error).__name__, exc_info=False)
+    logger.error("[RoomStatsMonthly] 多次重试仍失败，数据可能不完整。")
 
 
 def set_room_payer_count(model, room_id: int, month: str, count: int) -> None:
@@ -61,7 +63,7 @@ def set_room_payer_count(model, room_id: int, month: str, count: int) -> None:
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error("[RoomStatsMonthly] payer_count写入失败 room_id=%s month=%s: %s", room_id, month, exc)
+        logger.error("[RoomStatsMonthly] payer_count写入失败 room_id=%s month=%s: %s", room_id, month, exc)
     finally:
         session.close()
 
@@ -95,7 +97,7 @@ def add_danmaku_counts(model, room_id: int, month: str, counts: DanmakuCounts) -
         return True
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(
+        logger.error(
             "[RoomStatsMonthly] 弹幕写入失败 room_id=%s month=%s: %s",
             room_id,
             month,
@@ -130,14 +132,14 @@ def add_blind_box_amounts(model, room_id: int, month: str, count: int = 0, profi
             code = getattr(err, "args", [None])[0] if err else None
             if code in (1205, 1213):
                 sleep = 0.05 * (2 ** (attempt - 1)) + random.uniform(0, 0.1)
-                logging.warning(f"[RoomBlindBoxMonthly] 死锁/锁超时，第 {attempt} 次退避 {sleep:.3f}s；code={code}")
+                logger.warning(f"[RoomBlindBoxMonthly] 死锁/锁超时，第 {attempt} 次退避 {sleep:.3f}s；code={code}")
                 time.sleep(sleep)
                 continue
-            logging.error(f"[RoomBlindBoxMonthly] 写入失败（非可重试）: {repr(exc)} orig={repr(err)}")
+            logger.error(f"[RoomBlindBoxMonthly] 写入失败（非可重试）: {exc!r} orig={err!r}")
             return
         finally:
             try:
                 session.close()
-            except Exception:
-                pass
-    logging.error("[RoomBlindBoxMonthly] 多次重试仍失败，数据可能不完整。")
+            except Exception as close_error:
+                logger.exception("[db] session close failed error_type=%s", type(close_error).__name__, exc_info=False)
+    logger.error("[RoomBlindBoxMonthly] 多次重试仍失败，数据可能不完整。")

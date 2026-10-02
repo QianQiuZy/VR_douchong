@@ -11,6 +11,8 @@ from . import DanmakuBucketTarget, DanmakuCounts
 from .models import LiveSession15mStats
 from .redis_metrics import delete_session_keys
 
+logger = logging.getLogger(__name__)
+
 BUCKET_SECONDS = 15 * 60
 
 
@@ -121,7 +123,7 @@ def _flush(bucket: _Bucket, end_time: datetime.datetime) -> None:
         sample_count=bucket.sample_count,
         payer_count=bucket.payer_count,
     ):
-        logging.error(
+        logger.error(
             "[LiveSession15m] 区间写入失败 session_id=%s bucket=%s",
             bucket.session_id,
             bucket.bucket_index,

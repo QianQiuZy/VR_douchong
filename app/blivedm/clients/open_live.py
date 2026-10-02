@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import asyncio
 import datetime
 import hashlib
@@ -130,7 +129,7 @@ class OpenLiveClient(ws_base.WebSocketClientBase):
             'x-bili-signature-method': 'HMAC-SHA256',
             'x-bili-signature-nonce': uuid.uuid4().hex,
             'x-bili-signature-version': '1.0',
-            'x-bili-timestamp': str(int(datetime.datetime.now().timestamp())),
+            'x-bili-timestamp': str(int(datetime.datetime.now().astimezone().replace(tzinfo=None).timestamp())),
         }
 
         str_to_sign = '\n'.join(

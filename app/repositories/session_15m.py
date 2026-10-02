@@ -12,6 +12,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from .. import DanmakuBucketTarget, DanmakuCounts
 from ..database import Session
 
+logger = logging.getLogger(__name__)
+
 DANMAKU_COLUMNS = {
     "danmaku_count",
     "captain_danmaku_count",
@@ -79,7 +81,7 @@ def upsert_stats(
         return True
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error("[LiveSession15m] 写入失败 session_id=%s bucket=%s: %s", session_id, bucket_index, exc)
+        logger.error("[LiveSession15m] 写入失败 session_id=%s bucket=%s: %s", session_id, bucket_index, exc)
         return False
     finally:
         session.close()
@@ -129,7 +131,7 @@ def add_danmaku_counts(
         return True
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(
+        logger.error(
             "[LiveSession15m] 弹幕写入失败 session_id=%s bucket=%s: %s",
             target.session_id,
             target.bucket_index,

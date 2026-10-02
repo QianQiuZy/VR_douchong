@@ -1,16 +1,16 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import logging
 from typing import *
+from typing import ClassVar
 
 from .clients import ws_base
 from .models import open_live as open_models
 from .models import web as web_models
 
 __all__ = (
-    'HandlerInterface',
     'BaseHandler',
+    'HandlerInterface',
 )
 
 logger = logging.getLogger('blivedm')
@@ -62,7 +62,7 @@ class HandlerInterface:
 
 
 def _make_msg_callback(method_name, message_cls):
-    def callback(self: 'BaseHandler', client: ws_base.WebSocketClientBase, command: dict):
+    def callback(self: BaseHandler, client: ws_base.WebSocketClientBase, command: dict):
         method = getattr(self, method_name)
         return method(client, message_cls.from_command(command['data']))
     return callback
@@ -95,15 +95,9 @@ class BaseHandler(HandlerInterface):
         for message in messages:
             self._on_gift(client, message)
 
-    _CMD_CALLBACK_DICT: Dict[
-        str,
-        Optional[Callable[
-            ['BaseHandler', ws_base.WebSocketClientBase, dict],
-            Any
-        ]]
-    ]
-    """cmd -> 处理回调"""
-    _CMD_CALLBACK_DICT = {
+    _CMD_CALLBACK_DICT: ClassVar[Dict[str, Optional[Callable[
+        [BaseHandler, ws_base.WebSocketClientBase, dict], Any
+    ]]]] = {
         # 收到心跳包，这是blivedm自造的消息，原本的心跳包格式不一样
         '_HEARTBEAT': _make_msg_callback('_on_heartbeat', web_models.HeartbeatMessage),
         # 弹幕

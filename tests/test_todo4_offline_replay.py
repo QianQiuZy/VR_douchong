@@ -85,7 +85,7 @@ def test_super_chat_recovers_open_session_before_runtime_bucket_write(monkeypatc
         bucket=SimpleNamespace(added=True),
         steel_coin=None,
     )
-    monkeypatch.setattr(event_ingestion.LiveSession, "find_open_session", lambda room_id: (55, datetime.datetime(2026, 8, 30, 12, 0)))
+    monkeypatch.setattr(event_ingestion.LiveSession, "find_open_session", lambda room_id: (55, datetime.datetime(2026, 8, 30, 12, 0).astimezone().replace(tzinfo=None)))
     monkeypatch.setattr(event_ingestion, "start_session", lambda *args, **kwargs: calls.append(("start", args)))
     monkeypatch.setattr(event_ingestion, "register_payer", lambda *args, **kwargs: registration)
     monkeypatch.setattr(event_ingestion.RoomStatsMonthly, "add_amounts", lambda *args, **kwargs: None)

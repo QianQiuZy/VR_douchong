@@ -5,7 +5,6 @@ import datetime
 import os
 import threading
 from pathlib import Path
-from typing import Optional
 
 import aiohttp
 
@@ -19,7 +18,7 @@ ROOM_IDS: list[int] = []
 ROOM_ANCHORS: dict[int, str] = {}
 ROOM_UIDS: dict[int, int] = {}
 
-aiohttp_session: Optional[aiohttp.ClientSession] = None
+aiohttp_session: aiohttp.ClientSession | None = None
 CURRENT_SESSIONS: dict[int, int] = {}
 ROOM_CLIENTS: dict[int, AuthenticatedLiveClient] = {}
 LAST_RECONNECT: dict[int, datetime.datetime] = {}
@@ -35,10 +34,10 @@ GUARD_COUNTS: dict[int, dict[str, int]] = {}
 CONCURRENCY_CACHE: dict[int, dict[str, int]] = {}
 LOCKED_ROOM_UNTIL: dict[int, int] = {}
 
-GUARD_FANS_QUEUE: asyncio.Queue[tuple[int, Optional[int], Optional[str]]] = asyncio.Queue()
-ATTENTION_QUEUE: asyncio.Queue[tuple[int, Optional[int], Optional[str], datetime.date]] = asyncio.Queue()
+GUARD_FANS_QUEUE: asyncio.Queue[tuple[int, int | None, str | None]] = asyncio.Queue()
+ATTENTION_QUEUE: asyncio.Queue[tuple[int, int | None, str | None, datetime.date]] = asyncio.Queue()
 DAILY_ATTENTION_QUEUE: asyncio.Queue[tuple[int, datetime.date]] = asyncio.Queue()
 DAILY_GUARD_QUEUE: asyncio.Queue[tuple[int, datetime.date]] = asyncio.Queue()
 DAILY_FANS_QUEUE: asyncio.Queue[tuple[int, datetime.date]] = asyncio.Queue()
 
-MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
+MAIN_LOOP: asyncio.AbstractEventLoop | None = None

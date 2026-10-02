@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import datetime
 import logging
-from typing import Optional
 
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -36,6 +35,8 @@ from .repositories.tables import (
     normalize_month_code,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _archive_columns(table_name: str, candidates: tuple[str, ...]) -> list[str]:
     try:
@@ -45,7 +46,7 @@ def _archive_columns(table_name: str, candidates: tuple[str, ...]) -> list[str]:
     return [name for name in candidates if name in available]
 
 
-def archive_super_chat_log(target_month: Optional[str] = None) -> int:
+def archive_super_chat_log(target_month: str | None = None) -> int:
     """
     将 super_chat_log 中历史月份数据迁移到归档表。
     - target_month: 指定归档月份（YYYYMM）；None 表示归档所有早于当前月的数据
@@ -59,10 +60,10 @@ def archive_super_chat_log(target_month: Optional[str] = None) -> int:
     if target_month:
         normalized = normalize_month_code(target_month)
         if not normalized:
-            logging.error(f"[SuperChatLog] 归档月份格式非法: {target_month}")
+            logger.error(f"[SuperChatLog] 归档月份格式非法: {target_month}")
             return 0
         if normalized == current_month:
-            logging.info("[SuperChatLog] 当前月不归档，跳过")
+            logger.info("[SuperChatLog] 当前月不归档，跳过")
             return 0
         months = [normalized]
     else:
@@ -82,7 +83,7 @@ def archive_super_chat_log(target_month: Optional[str] = None) -> int:
                 if normalized and normalized != current_month:
                     months.append(normalized)
         except SQLAlchemyError as e:
-            logging.error(f"[SuperChatLog] 读取待归档月份失败: {e}")
+            logger.error(f"[SuperChatLog] 读取待归档月份失败: {e}")
             return 0
         finally:
             session.close()
@@ -125,9 +126,9 @@ def archive_super_chat_log(target_month: Optional[str] = None) -> int:
                     {"start": start_dt, "end": end_dt},
                 )
                 moved_total += int(count or 0)
-            logging.info(f"[SuperChatLog] 已归档 {month_code}，记录数 ~{count}")
+            logger.info(f"[SuperChatLog] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as e:
-            logging.error(f"[SuperChatLog] 归档失败 {month_code}: {e}")
+            logger.error(f"[SuperChatLog] 归档失败 {month_code}: {e}")
     return moved_total
 
 
@@ -141,7 +142,7 @@ def closed_session_ids(end_time_before: datetime.datetime) -> tuple[int, ...]:
 
 
 def archive_live_session(
-    target_month: Optional[str] = None,
+    target_month: str | None = None,
     *,
     end_time_before: datetime.datetime | None = None,
     session_ids: tuple[int, ...] | None = None,
@@ -160,10 +161,10 @@ def archive_live_session(
     if target_month:
         normalized = normalize_month_code(target_month)
         if not normalized:
-            logging.error(f"[LiveSession] 归档月份格式非法: {target_month}")
+            logger.error(f"[LiveSession] 归档月份格式非法: {target_month}")
             return 0
         if normalized == current_month:
-            logging.info("[LiveSession] 当前月不归档，跳过")
+            logger.info("[LiveSession] 当前月不归档，跳过")
             return 0
         months = [normalized]
     else:
@@ -182,7 +183,7 @@ def archive_live_session(
                 if normalized and normalized != current_month:
                     months.append(normalized)
         except SQLAlchemyError as e:
-            logging.error(f"[LiveSession] 读取待归档月份失败: {e}")
+            logger.error(f"[LiveSession] 读取待归档月份失败: {e}")
             return 0
         finally:
             session.close()
@@ -217,7 +218,7 @@ def archive_live_session(
                         params,
                     ).scalar()
                     if child_count:
-                        logging.error(
+                        logger.error(
                             "[LiveSession] 子表归档未完成，跳过父表删除 month=%s rows=%s",
                             month_code,
                             child_count,
@@ -262,14 +263,14 @@ def archive_live_session(
                     params,
                 )
                 moved_total += int(count or 0)
-            logging.info(f"[LiveSession] 已归档 {month_code}，记录数 ~{count}")
+            logger.info(f"[LiveSession] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as e:
-            logging.error(f"[LiveSession] 归档失败 {month_code}: {e}")
+            logger.error(f"[LiveSession] 归档失败 {month_code}: {e}")
     return moved_total
 
 
 def archive_live_session_15m_stats(
-    target_month: Optional[str] = None,
+    target_month: str | None = None,
     *,
     end_time_before: datetime.datetime | None = None,
     session_ids: tuple[int, ...] | None = None,
@@ -289,10 +290,10 @@ def archive_live_session_15m_stats(
     if target_month:
         normalized = normalize_month_code(target_month)
         if not normalized:
-            logging.error(f"[LiveSession15m] 归档月份格式非法: {target_month}")
+            logger.error(f"[LiveSession15m] 归档月份格式非法: {target_month}")
             return 0
         if normalized == current_month:
-            logging.info("[LiveSession15m] 当前月不归档，跳过")
+            logger.info("[LiveSession15m] 当前月不归档，跳过")
             return 0
         months = [normalized]
     else:
@@ -315,7 +316,7 @@ def archive_live_session_15m_stats(
                 if normalized and normalized != current_month:
                     months.append(normalized)
         except SQLAlchemyError as exc:
-            logging.error(f"[LiveSession15m] 读取待归档月份失败: {exc}")
+            logger.error(f"[LiveSession15m] 读取待归档月份失败: {exc}")
             return 0
         finally:
             session.close()
@@ -375,13 +376,13 @@ def archive_live_session_15m_stats(
                     params,
                 )
                 moved_total += int(count or 0)
-            logging.info(f"[LiveSession15m] 已归档 {month_code}，记录数 ~{count}")
+            logger.info(f"[LiveSession15m] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as exc:
-            logging.error(f"[LiveSession15m] 归档失败 {month_code}: {exc}")
+            logger.error(f"[LiveSession15m] 归档失败 {month_code}: {exc}")
     return moved_total
 
 
-def archive_room_live_stats(target_month: Optional[str] = None) -> int:
+def archive_room_live_stats(target_month: str | None = None) -> int:
     """
     将 room_live_stats 中历史月份数据迁移到归档表。
     - target_month: 指定归档月份（YYYYMM）；None 表示归档所有早于当前月的数据
@@ -395,10 +396,10 @@ def archive_room_live_stats(target_month: Optional[str] = None) -> int:
     if target_month:
         normalized = normalize_month_code(target_month)
         if not normalized:
-            logging.error(f"[RoomLiveStats] 归档月份格式非法: {target_month}")
+            logger.error(f"[RoomLiveStats] 归档月份格式非法: {target_month}")
             return 0
         if normalized == current_month:
-            logging.info("[RoomLiveStats] 当前月不归档，跳过")
+            logger.info("[RoomLiveStats] 当前月不归档，跳过")
             return 0
         months = [normalized]
     else:
@@ -418,7 +419,7 @@ def archive_room_live_stats(target_month: Optional[str] = None) -> int:
                 if normalized and normalized != current_month:
                     months.append(normalized)
         except SQLAlchemyError as e:
-            logging.error(f"[RoomLiveStats] 读取待归档月份失败: {e}")
+            logger.error(f"[RoomLiveStats] 读取待归档月份失败: {e}")
             return 0
         finally:
             session.close()
@@ -464,13 +465,13 @@ def archive_room_live_stats(target_month: Optional[str] = None) -> int:
                     {"start": start_dt, "end": end_dt},
                 )
                 moved_total += int(count or 0)
-            logging.info(f"[RoomLiveStats] 已归档 {month_code}，记录数 ~{count}")
+            logger.info(f"[RoomLiveStats] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as e:
-            logging.error(f"[RoomLiveStats] 归档失败 {month_code}: {e}")
+            logger.error(f"[RoomLiveStats] 归档失败 {month_code}: {e}")
     return moved_total
 
 
-def archive_attention(target_month: Optional[str] = None) -> int:
+def archive_attention(target_month: str | None = None) -> int:
     """
     将 attention 中历史月份数据迁移到归档表。
     - target_month: 指定归档月份（YYYYMM）；None 表示归档所有早于当前月的数据
@@ -481,10 +482,10 @@ def archive_attention(target_month: Optional[str] = None) -> int:
     if target_month:
         normalized = normalize_month_code(target_month)
         if not normalized:
-            logging.error(f"[Attention] 归档月份格式非法: {target_month}")
+            logger.error(f"[Attention] 归档月份格式非法: {target_month}")
             return 0
         if normalized == current_month:
-            logging.info("[Attention] 当前月不归档，跳过")
+            logger.info("[Attention] 当前月不归档，跳过")
             return 0
         months = [normalized]
     else:
@@ -503,7 +504,7 @@ def archive_attention(target_month: Optional[str] = None) -> int:
                 if normalized and normalized != current_month:
                     months.append(normalized)
         except SQLAlchemyError as e:
-            logging.error(f"[Attention] 读取待归档月份失败: {e}")
+            logger.error(f"[Attention] 读取待归档月份失败: {e}")
             return 0
         finally:
             session.close()
@@ -569,7 +570,7 @@ def archive_attention(target_month: Optional[str] = None) -> int:
                     {"start_date": start_date, "end_date": end_date},
                 )
                 moved_total += int(count or 0)
-            logging.info(f"[Attention] 已归档 {month_code}，记录数 ~{count}")
+            logger.info(f"[Attention] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as e:
-            logging.error(f"[Attention] 归档失败 {month_code}: {e}")
+            logger.error(f"[Attention] 归档失败 {month_code}: {e}")
     return moved_total

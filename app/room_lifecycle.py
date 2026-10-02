@@ -3,22 +3,23 @@
 import asyncio
 import datetime
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Optional
 
-from .models import LiveSession, RoomInfo
 from . import room_config, runtime_state
 from .metrics_runtime import flush_session
+from .models import LiveSession, RoomInfo
 
+logger = logging.getLogger(__name__)
 
 LIVE_SESSION_GRACE_SECONDS = 180
 
 
 @dataclass(frozen=True)
 class LifecycleDependencies:
-    record_stream_segment: Callable[[int, datetime.datetime], Optional[str]]
-    flush_pending_danmaku: Callable[[int, Optional[int]], None]
-    finalize_concurrency: Callable[[int, Optional[int]], tuple[Optional[float], Optional[int]]]
+    record_stream_segment: Callable[[int, datetime.datetime], str | None]
+    flush_pending_danmaku: Callable[[int, int | None], None]
+    finalize_concurrency: Callable[[int, int | None], tuple[float | None, int | None]]
     now: Callable[[], datetime.datetime]
     initialize_room: Callable[[int], Awaitable[None]]
     start_client: Callable[[int], Awaitable[None]]
@@ -28,7 +29,7 @@ def finish_live_session(
     room_id: int,
     end_dt: datetime.datetime,
     dependencies: LifecycleDependencies,
-) -> Optional[str]:
+) -> str | None:
     duration_str = dependencies.record_stream_segment(room_id, end_dt)
     runtime_state.PENDING_SESSION_ENDS.pop(room_id, None)
     session_id = runtime_state.CURRENT_SESSIONS.pop(room_id, None)
@@ -44,14 +45,14 @@ def finish_live_session(
     return duration_str
 
 
-def defer_live_session_finish(room_id: int, end_dt: datetime.datetime, dependencies: LifecycleDependencies) -> Optional[str]:
+def defer_live_session_finish(room_id: int, end_dt: datetime.datetime, dependencies: LifecycleDependencies) -> str | None:
     duration_str = dependencies.record_stream_segment(room_id, end_dt)
     if duration_str is not None:
         runtime_state.PENDING_SESSION_ENDS[room_id] = end_dt
     return duration_str
 
 
-def resume_interrupted_session(room_id: int, start_dt: datetime.datetime, now: datetime.datetime) -> Optional[int]:
+def resume_interrupted_session(room_id: int, start_dt: datetime.datetime, now: datetime.datetime) -> int | None:
     interrupted_at = runtime_state.PENDING_SESSION_ENDS.get(room_id)
     if interrupted_at is None or (now - interrupted_at).total_seconds() > LIVE_SESSION_GRACE_SECONDS:
         return None
@@ -72,7 +73,7 @@ def finish_expired_live_sessions(now: datetime.datetime, dependencies: Lifecycle
     for room_id, end_dt in expired:
         session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
         finish_live_session(room_id, end_dt, dependencies)
-        logging.info("[%s] 下播宽限期结束，已确认关闭 session_id=%s", room_id, session_id)
+        logger.info("[%s] 下播宽限期结束，已确认关闭 session_id=%s", room_id, session_id)
 
 
 def ensure_room_state(room_id: int) -> None:
@@ -104,9 +105,9 @@ async def delete_room_async(room_id: int, dependencies: LifecycleDependencies) -
         try:
             await client.stop_and_close()
         except asyncio.CancelledError:
-            logging.debug("[delete] room=%s stop_and_close 触发取消（预期）", room_id)
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.warning("[delete] room=%s stop_and_close 异常: %s", room_id, exc)
+            logger.debug("[delete] room=%s stop_and_close 触发取消（预期）", room_id)
+        except Exception as exc:
+            logger.exception("[delete] room=%s stop_and_close 异常: %s", room_id, type(exc).__name__, exc_info=False)
     if room_id in runtime_state.STREAM_STARTS or room_id in runtime_state.PENDING_SESSION_ENDS:
         end_dt = runtime_state.PENDING_SESSION_ENDS.get(room_id) or dependencies.now()
         dependencies.record_stream_segment(room_id, end_dt)

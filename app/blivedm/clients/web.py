@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import asyncio
 import datetime
 import hashlib
@@ -6,12 +5,13 @@ import logging
 import urllib
 import weakref
 from typing import *
+from typing import ClassVar
 
 import aiohttp
 import yarl
 
-from . import ws_base
 from .. import utils
+from . import ws_base
 
 __all__ = (
     'BLiveClient',
@@ -39,7 +39,7 @@ def _get_wbi_signer(session: aiohttp.ClientSession) -> '_WbiSigner':
 
 
 class _WbiSigner:
-    WBI_KEY_INDEX_TABLE = [
+    WBI_KEY_INDEX_TABLE: ClassVar[list[int]] = [
         46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
         27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13
     ]
@@ -70,7 +70,7 @@ class _WbiSigner:
     def need_refresh_wbi_key(self):
         return self._wbi_key == '' or (
             self._last_refresh_time is not None
-            and datetime.datetime.now() - self._last_refresh_time >= self.WBI_KEY_TTL
+            and datetime.datetime.now().astimezone().replace(tzinfo=None) - self._last_refresh_time >= self.WBI_KEY_TTL
         )
 
     def refresh_wbi_key(self) -> Awaitable:
@@ -89,7 +89,7 @@ class _WbiSigner:
             return
 
         self._wbi_key = wbi_key
-        self._last_refresh_time = datetime.datetime.now()
+        self._last_refresh_time = datetime.datetime.now().astimezone().replace(tzinfo=None)
 
     async def _get_wbi_key(self):
         try:
@@ -124,7 +124,7 @@ class _WbiSigner:
         if self._wbi_key == '':
             return params
 
-        wts = str(int(datetime.datetime.now().timestamp()))
+        wts = str(int(datetime.datetime.now().astimezone().replace(tzinfo=None).timestamp()))
         params_to_sign = {**params, 'wts': wts}
 
         # 按key字典序排序
@@ -214,14 +214,12 @@ class BLiveClient(ws_base.WebSocketClientBase):
 
         :return: True代表没有降级，如果需要降级后还可用，重载这个函数返回True
         """
-        if self._uid is None:
-            if not await self._init_uid():
-                logger.warning('room=%d _init_uid() failed', self._tmp_room_id)
-                self._uid = 0
+        if self._uid is None and not await self._init_uid():
+            logger.warning('room=%d _init_uid() failed', self._tmp_room_id)
+            self._uid = 0
 
-        if self._get_buvid() == '':
-            if not await self._init_buvid():
-                logger.warning('room=%d _init_buvid() failed', self._tmp_room_id)
+        if self._get_buvid() == '' and not await self._init_buvid():
+            logger.warning('room=%d _init_buvid() failed', self._tmp_room_id)
 
         res = True
         if not await self._init_room_id_and_owner():

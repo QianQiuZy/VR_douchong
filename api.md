@@ -6,7 +6,11 @@
 
 - 基础地址：`https://vr.qianqiuzy.cn` `https://psp.qianqiuzy.cn`
 - 返回格式：`application/json`。
-- 错误响应：统一返回 `{"error": "错误信息"}`，并配合相应的 HTTP 状态码（常见为 400/404/409/500）。报表并发容量耗尽时返回 `503 {"error":"报表请求繁忙"}`，并带 `Retry-After: 1`。
+- 错误响应：统一返回 `{"error": "错误信息"}`，并配合相应的 HTTP 状态码。
+- 七个 API 按实际客户端 IP 合计限流，每滚动秒最多放行 20 次，超额返回 `429 {"error":"请求过于频繁"}` 和 `Retry-After: 1`。
+- 默认五类 GET 从 Redis DB2 返回预热响应。未就绪、缺失、损坏、Redis 故障、当前快照超过 30 秒或在途请求过载时返回 `503 {"error":"接口缓存暂不可用"}` 和 `Retry-After: 1`，不直接回源 MySQL。
+- 正常缓存响应支持 gzip，携带 `Vary: Accept-Encoding`；正常缓存响应与 429/503 均设置 `Cache-Control: no-store`。未知但合法的月份/房间保持原空结果语义。
+- `API_CACHE_ENABLED=0` 是离线诊断旧路径，其报表并发容量耗尽仍返回 `503 {"error":"报表请求繁忙"}`。
 
 ## 1. POST /add/room
 

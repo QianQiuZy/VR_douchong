@@ -15,6 +15,8 @@ from app.gift import (
     normalize_month_code,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="归档 super_chat_log 历史数据")
@@ -30,7 +32,7 @@ def main() -> None:
     moved_sc = archive_super_chat_log(target_month)
     moved_live_session = archive_live_session(target_month)
     moved_room_live = archive_room_live_stats(target_month)
-    logging.info(
+    logger.info(
         "[migrate_sc_archive] 归档完成，SC ~%s，LiveSession ~%s，RoomLiveStats ~%s",
         moved_sc,
         moved_live_session,

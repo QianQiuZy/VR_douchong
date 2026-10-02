@@ -11,6 +11,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..database import engine
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ReportTableMetadata:
@@ -34,7 +36,7 @@ class ReportTableMetadata:
 
 def month_str(dt: datetime.datetime | None = None) -> str:
     """Return the runtime month code for a datetime or the current instant."""
-    dt = dt or datetime.datetime.now()
+    dt = dt or datetime.datetime.now().astimezone().replace(tzinfo=None)
     return dt.strftime("%Y%m")
 
 
@@ -98,7 +100,7 @@ def sc_log_table_exists(table_name: str) -> bool:
     try:
         return inspect(engine).has_table(table_name)
     except SQLAlchemyError as exc:
-        logging.error(f"[SuperChatLog] 检查表存在失败: {exc}")
+        logger.error(f"[SuperChatLog] 检查表存在失败: {exc}")
         return False
 
 
@@ -109,9 +111,9 @@ def _ensure_archive_table(month_code: str, table_prefix: str, source_table: str,
     try:
         with engine.begin() as conn:
             conn.execute(text(f"CREATE TABLE IF NOT EXISTS `{table_name}` LIKE `{source_table}`"))
-        logging.info(f"[{label}] 已确保归档表存在: {table_name}")
+        logger.info(f"[{label}] 已确保归档表存在: {table_name}")
     except SQLAlchemyError as exc:
-        logging.error(f"[{label}] 创建归档表失败 {table_name}: {exc}")
+        logger.error(f"[{label}] 创建归档表失败 {table_name}: {exc}")
     return table_name
 
 

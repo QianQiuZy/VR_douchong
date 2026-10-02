@@ -31,16 +31,16 @@ from app.models import RoomLiveStats
 class _StubQuery:
     """A minimal query stand-in whose terminals return no rows / defaults."""
 
-    def filter_by(self, **_kwargs: Any) -> "_StubQuery":
+    def filter_by(self, **_kwargs: Any) -> _StubQuery:
         return self
 
-    def filter(self, *_args: Any, **_kwargs: Any) -> "_StubQuery":
+    def filter(self, *_args: Any, **_kwargs: Any) -> _StubQuery:
         return self
 
-    def order_by(self, *_args: Any, **_kwargs: Any) -> "_StubQuery":
+    def order_by(self, *_args: Any, **_kwargs: Any) -> _StubQuery:
         return self
 
-    def distinct(self) -> "_StubQuery":
+    def distinct(self) -> _StubQuery:
         return self
 
     def all(self) -> list[Any]:

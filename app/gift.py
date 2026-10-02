@@ -16,14 +16,22 @@ This module now only:
 
 from __future__ import annotations
 
-import asyncio  # noqa: F401 - re-exported for external callers of gift.asyncio
+import asyncio
 import datetime
 import logging
 import smtplib
 import threading
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from email.mime.text import MIMEText
-from typing import Dict, Optional, Tuple
+
+from . import (
+    bilibili_gateway,
+    event_ingestion,
+    monitoring_jobs,
+    room_config,
+    room_lifecycle,
+    runtime_state,
+)
 
 # Test / CLI compat surface: attributes accessed as ``gift.X`` before
 # Todo 5 remain accessible via re-export.
@@ -61,13 +69,13 @@ from .models import (  # noqa: F401 - preserved compat re-exports
 from .repositories.tables import (  # noqa: F401 - preserved compat re-exports
     attention_table_name,
     ensure_attention_archive_table,
-    ensure_live_session_archive_table,
     ensure_live_session_15m_stats_archive_table,
+    ensure_live_session_archive_table,
     ensure_room_live_stats_archive_table,
     ensure_sc_archive_table,
     is_current_month,
-    live_session_table_name,
     live_session_15m_stats_table_name,
+    live_session_table_name,
     month_range,
     month_str,
     normalize_month_code,
@@ -75,8 +83,6 @@ from .repositories.tables import (  # noqa: F401 - preserved compat re-exports
     sc_log_table_exists,
     sc_log_table_name,
 )
-
-from . import bilibili_gateway, event_ingestion, monitoring_jobs, room_config, room_lifecycle, runtime_state
 from .runtime_state import (  # noqa: F401 - preserved compat re-exports
     ATTENTION_QUEUE,
     CONCURRENCY_CACHE,
@@ -167,9 +173,9 @@ def send_cookie_invalid_email_async(log_line: str) -> None:
                 server.login(SMTP_USER, SMTP_PASS)
                 server.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
 
-            logging.info("[SMTP] Cookies 失效告警邮件已发送")
+            logger.info("[SMTP] Cookies 失效告警邮件已发送")
         except Exception as e:
-            logging.error(f"[SMTP] 发送 Cookies 失效告警失败: {e}")
+            logger.exception(f"[SMTP] 发送 Cookies 失效告警失败: {type(e).__name__}", exc_info=False)
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -203,7 +209,7 @@ def get_room_ids() -> list[int]:
     return room_config.get_room_ids()
 
 
-def get_room_anchors() -> Dict[int, str]:
+def get_room_anchors() -> dict[int, str]:
     return room_config.get_room_anchors()
 
 
@@ -216,7 +222,7 @@ load_rooms_config()
 
 # ------------------ Small helpers preserved for compat ------------------ #
 def _now() -> datetime.datetime:
-    return datetime.datetime.now()
+    return datetime.datetime.now().astimezone().replace(tzinfo=None)
 
 
 def _next_daily_target(now: datetime.datetime, hour: int, minute: int) -> datetime.datetime:
@@ -262,11 +268,11 @@ def _lifecycle_dependencies() -> room_lifecycle.LifecycleDependencies:
     return monitoring_jobs.lifecycle_dependencies()
 
 
-def _finish_live_session(room_id: int, end_dt: datetime.datetime) -> Optional[str]:
+def _finish_live_session(room_id: int, end_dt: datetime.datetime) -> str | None:
     return room_lifecycle.finish_live_session(room_id, end_dt, _lifecycle_dependencies())
 
 
-def _defer_live_session_finish(room_id: int, end_dt: datetime.datetime) -> Optional[str]:
+def _defer_live_session_finish(room_id: int, end_dt: datetime.datetime) -> str | None:
     return room_lifecycle.defer_live_session_finish(
         room_id, end_dt, _lifecycle_dependencies()
     )
@@ -276,7 +282,7 @@ def _resume_interrupted_session(
     room_id: int,
     start_dt: datetime.datetime,
     now: datetime.datetime,
-) -> Optional[int]:
+) -> int | None:
     return room_lifecycle.resume_interrupted_session(room_id, start_dt, now)
 
 
@@ -290,11 +296,11 @@ for _room_id in get_room_ids():
     ensure_room_state(_room_id)
 
 
-async def add_room_async(room_id: int, anchor_name: str) -> Tuple[bool, str]:
+async def add_room_async(room_id: int, anchor_name: str) -> tuple[bool, str]:
     return await room_lifecycle.add_room_async(room_id, anchor_name, _lifecycle_dependencies())
 
 
-async def delete_room_async(room_id: int) -> Tuple[bool, str]:
+async def delete_room_async(room_id: int) -> tuple[bool, str]:
     return await room_lifecycle.delete_room_async(room_id, _lifecycle_dependencies())
 
 
@@ -369,6 +375,8 @@ get_sc_logs = _api_app.get_sc_logs
 
 # ------------------ Bootstrap compat re-exports ------------------ #
 from . import bootstrap as _bootstrap
+
+logger = logging.getLogger(__name__)
 
 main = _bootstrap.main
 run = _bootstrap.run

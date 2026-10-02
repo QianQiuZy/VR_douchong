@@ -121,7 +121,7 @@ class TestRoomLifecycleWithoutBilibiliClient:
 
     def test_resume_honors_the_three_minute_grace_boundary(self, isolated_runtime_state):
         # Given: an interrupted live session at the inclusive three-minute boundary.
-        now = datetime.datetime(2026, 8, 29, 12, 0, 0)
+        now = datetime.datetime(2026, 8, 29, 12, 0, 0).astimezone().replace(tzinfo=None)
         runtime_state.PENDING_SESSION_ENDS[333333] = now - datetime.timedelta(seconds=180)
         runtime_state.CURRENT_SESSIONS[333333] = 99
 
@@ -135,7 +135,7 @@ class TestRoomLifecycleWithoutBilibiliClient:
     def test_expired_finish_preserves_cleanup_order(self, isolated_runtime_state, monkeypatch):
         # Given: an expired session with a fake persistence boundary and no Bilibili client.
         room_id = 333333
-        now = datetime.datetime(2026, 8, 29, 12, 5, 0)
+        now = datetime.datetime(2026, 8, 29, 12, 5, 0).astimezone().replace(tzinfo=None)
         calls: list[str] = []
         runtime_state.PENDING_SESSION_ENDS[room_id] = now - datetime.timedelta(seconds=181)
         runtime_state.CURRENT_SESSIONS[room_id] = 99

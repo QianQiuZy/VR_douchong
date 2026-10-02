@@ -6,6 +6,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..database import Session
 
+logger = logging.getLogger(__name__)
+
 
 def room_info_upsert(model, room_id: int, anchor_name: str | None = None, attention: int | None = None) -> None:
     session = Session()
@@ -22,7 +24,7 @@ def room_info_upsert(model, room_id: int, anchor_name: str | None = None, attent
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[RoomInfo] upsert 失败: {exc}")
+        logger.error(f"[RoomInfo] upsert 失败: {exc}")
     finally:
         session.close()
 
@@ -39,7 +41,7 @@ def attention_upsert_daily(model, room_id: int, date_value: datetime.date, atten
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[Attention] upsert_daily 失败: {exc}")
+        logger.error(f"[Attention] upsert_daily 失败: {exc}")
     finally:
         session.close()
 
@@ -65,7 +67,7 @@ def attention_upsert_daily_guards(
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[Attention] upsert_daily_guards 失败: {exc}")
+        logger.error(f"[Attention] upsert_daily_guards 失败: {exc}")
     finally:
         session.close()
 
@@ -82,6 +84,6 @@ def attention_upsert_daily_fans(model, room_id: int, date_value: datetime.date, 
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[Attention] upsert_daily_fans 失败: {exc}")
+        logger.error(f"[Attention] upsert_daily_fans 失败: {exc}")
     finally:
         session.close()

@@ -30,9 +30,10 @@ import datetime
 import logging
 import sys
 from collections.abc import Callable, Iterator
-from decimal import ROUND_HALF_UP, Decimal
+from contextlib import asynccontextmanager
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from threading import BoundedSemaphore
-from typing import Any, Optional, Protocol, Tuple, TypedDict, assert_never
+from typing import Any, Protocol, TypedDict, assert_never
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
@@ -42,7 +43,8 @@ from sqlalchemy import Column, and_, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as OrmSession
 
-from . import room_config, runtime_state
+from . import config, room_config, runtime_state
+from .api_cache_http import CacheMiddleware
 from .config import API_SECRET, REPORT_ACQUIRE_TIMEOUT_SECONDS, REPORT_MAX_CONCURRENCY
 from .database import Session as _default_Session
 from .database import engine, log_pool_status
@@ -76,8 +78,29 @@ from .whale_metrics import (
     whale_dependency_payload,
 )
 
+logger = logging.getLogger(__name__)
+
+
 # ------------------ FastAPI app (Todo 5 canonical owner) ------------------ #
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+@asynccontextmanager
+async def cache_lifespan(application: FastAPI):
+    if not config.API_CACHE_ENABLED:
+        yield
+        return
+    from .api_cache import ApiCache
+
+    cache = ApiCache()
+    application.state.api_cache = cache
+    cache.start()
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(cache.close)
+        application.state.api_cache = None
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=cache_lifespan)
+app.add_middleware(CacheMiddleware, owner=app)
 _report_gate = BoundedSemaphore(REPORT_MAX_CONCURRENCY)
 
 
@@ -113,6 +136,9 @@ class RoomPayload(TypedDict, total=False):
     room_id: JsonValue
     room_anchors: JsonValue
     api_key: JsonValue
+
+
+_ROOM_PAYLOAD_BODY = Body(default={})
 
 
 class MonthlyDanmakuPayload(TypedDict):
@@ -213,16 +239,16 @@ def _seconds_to_hms(sec: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def _tenths_to_decimal(value: Optional[float]) -> Decimal:
+def _tenths_to_decimal(value: float | None) -> Decimal:
     if value is None:
         return Decimal("0.0")
     try:
         return Decimal(str(value))
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         return Decimal("0.0")
 
 
-def _profit_display(value: float | int | Column[int] | None) -> float:
+def _profit_display(value: float | Column[int] | None) -> float:
     match value:
         case None:
             return 0.0
@@ -298,7 +324,7 @@ def _whale_dependency_for_room(rsm: Any, room_id: int, month: str) -> WhaleDepen
 
 
 # ------------------ Parse / auth helpers ------------------ #
-def _parse_room_payload(payload: RoomPayload) -> Tuple[Optional[int], Optional[str], str]:
+def _parse_room_payload(payload: RoomPayload) -> tuple[int | None, str | None, str]:
     room_id_raw = payload.get("room_id")
     anchor_raw = payload.get("room_anchors")
     if room_id_raw is None:
@@ -324,7 +350,7 @@ def _parse_room_payload(payload: RoomPayload) -> Tuple[Optional[int], Optional[s
     return room_id, name.strip(), ""
 
 
-def _check_api_secret(request: Request, payload: RoomPayload) -> Tuple[bool, str]:
+def _check_api_secret(request: Request, payload: RoomPayload) -> tuple[bool, str]:
     if not API_SECRET:
         return False, "API_SECRET 未配置"
     provided = (
@@ -348,7 +374,7 @@ def _run_in_main_loop(coro, timeout: int = 30):
 
 
 # ------------------ Room lifecycle wrappers ------------------ #
-async def add_room_async(room_id: int, anchor_name: str) -> Tuple[bool, str]:
+async def add_room_async(room_id: int, anchor_name: str) -> tuple[bool, str]:
     """Call the canonical room-lifecycle add-room implementation."""
     from . import monitoring_jobs, room_lifecycle
 
@@ -357,7 +383,7 @@ async def add_room_async(room_id: int, anchor_name: str) -> Tuple[bool, str]:
     )
 
 
-async def delete_room_async(room_id: int) -> Tuple[bool, str]:
+async def delete_room_async(room_id: int) -> tuple[bool, str]:
     """Call the canonical room-lifecycle delete-room implementation."""
     from . import monitoring_jobs, room_lifecycle
 
@@ -651,7 +677,7 @@ def _session_15m_stats(
 
 # ------------------ Routes ------------------ #
 @app.post("/add/room")
-def add_room_api(request: Request, payload: RoomPayload = Body(default={})):
+def add_room_api(request: Request, payload: RoomPayload = _ROOM_PAYLOAD_BODY):
     ok, error = _check_api_secret(request, payload)
     if not ok:
         return JSONResponse({"error": error}, status_code=401)
@@ -663,18 +689,18 @@ def add_room_api(request: Request, payload: RoomPayload = Body(default={})):
         run_in_main_loop = _resolved_run_in_main_loop()
         ok, message = run_in_main_loop(add_room_impl(room_id, anchor_name))
     except Exception as exc:
-        logging.error(f"[API] /add/room 执行失败: {exc}")
+        logger.exception(f"[API] /add/room 执行失败: {type(exc).__name__}", exc_info=False)
         return JSONResponse({"error": "添加房间失败"}, status_code=500)
     status = 200 if ok else 409
     return JSONResponse({"ok": ok, "room_id": room_id, "message": message}, status_code=status)
 
 
 @app.post("/delete/room")
-def delete_room_api(request: Request, payload: RoomPayload = Body(default={})):
+def delete_room_api(request: Request, payload: RoomPayload = _ROOM_PAYLOAD_BODY):
     ok, error = _check_api_secret(request, payload)
     if not ok:
         return JSONResponse({"error": error}, status_code=401)
-    room_id, anchor_name, error = _parse_room_payload(payload)
+    room_id, _anchor_name, error = _parse_room_payload(payload)
     if error or room_id is None:
         return JSONResponse({"error": error}, status_code=400)
     try:
@@ -682,7 +708,7 @@ def delete_room_api(request: Request, payload: RoomPayload = Body(default={})):
         run_in_main_loop = _resolved_run_in_main_loop()
         ok, message = run_in_main_loop(delete_room_impl(room_id))
     except Exception as exc:
-        logging.error(f"[API] /delete/room 执行失败: {exc}")
+        logger.exception(f"[API] /delete/room 执行失败: {type(exc).__name__}", exc_info=False)
         return JSONResponse({"error": "删除房间失败"}, status_code=500)
     status = 200 if ok else 404
     return JSONResponse({"ok": ok, "room_id": room_id, "message": message}, status_code=status)
@@ -789,7 +815,7 @@ def get_stats_current_month(_: None = Depends(report_admission)):
         return JSONResponse(results)
     except SQLAlchemyError as e:
         session.rollback()
-        logging.error(f"[get_stats_current_month] 数据库查询出错: {e}")
+        logger.error(f"[get_stats_current_month] 数据库查询出错: {e}")
         log_pool_status("get_stats_current_month")
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
@@ -901,7 +927,7 @@ def get_stats_by_month(request: Request, _: None = Depends(report_admission)):
         return JSONResponse(results)
     except SQLAlchemyError as e:
         session.rollback()
-        logging.error(f"[get_stats_by_month] 数据库查询出错: {e}")
+        logger.error(f"[get_stats_by_month] 数据库查询出错: {e}")
         log_pool_status("get_stats_by_month")
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
@@ -1093,7 +1119,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
         return JSONResponse(content=jsonable_encoder(payload))
     except SQLAlchemyError as e:
         session.rollback()
-        logging.error(f"[get_live_sessions_by_room_month] 查询失败: {e}")
+        logger.error(f"[get_live_sessions_by_room_month] 查询失败: {e}")
         log_pool_status("get_live_sessions_by_room_month")
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
@@ -1210,7 +1236,7 @@ def get_attention_logs(request: Request, _: None = Depends(report_admission)):
         return JSONResponse(content=jsonable_encoder(payload))
     except SQLAlchemyError as e:
         session.rollback()
-        logging.error(f"[get_attention_logs] 查询失败: {e}")
+        logger.error(f"[get_attention_logs] 查询失败: {e}")
         log_pool_status("get_attention_logs")
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:
@@ -1331,7 +1357,7 @@ def get_sc_logs(request: Request, _: None = Depends(report_admission)):
         )
     except SQLAlchemyError as e:
         session.rollback()
-        logging.error(f"[get_sc_logs] 查询失败: {e}")
+        logger.error(f"[get_sc_logs] 查询失败: {e}")
         log_pool_status("get_sc_logs")
         return JSONResponse({"error": "数据库查询失败"}, status_code=500)
     finally:

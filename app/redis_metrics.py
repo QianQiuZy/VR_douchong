@@ -10,6 +10,8 @@ import redis
 
 from .config import REDIS_KEY_TTL_SECONDS, REDIS_URL
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True, slots=True)
 class SetAddResult:
@@ -39,7 +41,7 @@ def _add(key: str, member: int) -> SetAddResult:
         _ = _client.expire(key, REDIS_KEY_TTL_SECONDS)
         return SetAddResult(added, int(_client.scard(key)))
     except redis.RedisError as exc:
-        logging.error("[Redis] UID去重失败 key=%s: %s", key, exc)
+        logger.error("[Redis] UID去重失败 key=%s: %s", key, exc)
         return SetAddResult(False, None)
 
 
@@ -76,4 +78,4 @@ def delete_session_keys(session_id: int) -> None:
     try:
         _ = _client.delete(f"vr:payer:session:{session_id}")
     except redis.RedisError as exc:
-        logging.warning("[Redis] 清理场次UID集合失败 session_id=%s: %s", session_id, exc)
+        logger.warning("[Redis] 清理场次UID集合失败 session_id=%s: %s", session_id, exc)

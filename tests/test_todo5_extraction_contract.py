@@ -27,9 +27,7 @@ import ast
 import importlib
 import inspect
 from pathlib import Path
-
-import pytest
-
+from typing import ClassVar
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GIFT_PATH = REPO_ROOT / "app" / "gift.py"
@@ -86,9 +84,8 @@ def _module_imports(path: Path) -> set[str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 names.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                names.add(node.module.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module.split(".")[0])
     return names
 
 
@@ -143,7 +140,7 @@ class TestArchiveServiceOwnership:
 # 2. Canonical route ownership                                          #
 # --------------------------------------------------------------------- #
 class TestApiAppOwnership:
-    _FROZEN_ROUTES = {
+    _FROZEN_ROUTES: ClassVar[set[tuple[str, str]]] = {
         ("POST", "/add/room"),
         ("POST", "/delete/room"),
         ("GET", "/gift"),

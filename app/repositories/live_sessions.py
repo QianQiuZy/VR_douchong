@@ -7,6 +7,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..database import Session
 from .tables import month_str
 
+logger = logging.getLogger(__name__)
+
 
 def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) -> int | None:
     session = Session()
@@ -18,7 +20,7 @@ def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) 
             .first()
         )
         if open_row:
-            logging.info(
+            logger.info(
                 "[LiveSession] 恢复未结束场次 room_id=%s session_id=%s",
                 room_id,
                 open_row.id,
@@ -36,7 +38,7 @@ def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) 
         return row.id
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] start_session 失败: {exc}")
+        logger.error(f"[LiveSession] start_session 失败: {exc}")
         return None
     finally:
         session.close()
@@ -55,7 +57,7 @@ def find_open_session(model, room_id: int) -> tuple[int, datetime.datetime] | No
             return None
         return int(row.id), row.start_time
     except SQLAlchemyError as exc:
-        logging.error(f"[LiveSession] find_open_session 失败: {exc}")
+        logger.error(f"[LiveSession] find_open_session 失败: {exc}")
         return None
     finally:
         session.close()
@@ -87,7 +89,7 @@ def add_values_by_id(
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] add_values_by_id 失败: {exc}")
+        logger.error(f"[LiveSession] add_values_by_id 失败: {exc}")
     finally:
         session.close()
 
@@ -121,7 +123,7 @@ def add_values_by_room_open(
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] add_values_by_room_open 失败: {exc}")
+        logger.error(f"[LiveSession] add_values_by_room_open 失败: {exc}")
     finally:
         session.close()
 
@@ -137,7 +139,7 @@ def close_session_by_id(model, session_id: int | None, end_dt: datetime.datetime
             session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] close_session_by_id 失败: {exc}")
+        logger.error(f"[LiveSession] close_session_by_id 失败: {exc}")
     finally:
         session.close()
 
@@ -162,7 +164,7 @@ def update_concurrency_by_id(
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] update_concurrency_by_id 失败: {exc}")
+        logger.error(f"[LiveSession] update_concurrency_by_id 失败: {exc}")
     finally:
         session.close()
 
@@ -182,6 +184,6 @@ def set_payer_count(model, session_id: int | None, count: int) -> None:
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error("[LiveSession] payer_count写入失败 session_id=%s: %s", session_id, exc)
+        logger.error("[LiveSession] payer_count写入失败 session_id=%s: %s", session_id, exc)
     finally:
         session.close()

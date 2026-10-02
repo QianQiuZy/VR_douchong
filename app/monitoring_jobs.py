@@ -8,7 +8,6 @@ import datetime
 import json
 import logging
 import random
-from typing import Optional
 
 import aiohttp
 from pydantic import ValidationError
@@ -17,15 +16,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import (
     bilibili_gateway,
     event_ingestion,
-    room_lock_events,
     room_config,
+    room_lock_events,
     runtime_state,
 )
+from .blivedm.clients.ws_base import InitError
 from .config import ATTENTION_DAILY_ROOM_SLEEP_SECONDS
 from .database import Session
 from .live_client import AuthenticatedLiveClient
 from .live_startup import LiveStatusUnavailable, fetch_live_room_ids
-from .blivedm.clients.ws_base import InitError
 from .metrics_runtime import record_concurrency, start_session
 from .models import (
     Attention,
@@ -36,9 +35,11 @@ from .models import (
     RoomStatsMonthly,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _now() -> datetime.datetime:
-    return datetime.datetime.now()
+    return datetime.datetime.now().astimezone().replace(tzinfo=None)
 
 
 def _next_daily_target(now: datetime.datetime, hour: int, minute: int) -> datetime.datetime:
@@ -61,25 +62,25 @@ async def start_client(room_id: int) -> None:
     client.start()
     runtime_state.ROOM_CLIENTS[room_id] = client
     runtime_state.LAST_RECONNECT.setdefault(room_id, _now() - datetime.timedelta(days=random.random() * 3.0))
-    logging.info("[connect] 已启动房间连接 room_id=%s", room_id)
+    logger.info("[connect] 已启动房间连接 room_id=%s", room_id)
 
 
 async def reconnect_one(room_id: int) -> None:
     if runtime_state.LAST_STATUS.get(room_id, 0) == 1:
-        logging.info("[reconnect] 房间 %s 已在播，跳过重连", room_id)
+        logger.info("[reconnect] 房间 %s 已在播，跳过重连", room_id)
         return
     client = runtime_state.ROOM_CLIENTS.get(room_id)
     if client is not None:
         try:
             await client.stop_and_close()
         except asyncio.CancelledError:
-            logging.debug("[reconnect] room=%s stop_and_close 触发取消（预期），忽略", room_id)
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.warning("[reconnect] stop_and_close 异常 room=%s: %s", room_id, exc)
+            logger.debug("[reconnect] room=%s stop_and_close 触发取消（预期），忽略", room_id)
+        except Exception as exc:
+            logger.exception("[reconnect] stop_and_close 异常 room=%s: %s", room_id, type(exc).__name__, exc_info=False)
     await asyncio.sleep(3)
     await start_client(room_id)
     runtime_state.LAST_RECONNECT[room_id] = _now()
-    logging.info("[reconnect] 房间 %s 重连完成", room_id)
+    logger.info("[reconnect] 房间 %s 重连完成", room_id)
 
 
 async def run_clients_loop() -> None:
@@ -90,7 +91,7 @@ async def run_clients_loop() -> None:
             live_rooms = await fetch_live_room_ids()
             break
         except (LiveStatusUnavailable, aiohttp.ClientError, TimeoutError, ValidationError, json.JSONDecodeError) as exc:
-            logging.warning("[connect] 直播状态未就绪，暂缓启动连接 error_type=%s", type(exc).__name__)
+            logger.warning("[connect] 直播状态未就绪，暂缓启动连接 error_type=%s", type(exc).__name__)
             await asyncio.sleep(3)
     room_ids = room_config.get_room_ids()
     for room_id in room_ids:
@@ -106,13 +107,13 @@ async def run_clients_loop() -> None:
                 break
             try:
                 await client.wait_connected()
-                logging.info("[connect] 在播房间鉴权成功 room_id=%s", room_id)
+                logger.info("[connect] 在播房间鉴权成功 room_id=%s", room_id)
                 break
             except InitError:
-                logging.warning("[connect] 在播房间初始化失败，重试 room_id=%s", room_id)
+                logger.warning("[connect] 在播房间初始化失败，重试 room_id=%s", room_id)
                 await asyncio.sleep(3)
                 await start_client(room_id)
-    logging.info("[connect] 在播房间连接完成，开始连接其余房间")
+    logger.info("[connect] 在播房间连接完成，开始连接其余房间")
     for room_id in room_config.get_room_ids():
         if room_id in live_rooms:
             continue
@@ -123,7 +124,7 @@ async def run_clients_loop() -> None:
 def init_concurrency_cache(
     room_id: int,
     session_id: int,
-    start_time: Optional[datetime.datetime] = None,
+    start_time: datetime.datetime | None = None,
 ) -> None:
     runtime_state.CONCURRENCY_CACHE[room_id] = {"session_id": int(session_id), "total": 0, "samples": 0, "max": 0, "last": 0}
     start_session(session_id, room_id, start_time or _now())
@@ -141,7 +142,7 @@ def update_concurrency_cache(room_id: int, session_id: int, count: int) -> None:
     record_concurrency(session_id, _now(), int(count))
 
 
-def finalize_concurrency_cache(room_id: int, session_id: Optional[int]) -> tuple[Optional[float], Optional[int]]:
+def finalize_concurrency_cache(room_id: int, session_id: int | None) -> tuple[float | None, int | None]:
     cache = runtime_state.CONCURRENCY_CACHE.get(room_id)
     if not cache or session_id is None or cache.get("session_id") != session_id:
         return None, None
@@ -151,8 +152,8 @@ def finalize_concurrency_cache(room_id: int, session_id: Optional[int]) -> tuple
 
 def flush_pending_danmaku_for_room(
     room_id: int,
-    session_id: Optional[int] = None,
-    event_time: Optional[datetime.datetime] = None,
+    session_id: int | None = None,
+    event_time: datetime.datetime | None = None,
 ) -> None:
     pending = runtime_state.DANMAKU_PENDING.get(room_id)
     if pending is None:
@@ -171,7 +172,7 @@ def flush_pending_danmaku_for_room(
             pending.buckets.pop(target, None)
     if pending.is_empty():
         runtime_state.DANMAKU_PENDING.pop(room_id, None)
-    logging.debug("[Danmaku] room_id=%s 下播/停用即时落库 +%s", room_id, total)
+    logger.debug("[Danmaku] room_id=%s 下播/停用即时落库 +%s", room_id, total)
 
 
 def _read_room_attention(room_id: int) -> int:
@@ -179,7 +180,7 @@ def _read_room_attention(room_id: int) -> int:
     try:
         return int(session.query(RoomInfo.attention).filter_by(room_id=room_id).scalar() or 0)
     except SQLAlchemyError as exc:
-        logging.error("[Attention] 读取 room_id=%s 当前粉丝数失败: %s", room_id, exc)
+        logger.error("[Attention] 读取 room_id=%s 当前粉丝数失败: %s", room_id, exc)
         return 0
     finally:
         session.close()
@@ -197,8 +198,8 @@ async def attention_worker() -> None:
                 LiveSession.update_end_attention(session_id, attention)
             else:
                 Attention.upsert_daily(room_id, target_date, attention)
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.error("[Attention] room_id=%s phase=%s 处理失败: %s", room_id, phase, exc)
+        except Exception as exc:
+            logger.exception("[Attention] room_id=%s phase=%s 处理失败: %s", room_id, phase, type(exc).__name__, exc_info=False)
         finally:
             runtime_state.ATTENTION_QUEUE.task_done()
 
@@ -219,7 +220,7 @@ async def guard_fans_worker() -> None:
         try:
             uid = runtime_state.ROOM_UIDS.get(room_id)
             if uid is None:
-                logging.warning("[Guard/Fans] room_id=%s 未找到 uid，跳过", room_id)
+                logger.warning("[Guard/Fans] room_id=%s 未找到 uid，跳过", room_id)
                 continue
             guard_values = await bilibili_gateway.fetch_guard_counts(uid, room_id)
             if guard_values is not None:
@@ -248,7 +249,7 @@ async def daily_guard_worker() -> None:
         try:
             uid = runtime_state.ROOM_UIDS.get(room_id)
             if uid is None:
-                logging.warning("[Guard] room_id=%s 未找到 uid，跳过每日快照", room_id)
+                logger.warning("[Guard] room_id=%s 未找到 uid，跳过每日快照", room_id)
                 continue
             values = await bilibili_gateway.fetch_guard_counts(uid, room_id)
             if values is not None:
@@ -265,7 +266,7 @@ async def daily_fans_worker() -> None:
         try:
             uid = runtime_state.ROOM_UIDS.get(room_id)
             if uid is None:
-                logging.warning("[Fans] room_id=%s 未找到 uid，跳过每日快照", room_id)
+                logger.warning("[Fans] room_id=%s 未找到 uid，跳过每日快照", room_id)
                 continue
             fans = await bilibili_gateway.fetch_fans_count(uid, room_id)
             if fans is not None:
@@ -288,11 +289,11 @@ async def danmaku_flush_scheduler() -> None:
 async def refresh_attention_scheduler() -> None:
     while True:
         await asyncio.sleep(3 * 3600)
-        logging.info("[RoomInfo] 开始 3 小时粉丝数刷新任务")
+        logger.info("[RoomInfo] 开始 3 小时粉丝数刷新任务")
         for room_id in room_config.get_room_ids():
             await bilibili_gateway.fetch_room_info_and_update(room_id, update_uid=False)
             await asyncio.sleep(0.3)
-        logging.info("[RoomInfo] 本轮粉丝数刷新任务完成")
+        logger.info("[RoomInfo] 本轮粉丝数刷新任务完成")
 
 
 async def _daily_queue_scheduler(hour: int, minute: int, queue: asyncio.Queue[tuple[int, datetime.date]]) -> None:
@@ -318,7 +319,7 @@ async def fans_daily_scheduler() -> None:
 
 async def guard_fans_refresh_scheduler() -> None:
     while not runtime_state.ROOM_UIDS:
-        logging.info("[Guard/Fans] 等待 UID 初始化...")
+        logger.info("[Guard/Fans] 等待 UID 初始化...")
         await asyncio.sleep(1)
     while True:
         for room_id in room_config.get_room_ids():
@@ -330,7 +331,7 @@ async def guard_fans_refresh_scheduler() -> None:
 
 async def concurrency_poll_scheduler() -> None:
     while not runtime_state.ROOM_UIDS:
-        logging.info("[Concurrency] 等待 UID 初始化...")
+        logger.info("[Concurrency] 等待 UID 初始化...")
         await asyncio.sleep(1)
     while True:
         for room_id in room_config.get_room_ids():
@@ -371,15 +372,15 @@ async def bili_ticket_scheduler() -> None:
         await asyncio.sleep(1)
     try:
         await bilibili_gateway.ensure_bili_ticket(force=True)
-    except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-        logging.error("[bili_ticket] 首次获取失败: %s", exc)
+    except Exception as exc:
+        logger.exception("[bili_ticket] 首次获取失败: %s", type(exc).__name__, exc_info=False)
     while True:
         target = _next_daily_target(_now(), 5, 0)
         await asyncio.sleep(max(60.0, (target - _now()).total_seconds()))
         try:
             await bilibili_gateway.ensure_bili_ticket(force=True)
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.error("[bili_ticket] 定时刷新失败: %s", exc)
+        except Exception as exc:
+            logger.exception("[bili_ticket] 定时刷新失败: %s", type(exc).__name__, exc_info=False)
 
 
 async def reconnect_scheduler() -> None:
@@ -391,9 +392,9 @@ async def reconnect_scheduler() -> None:
                 try:
                     await reconnect_one(room_id)
                 except asyncio.CancelledError:
-                    logging.debug("[reconnect] room=%s 被取消（预期），略过", room_id)
-                except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-                    logging.error("[reconnect] 房间 %s 重连失败: %s", room_id, exc)
+                    logger.debug("[reconnect] room=%s 被取消（预期），略过", room_id)
+                except Exception as exc:
+                    logger.exception("[reconnect] 房间 %s 重连失败: %s", room_id, type(exc).__name__, exc_info=False)
                 await asyncio.sleep(3 + random.uniform(0.5, 2.0))
 
 
@@ -432,7 +433,7 @@ async def monitor_all_rooms_status() -> None:
                 if status == 1 and previous == 0:
                     start_raw = info.get("live_time", 0)
                     try:
-                        start = datetime.datetime.fromtimestamp(int(start_raw)) if str(start_raw).isdigit() else now
+                        start = datetime.datetime.fromtimestamp(int(start_raw)).astimezone().replace(tzinfo=None) if str(start_raw).isdigit() else now
                     except (ValueError, OSError, OverflowError):
                         start = now
                     session_id = room_lifecycle.resume_interrupted_session(room_id, start, now)
@@ -449,12 +450,12 @@ async def monitor_all_rooms_status() -> None:
                     if previous == 1:
                         room_lifecycle.defer_live_session_finish(room_id, now, lifecycle_dependencies())
                     runtime_state.LIVE_INFO.setdefault(room_id, {}).update({"live_time": "0000-00-00 00:00:00", "title": ""})
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.error("[LiveStatus] get_status_info_by_uids 调用异常: %s", exc)
+        except Exception as exc:
+            logger.exception("[LiveStatus] get_status_info_by_uids 调用异常: %s", type(exc).__name__, exc_info=False)
         await asyncio.sleep(3)
 
 
-def _record_stream_segment(room_id: int, end_dt: datetime.datetime) -> Optional[str]:
+def _record_stream_segment(room_id: int, end_dt: datetime.datetime) -> str | None:
     start = runtime_state.STREAM_STARTS.pop(room_id, None)
     if start is None:
         return None

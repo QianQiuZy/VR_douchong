@@ -25,7 +25,7 @@ def test_metric_upsert_preserves_durable_danmaku_columns(monkeypatch):
             return None
 
     monkeypatch.setattr(session_15m, "Session", Session)
-    start = datetime.datetime(2026, 8, 30, 12, 0, 0)
+    start = datetime.datetime(2026, 8, 30, 12, 0, 0).astimezone().replace(tzinfo=None)
 
     persisted = session_15m.upsert_stats(
         LiveSession15mStats,

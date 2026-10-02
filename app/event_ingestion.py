@@ -2,10 +2,11 @@
 
 import datetime
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
+from typing import ClassVar
 
-from . import DanmakuCounts, PendingDanmaku, blivedm, runtime_state
+from . import DanmakuCounts, PendingDanmaku, blivedm, room_lock_events, runtime_state
 from .metrics_runtime import (
     current_bucket_index,
     danmaku_bucket_target,
@@ -20,8 +21,9 @@ from .models import (
     SuperChatLog,
 )
 from .redis_metrics import register_payer
-from . import room_lock_events
 from .whale_metrics import record_whale_revenue
+
+logger = logging.getLogger(__name__)
 
 COMMON_NOTICE_GIFT_COIN_MAP = {
     "干杯之旅": 10000,
@@ -54,7 +56,7 @@ def _configured_dependencies() -> EventDependencies:
     return _dependencies
 
 
-def _timestamp_to_datetime(value: int | float | str | None) -> datetime.datetime | None:
+def _timestamp_to_datetime(value: float | str | None) -> datetime.datetime | None:
     """Convert a Bilibili seconds/milliseconds timestamp when it is usable."""
     if value is None:
         return None
@@ -63,14 +65,14 @@ def _timestamp_to_datetime(value: int | float | str | None) -> datetime.datetime
         if seconds > 1_000_000_000_000:
             seconds //= 1000
         if seconds >= 946684800:
-            return datetime.datetime.fromtimestamp(seconds)
+            return datetime.datetime.fromtimestamp(seconds).astimezone().replace(tzinfo=None)
     except (TypeError, ValueError, OSError, OverflowError):
         return None
     return None
 
 
 class MyHandler(blivedm.BaseHandler):
-    _CMD_CALLBACK_DICT = {
+    _CMD_CALLBACK_DICT: ClassVar[dict] = {
         **blivedm.BaseHandler._CMD_CALLBACK_DICT,
         "ROOM_LOCK": room_lock_events.handle_room_lock,
         "CUT_OFF": room_lock_events.handle_cut_off,
@@ -178,7 +180,7 @@ class MyHandler(blivedm.BaseHandler):
     ) -> None:
         dependencies = _configured_dependencies()
         value = total_coin / 1000
-        event_time = event_time or datetime.datetime.now()
+        event_time = event_time or datetime.datetime.now().astimezone().replace(tzinfo=None)
         resolved_event_key = event_key or (
             f"gift:{client.room_id}:{uid}:{int(event_time.timestamp())}:"
             f"{gift_name}:{num}:{total_coin}"
@@ -208,7 +210,7 @@ class MyHandler(blivedm.BaseHandler):
         if active_session_id:
             record_payment(active_session_id, event_time, gift=value, payer_added=bucket_payer_added)
         log_message = f"[{client.room_id}] {uname} uid{uid} 赠送 {gift_name}×{num} ({value:.2f})"
-        logging.info(log_message)
+        logger.info(log_message)
         if trigger_cookie_alert and uid == 0:
             dependencies.send_cookie_invalid_email(log_message)
 
@@ -220,17 +222,17 @@ class MyHandler(blivedm.BaseHandler):
             return "", ""
         return texts[0].strip(), texts[-1].strip()
 
-    def _on_heartbeat(self, client, message) -> None:  # noqa: N802
+    def _on_heartbeat(self, client, message) -> None:
         return None
 
-    def _on_danmaku(self, client, message) -> None:  # noqa: N802
+    def _on_danmaku(self, client, message) -> None:
         try:
             room_id = client.room_id
             if room_id is None:
                 return
             if getattr(message, "is_mirror", False) or runtime_state.LAST_STATUS.get(room_id, 0) != 1:
                 return
-            event_time = _timestamp_to_datetime(getattr(message, "timestamp", None)) or datetime.datetime.now()
+            event_time = _timestamp_to_datetime(getattr(message, "timestamp", None)) or datetime.datetime.now().astimezone().replace(tzinfo=None)
             session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
             target = danmaku_bucket_target(session_id, event_time) if session_id is not None else None
             if target is None:
@@ -239,10 +241,10 @@ class MyHandler(blivedm.BaseHandler):
             counts = DanmakuCounts.from_privilege_type(int(getattr(message, "privilege_type", 0) or 0))
             pending = runtime_state.DANMAKU_PENDING.setdefault(room_id, PendingDanmaku())
             pending.add(event_time, counts, target)
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.error("[Danmaku] 统计弹幕时出错: %s", exc)
+        except Exception as exc:
+            logger.exception("[Danmaku] 统计弹幕时出错: %s", type(exc).__name__, exc_info=False)
 
-    def _on_gift(self, client, message) -> None:  # noqa: N802
+    def _on_gift(self, client, message) -> None:
         try:
             total_coin = message.total_coin
             event_time = _timestamp_to_datetime(getattr(message, "timestamp", None))
@@ -267,22 +269,22 @@ class MyHandler(blivedm.BaseHandler):
                     int(message.num or 0),
                     int(message.total_price or 0),
                     int(total_coin or 0),
-                    event_time or datetime.datetime.now(),
+                    event_time or datetime.datetime.now().astimezone().replace(tzinfo=None),
                 )
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.error("处理礼物记录时出错: %s", exc)
+        except Exception as exc:
+            logger.exception("处理礼物记录时出错: %s", type(exc).__name__, exc_info=False)
 
-    def _on_common_notice_danmaku(self, client, message) -> None:  # noqa: N802
+    def _on_common_notice_danmaku(self, client, message) -> None:
         try:
             sender, gift_name = self._parse_common_notice_gift(message)
             if not gift_name:
-                logging.info("[%s] COMMON_NOTICE_DANMAKU 未解析到礼物名: %s", client.room_id, message.content_text)
+                logger.info("[%s] COMMON_NOTICE_DANMAKU 未解析到礼物名: %s", client.room_id, message.content_text)
                 return
             coin_value = COMMON_NOTICE_GIFT_COIN_MAP.get(gift_name)
             if coin_value is None:
-                logging.info("[%s] COMMON_NOTICE_DANMAKU 未匹配礼物价格: %s", client.room_id, gift_name)
+                logger.info("[%s] COMMON_NOTICE_DANMAKU 未匹配礼物价格: %s", client.room_id, gift_name)
                 return
-            event_time = datetime.datetime.now()
+            event_time = datetime.datetime.now().astimezone().replace(tzinfo=None)
             self._record_gift(
                 client,
                 gift_name,
@@ -292,8 +294,8 @@ class MyHandler(blivedm.BaseHandler):
                 event_time=event_time,
                 event_key=f"common_notice:{client.room_id}:{sender}:{gift_name}:{int(event_time.timestamp())}",
             )
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.error("处理 COMMON_NOTICE_DANMAKU 礼物记录时出错: %s", exc)
+        except Exception as exc:
+            logger.exception("处理 COMMON_NOTICE_DANMAKU 礼物记录时出错: %s", type(exc).__name__, exc_info=False)
 
     def _record_guard(
         self,
@@ -303,7 +305,7 @@ class MyHandler(blivedm.BaseHandler):
         guard_level: int,
         num: int,
         price: int,
-        start_time: int | float | str | None,
+        start_time: float | str | None,
         event_key: str | None = None,
     ) -> None:
         room_id = client.room_id
@@ -321,7 +323,7 @@ class MyHandler(blivedm.BaseHandler):
             }
             total_coins = mappings.get(int(guard_level), {}).get(int(num), total_coins)
         value = total_coins / 1000
-        event_time = _timestamp_to_datetime(start_time) or datetime.datetime.now()
+        event_time = _timestamp_to_datetime(start_time) or datetime.datetime.now().astimezone().replace(tzinfo=None)
         resolved_event_key = event_key or (
             f"guard:{room_id}:{uid}:{int(event_time.timestamp())}:"
             f"{guard_level}:{num}:{price}"
@@ -350,7 +352,7 @@ class MyHandler(blivedm.BaseHandler):
         active_session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
         if active_session_id:
             record_payment(active_session_id, event_time, guard=value, payer_added=bucket_payer_added)
-        logging.info(
+        logger.info(
             "[%s] %s %s 上舰 lvl=%s num=%s 修正后=%.1f RMB %s",
             room_id,
             username,
@@ -361,7 +363,7 @@ class MyHandler(blivedm.BaseHandler):
             "(红包上舰)" if is_red_pack else "",
         )
 
-    def _on_user_toast_v2(self, client, message) -> None:  # noqa: N802
+    def _on_user_toast_v2(self, client, message) -> None:
         try:
             self._record_guard(
                 client,
@@ -377,10 +379,10 @@ class MyHandler(blivedm.BaseHandler):
                     f"{getattr(message, 'num', 0)}:{getattr(message, 'price', 0)}"
                 ),
             )
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.error("处理舰长记录时出错: %s", exc)
+        except Exception as exc:
+            logger.exception("处理舰长记录时出错: %s", type(exc).__name__, exc_info=False)
 
-    def _on_super_chat(self, client, message) -> None:  # noqa: N802
+    def _on_super_chat(self, client, message) -> None:
         try:
             room_id = client.room_id
             if room_id is None:
@@ -391,7 +393,7 @@ class MyHandler(blivedm.BaseHandler):
                 event_time = _timestamp_to_datetime(getattr(message, "timestamp", None))
             if event_time is None:
                 event_time = _timestamp_to_datetime(getattr(message, "ts", None))
-            event_time = event_time or datetime.datetime.now()
+            event_time = event_time or datetime.datetime.now().astimezone().replace(tzinfo=None)
             user_info = getattr(message, "user_info", None)
             uname = getattr(message, "uname", "") or (user_info.get("uname", "") if isinstance(user_info, dict) else "")
             uid = getattr(message, "uid", 0) or (user_info.get("uid", 0) if isinstance(user_info, dict) else 0)
@@ -432,6 +434,6 @@ class MyHandler(blivedm.BaseHandler):
                     payer_added=bucket_payer_added,
                 )
             SuperChatLog.log_sc(room_id, uname, uid, value, getattr(message, "message", "") or "", event_time)
-            logging.info("[%s] SC ¥%.2f %s %s: %s", room_id, value, uname, uid, getattr(message, "message", "") or "")
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK
-            logging.error("处理醒目留言记录时出错: %s", exc)
+            logger.info("[%s] SC ¥%.2f %s %s: %s", room_id, value, uname, uid, getattr(message, "message", "") or "")
+        except Exception as exc:
+            logger.exception("处理醒目留言记录时出错: %s", type(exc).__name__, exc_info=False)

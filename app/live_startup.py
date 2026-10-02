@@ -3,6 +3,8 @@ import logging
 import aiohttp
 from pydantic import BaseModel
 
+logger = logging.getLogger(__name__)
+
 
 class LiveStatusUnavailable(Exception):
     pass
@@ -47,5 +49,5 @@ async def fetch_live_room_ids() -> set[int]:
             if str(uid) in snapshot.data and snapshot.data[str(uid)].live_status == 1
         )
     live_rooms = {room_id for room_id, uid in uids.items() if uid in live_uids}
-    logging.info("[connect] 启动直播状态快照 live=%s other=%s", len(live_rooms), len(room_ids) - len(live_rooms))
+    logger.info("[connect] 启动直播状态快照 live=%s other=%s", len(live_rooms), len(room_ids) - len(live_rooms))
     return live_rooms

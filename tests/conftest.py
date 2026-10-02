@@ -31,6 +31,7 @@ import importlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,9 @@ _write_baseline_rooms_json()
 # empty stub above and load_env_file skips keys already present in os.environ.
 _TEST_ENV = {
     "ENV_FILE": str(_EMPTY_ENV),
+    # Legacy report characterization is deliberately offline; new cache tests
+    # explicitly enable the production cache-only middleware with isolated Redis.
+    "API_CACHE_ENABLED": "0",
     "DB_HOST": "127.0.0.1",
     "DB_USER": "vr_test",
     "DB_PASSWORD": "vr_test",
@@ -111,6 +115,12 @@ _TEST_ENV = {
 }
 for _k, _v in _TEST_ENV.items():
     os.environ[_k] = _v
+
+# Production stores local, naive MySQL DATETIME values in Asia/Shanghai.
+# Pin the test process's wall-clock convention independently of the runner host.
+os.environ["TZ"] = "Asia/Shanghai"
+if hasattr(time, "tzset"):
+    time.tzset()
 
 # Make repo root importable so `import app.gift` works from within tests/.
 if str(REPO_ROOT) not in sys.path:

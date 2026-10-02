@@ -1,8 +1,8 @@
+from types import SimpleNamespace
 from typing import Never, Self
 
 from _pytest.monkeypatch import MonkeyPatch
 from fastapi.testclient import TestClient
-from types import SimpleNamespace
 
 from app import api_app, gift
 

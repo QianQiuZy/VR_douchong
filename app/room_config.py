@@ -6,25 +6,27 @@ import os
 
 from . import runtime_state
 
+logger = logging.getLogger(__name__)
+
 
 def load_rooms_config() -> None:
     if not os.path.exists(runtime_state.ROOMS_JSON_PATH):
-        logging.warning("[rooms] 未找到房间配置文件: %s", runtime_state.ROOMS_JSON_PATH)
+        logger.warning("[rooms] 未找到房间配置文件: %s", runtime_state.ROOMS_JSON_PATH)
         return
     try:
         with open(runtime_state.ROOMS_JSON_PATH, "r", encoding="utf-8") as handle:
             payload = json.load(handle) or {}
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-        logging.error("[rooms] 读取配置失败: %s", exc)
+        logger.error("[rooms] 读取配置失败: %s", exc)
         return
 
     room_ids = payload.get("room_ids", [])
     room_anchors = payload.get("room_anchors", {})
     if not isinstance(room_ids, list):
-        logging.error("[rooms] room_ids 必须是数组")
+        logger.error("[rooms] room_ids 必须是数组")
         return
     if not isinstance(room_anchors, dict):
-        logging.error("[rooms] room_anchors 必须是对象")
+        logger.error("[rooms] room_anchors 必须是对象")
         return
 
     normalized_ids: list[int] = []
@@ -59,7 +61,7 @@ def save_rooms_config() -> None:
         with open(runtime_state.ROOMS_JSON_PATH, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
     except (OSError, TypeError, ValueError) as exc:
-        logging.error("[rooms] 保存配置失败: %s", exc)
+        logger.error("[rooms] 保存配置失败: %s", exc)
 
 
 def get_room_ids() -> list[int]:

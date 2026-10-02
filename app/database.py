@@ -2,11 +2,14 @@
 
 import logging
 
-from sqlalchemy import create_engine, inspect, text
+import pymysql
+from pymysql.constants import COMMAND
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import QueuePool
 
+from .api_cache_store import api_sql_scope
 from .config import (
     DB_CONFIG,
     DB_POOL_MAX_OVERFLOW,
@@ -14,6 +17,8 @@ from .config import (
     DB_POOL_SIZE,
     DB_POOL_TIMEOUT,
 )
+
+logger = logging.getLogger(__name__)
 
 engine = create_engine(
     f"mysql+pymysql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
@@ -29,12 +34,27 @@ Session = sessionmaker(bind=engine)
 Base = declarative_base()
 
 
+class ApiBudgetConnection(pymysql.connections.Connection):
+    """Only HTTP management work shares the cache SQL budget; collectors do not."""
+
+    def _execute_command(self, command, sql):
+        scope = api_sql_scope.get()
+        if command == COMMAND.COM_QUERY and scope is not None and scope.active:
+            scope.store.take_sql(scope.stop, require_lease=False)
+        return super()._execute_command(command, sql)
+
+
+@event.listens_for(engine, "do_connect")
+def _budget_capable_connection(_dialect, _record, args, params):
+    return ApiBudgetConnection(*args, **params)
+
+
 def log_pool_status(label: str, level: int = logging.WARNING) -> None:
     """Log safe QueuePool counters at an internal report or job boundary."""
     pool = engine.pool
     if not isinstance(pool, QueuePool):
         return
-    logging.log(
+    logger.log(
         level,
         "[pool] label=%s size=%d checked_out=%d overflow=%d timeout=%d recycle=%d",
         label,
@@ -118,7 +138,7 @@ def ensure_runtime_schema() -> None:
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
     except SQLAlchemyError as exc:
-        logging.error(f"[schema] 读取表结构失败: {exc}")
+        logger.error(f"[schema] 读取表结构失败: {exc}")
         return
     targets = dict(required_columns)
     for table_name in table_names:
@@ -145,7 +165,7 @@ def ensure_runtime_schema() -> None:
         try:
             existing_cols = {col.get("name") for col in inspector.get_columns(table_name)}
         except SQLAlchemyError as exc:
-            logging.error(f"[schema] 读取 {table_name} 列失败: {exc}")
+            logger.error(f"[schema] 读取 {table_name} 列失败: {exc}")
             continue
         for col_name, ddl in columns.items():
             if col_name in existing_cols:
@@ -153,6 +173,6 @@ def ensure_runtime_schema() -> None:
             try:
                 with engine.begin() as conn:
                     conn.execute(text(f"ALTER TABLE `{table_name}` ADD COLUMN `{col_name}` {ddl}"))
-                logging.info(f"[schema] 已补齐 {table_name}.{col_name}")
+                logger.info(f"[schema] 已补齐 {table_name}.{col_name}")
             except SQLAlchemyError as exc:
-                logging.error(f"[schema] 新增 {table_name}.{col_name} 失败: {exc}")
+                logger.error(f"[schema] 新增 {table_name}.{col_name} 失败: {exc}")

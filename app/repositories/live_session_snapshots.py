@@ -6,6 +6,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from .. import DanmakuCounts
 from ..database import Session
 
+logger = logging.getLogger(__name__)
+
 
 def update_start_counts(
     model,
@@ -33,7 +35,7 @@ def update_start_counts(
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] update_start_counts 失败: {exc}")
+        logger.error(f"[LiveSession] update_start_counts 失败: {exc}")
     finally:
         session.close()
 
@@ -64,7 +66,7 @@ def update_end_counts(
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] update_end_counts 失败: {exc}")
+        logger.error(f"[LiveSession] update_end_counts 失败: {exc}")
     finally:
         session.close()
 
@@ -81,7 +83,7 @@ def update_start_attention(model, session_id: int, attention: int | None = None)
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] update_start_attention 失败: {exc}")
+        logger.error(f"[LiveSession] update_start_attention 失败: {exc}")
     finally:
         session.close()
 
@@ -98,7 +100,7 @@ def update_end_attention(model, session_id: int, attention: int | None = None) -
         session.commit()
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] update_end_attention 失败: {exc}")
+        logger.error(f"[LiveSession] update_end_attention 失败: {exc}")
     finally:
         session.close()
 
@@ -124,7 +126,7 @@ def add_danmaku_by_id(model, session_id: int, counts: DanmakuCounts) -> bool:
         return True
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] add_danmaku_by_id 失败: {exc}")
+        logger.error(f"[LiveSession] add_danmaku_by_id 失败: {exc}")
         return False
     finally:
         session.close()
@@ -148,7 +150,7 @@ def add_danmaku_by_room_open(model, room_id: int, counts: DanmakuCounts) -> bool
         return True
     except SQLAlchemyError as exc:
         session.rollback()
-        logging.error(f"[LiveSession] add_danmaku_by_room_open 失败: {exc}")
+        logger.error(f"[LiveSession] add_danmaku_by_room_open 失败: {exc}")
         return False
     finally:
         session.close()

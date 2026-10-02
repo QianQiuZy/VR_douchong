@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import dataclasses
 import enum
 from typing import *
@@ -26,9 +25,9 @@ except ModuleNotFoundError:  # pragma: no cover - 兼容缺少可选依赖的环
     pb_msg = _DummyMessage()
 
 try:
-    Annotated
+    _ = Annotated
 except NameError:
-    from typing_extensions import Annotated  # Python < 3.9
+    from typing import Annotated  # Python < 3.9
 
 
 class InteractWordV2MsgType(enum.IntEnum):

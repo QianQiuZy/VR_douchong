@@ -3,10 +3,11 @@ from __future__ import annotations
 from collections import defaultdict
 from types import SimpleNamespace
 
+from sqlalchemy.orm import Session
+
 from app import api_app, event_ingestion, runtime_state, whale_metrics
 from app.models import RoomLiveStats
 from app.whale_metrics import WhaleMetrics, _redis_db1_url
-from sqlalchemy.orm import Session
 
 
 class _FakeWhaleRedis:

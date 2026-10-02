@@ -1,7 +1,7 @@
 import aiohttp
 import anyio
-from anyio.lowlevel import checkpoint
 import pytest
+from anyio.lowlevel import checkpoint
 
 from app.blivedm.clients.ws_base import AuthError, HeaderTuple, InitError, Operation
 from app.live_client import AuthenticatedLiveClient

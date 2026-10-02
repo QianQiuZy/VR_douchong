@@ -14,7 +14,7 @@ def eligible_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_crossmonth_session_is_archived_after_late_close_without_restart(monkeypatch: pytest.MonkeyPatch) -> None:
     # Given: October starts while a September session is still open.
-    now = datetime.datetime(2026, 10, 1)
+    now = datetime.datetime(2026, 10, 1).astimezone().replace(tzinfo=None)
     closed_at = now + datetime.timedelta(minutes=4)
     deadline = now + datetime.timedelta(minutes=20)
     archived: list[datetime.datetime] = []

@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
@@ -25,7 +26,7 @@ def load_env_file(env_path: str | Path = DEFAULT_ENV_FILE) -> None:
                 if key and key not in os.environ:
                     os.environ[key] = value
     except Exception as exc:
-        logging.error(f"[env] 加载 .env 失败: {exc}")
+        logger.exception(f"[env] 加载 .env 失败: {type(exc).__name__}", exc_info=False)
 
 
 def get_env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -36,10 +37,10 @@ def get_env_int(name: str, default: int, minimum: int = 1) -> int:
     try:
         value = int(raw)
     except ValueError:
-        logging.warning(f"[env] {name} 不是有效整数，使用默认值 {default}")
+        logger.warning(f"[env] {name} 不是有效整数，使用默认值 {default}")
         return default
     if value < minimum:
-        logging.warning(f"[env] {name} 超出允许范围，使用默认值 {default}")
+        logger.warning(f"[env] {name} 超出允许范围，使用默认值 {default}")
         return default
     return value
 
@@ -68,10 +69,10 @@ def get_env_float(name: str, default: float, minimum: float = 0.0) -> float:
     try:
         value = float(raw)
     except ValueError:
-        logging.warning(f"[env] {name} 不是有效数值，使用默认值 {default}")
+        logger.warning(f"[env] {name} 不是有效数值，使用默认值 {default}")
         return default
     if not math.isfinite(value) or value <= minimum:
-        logging.warning(f"[env] {name} 超出允许范围，使用默认值 {default}")
+        logger.warning(f"[env] {name} 超出允许范围，使用默认值 {default}")
         return default
     return value
 
@@ -92,3 +93,14 @@ ATTENTION_DAILY_ROOM_SLEEP_SECONDS = float(
 )
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_KEY_TTL_SECONDS = get_env_int("REDIS_KEY_TTL_SECONDS", 90 * 24 * 60 * 60)
+
+# API reads fail closed by default; disabling this is an offline diagnostic mode.
+API_CACHE_ENABLED = os.getenv("API_CACHE_ENABLED", "1").lower() not in {"0", "false", "no"}
+API_CACHE_PREFIX = os.getenv("API_CACHE_PREFIX", "vr:api:v1").strip() or "vr:api:v1"
+API_CACHE_REFRESH_SECONDS = get_env_float("API_CACHE_REFRESH_SECONDS", 10.0)
+API_CACHE_MAX_AGE_SECONDS = min(get_env_float("API_CACHE_MAX_AGE_SECONDS", 30.0), 30.0)
+API_CACHE_HISTORY_SECONDS = get_env_float("API_CACHE_HISTORY_SECONDS", 300.0)
+API_CACHE_MAX_BYTES = get_env_int("API_CACHE_MAX_BYTES", 96 * 1024 * 1024)
+API_CACHE_SQL_PER_SECOND = min(get_env_int("API_CACHE_SQL_PER_SECOND", 9), 9)
+API_RATE_LIMIT_PER_IP = min(get_env_int("API_RATE_LIMIT_PER_IP", 20), 20)
+API_CACHE_MAX_INFLIGHT = get_env_int("API_CACHE_MAX_INFLIGHT", 32)

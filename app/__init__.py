@@ -13,7 +13,7 @@ class DanmakuCounts:
     normal: int = 0
 
     @classmethod
-    def from_privilege_type(cls, privilege_type: int) -> "DanmakuCounts":
+    def from_privilege_type(cls, privilege_type: int) -> DanmakuCounts:
         counts_by_privilege = {
             1: cls(total=1, governor=1),
             2: cls(total=1, admiral=1),
@@ -21,7 +21,7 @@ class DanmakuCounts:
         }
         return counts_by_privilege.get(privilege_type, cls(total=1, normal=1))
 
-    def __add__(self, other: "DanmakuCounts") -> "DanmakuCounts":
+    def __add__(self, other: DanmakuCounts) -> DanmakuCounts:
         return DanmakuCounts(
             total=self.total + other.total,
             captain=self.captain + other.captain,

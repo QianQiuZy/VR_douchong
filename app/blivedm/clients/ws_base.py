@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import asyncio
 import enum
 import json
@@ -98,7 +97,7 @@ class WebSocketClientBase:
         else:
             self._session = session
             self._own_session = False
-            assert self._session.loop is asyncio.get_event_loop()  # noqa
+            assert self._session.loop is asyncio.get_event_loop()
 
         self._heartbeat_interval = heartbeat_interval
 
@@ -365,7 +364,7 @@ class WebSocketClientBase:
             await self._websocket.send_bytes(self._make_packet({}, Operation.HEARTBEAT))
         except (ConnectionResetError, aiohttp.ClientConnectionError) as e:
             logger.warning('room=%d _send_heartbeat() failed: %r', self.room_id, e)
-        except Exception:  # noqa
+        except Exception:
             logger.exception('room=%d _send_heartbeat() failed:', self.room_id)
 
     async def _on_ws_message(self, message: aiohttp.WSMessage):
@@ -384,7 +383,7 @@ class WebSocketClientBase:
         except AuthError:
             # 认证失败，让外层处理
             raise
-        except Exception:  # noqa
+        except Exception:
             logger.exception('room=%d _parse_ws_message() error:', self.room_id)
 
     async def _parse_ws_message(self, data: bytes):
