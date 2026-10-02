@@ -62,11 +62,6 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
-# Private one-time gift repair ledgers and reports
-gift-repair-*.sqlite3*
-gift-repair-*.summary.json
-gift-repair-*.missing.csv
-
 # Flask stuff:
 instance/
 .webassets-cache
