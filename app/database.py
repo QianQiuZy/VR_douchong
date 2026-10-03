@@ -75,6 +75,8 @@ def ensure_runtime_schema() -> None:
     """Compatibly add current metrics columns to hot and old archive tables."""
     required_columns = {
         "live_session": {
+            "duration_valid": "INT NOT NULL DEFAULT 1",
+            "duration_ledger": "TEXT NULL",
             "start_attention": "INT NULL",
             "end_attention": "INT NULL",
             "payer_count": "INT NOT NULL DEFAULT 0",
@@ -144,6 +146,10 @@ def ensure_runtime_schema() -> None:
     for table_name in table_names:
         if table_name.startswith("live_session_") and table_name[len("live_session_"):].isdigit():
             targets.setdefault(table_name, {})["payer_count"] = "INT NOT NULL DEFAULT 0"
+            targets[table_name].update({
+                "duration_valid": "INT NOT NULL DEFAULT 1",
+                "duration_ledger": "TEXT NULL",
+            })
         if table_name.startswith("live_session_15m_stats_") and table_name[len("live_session_15m_stats_"):].isdigit():
             targets.setdefault(table_name, {}).update(
                 {

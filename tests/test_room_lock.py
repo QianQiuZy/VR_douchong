@@ -26,12 +26,15 @@ def lock_state(monkeypatch):
     for name in (
         "CURRENT_SESSIONS", "LAST_STATUS", "STREAM_STARTS", "LIVE_INFO",
         "PENDING_SESSION_ENDS", "CONCURRENCY_CACHE", "LOCKED_ROOM_UNTIL", "ROOM_UIDS",
+        "INVALID_DURATION_SESSIONS",
+        "FORCED_OFFLINE_AT",
     ):
         monkeypatch.setattr(runtime_state, name, {})
     monkeypatch.setattr(runtime_state, "GUARD_FANS_QUEUE", asyncio.Queue())
     monkeypatch.setattr(runtime_state, "ATTENTION_QUEUE", asyncio.Queue())
     monkeypatch.setattr(metrics_runtime, "_buckets", {})
     monkeypatch.setattr(room_lifecycle.LiveSession, "find_open_session", lambda room: None)
+    monkeypatch.setattr(room_lifecycle.LiveSession, "invalidate_duration", lambda session, event_time=None: True)
 
 
 def lock_command():
@@ -58,7 +61,7 @@ def test_room_lock_expiry_uses_beijing_time_on_every_host(lock_state, monkeypatc
         time.tzset()
 
 
-def test_room_lock_closes_session_at_event_time_without_grace(lock_state, monkeypatch):
+def test_room_lock_stops_broadcast_at_event_time_with_grace(lock_state, monkeypatch):
     # Given: a live session and the exact top-level ROOM_LOCK payload from the incident.
     room = 27628030
     ended = datetime.datetime.fromtimestamp(
@@ -87,12 +90,15 @@ def test_room_lock_closes_session_at_event_time_without_grace(lock_state, monkey
     handler.handle(replay_client(room), lock_command())
     handler.handle(replay_client(room), lock_command())
 
-    # Then: it closes once at send_time and clears all active/session-grace state immediately.
-    assert calls == [("danmaku", 17436), ("bucket", 17436, ended), ("close", 17436, ended)]
+    # Then: the broadcast stops at send_time; the parent remains until grace expiry.
+    assert calls == []
     assert runtime_state.LAST_STATUS[room] == 0
-    assert room not in runtime_state.CURRENT_SESSIONS
-    assert room not in runtime_state.PENDING_SESSION_ENDS
+    assert runtime_state.CURRENT_SESSIONS[room] == 17436
+    assert runtime_state.PENDING_SESSION_ENDS[room] == ended
     assert room not in runtime_state.STREAM_STARTS
+    assert runtime_state.GUARD_FANS_QUEUE.qsize() == 0
+    room_lifecycle.finish_expired_live_sessions(ended + datetime.timedelta(seconds=181), dependencies)
+    assert calls == [("danmaku", 17436), ("bucket", 17436, ended), ("close", 17436, ended)]
     assert runtime_state.GUARD_FANS_QUEUE.qsize() == 1
 
 

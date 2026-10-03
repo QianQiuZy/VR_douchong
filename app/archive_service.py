@@ -243,7 +243,7 @@ def archive_live_session(
                         "payer_count", "start_guard_1", "start_guard_2", "start_guard_3",
                         "start_fans_count", "start_attention", "end_guard_1", "end_guard_2",
                         "end_guard_3", "end_fans_count", "end_attention", "avg_concurrency",
-                        "max_concurrency",
+                        "max_concurrency", "duration_valid", "duration_ledger",
                     ),
                 )
                 quoted_columns = ", ".join(f"`{name}`" for name in columns)

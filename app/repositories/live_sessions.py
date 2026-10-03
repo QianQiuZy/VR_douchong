@@ -1,13 +1,31 @@
 import datetime
+import json
 import logging
 
 from sqlalchemy import and_, case, update
 from sqlalchemy.exc import SQLAlchemyError
 
+from .. import runtime_state
 from ..database import Session
 from .tables import month_str
 
 logger = logging.getLogger(__name__)
+
+
+def _restore_duration_state(row) -> None:
+    ledger = json.loads(row.duration_ledger or "{}")
+    room_id = int(row.room_id)
+    if not row.duration_valid:
+        runtime_state.INVALID_DURATION_SESSIONS[room_id] = int(row.id)
+    else:
+        runtime_state.INVALID_DURATION_SESSIONS.pop(room_id, None)
+    if ledger.get("segment_end"):
+        runtime_state.PENDING_SESSION_ENDS[room_id] = datetime.datetime.fromisoformat(ledger["segment_end"])
+        runtime_state.STREAM_STARTS.pop(room_id, None)
+        if not row.duration_valid:
+            runtime_state.FORCED_OFFLINE_AT[room_id] = runtime_state.PENDING_SESSION_ENDS[room_id]
+    elif ledger.get("segment_start"):
+        runtime_state.STREAM_STARTS[room_id] = datetime.datetime.fromisoformat(ledger["segment_start"])
 
 
 def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) -> int | None:
@@ -20,6 +38,7 @@ def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) 
             .first()
         )
         if open_row:
+            _restore_duration_state(open_row)
             logger.info(
                 "[LiveSession] 恢复未结束场次 room_id=%s session_id=%s",
                 room_id,
@@ -32,9 +51,11 @@ def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) 
             end_time=None,
             title=title or "",
             month=month_str(start_dt),
+            duration_ledger=json.dumps({"days": {}, "segment_days": {}, "segment_start": start_dt.isoformat()}),
         )
         session.add(row)
         session.commit()
+        runtime_state.INVALID_DURATION_SESSIONS.pop(room_id, None)
         return row.id
     except SQLAlchemyError as exc:
         session.rollback()
@@ -55,6 +76,7 @@ def find_open_session(model, room_id: int) -> tuple[int, datetime.datetime] | No
         )
         if row is None:
             return None
+        _restore_duration_state(row)
         return int(row.id), row.start_time
     except SQLAlchemyError as exc:
         logger.error(f"[LiveSession] find_open_session 失败: {exc}")

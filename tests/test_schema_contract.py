@@ -308,6 +308,8 @@ class TestSchemaTablesAndColumns:
             "governor_danmaku_count",
             "normal_danmaku_count",
             "payer_count",
+            "duration_valid",
+            "duration_ledger",
             "start_guard_1",
             "start_guard_2",
             "start_guard_3",
@@ -335,6 +337,9 @@ class TestSchemaTablesAndColumns:
         assert columns["month"]["length"] == 6
         assert columns["payer_count"]["type"] == Integer.__name__
         assert columns["payer_count"]["default"] == 0
+        assert columns["duration_valid"]["default"] == 1
+        assert columns["duration_valid"]["nullable"] is False
+        assert columns["duration_ledger"]["nullable"] is True
         # start_* / end_* snapshots are nullable Integers.
         for name in (
             "start_guard_1",

@@ -37,6 +37,7 @@ def finish_live_session(
     average, maximum = dependencies.finalize_concurrency(room_id, session_id)
     flush_session(session_id, end_dt)
     LiveSession.close_session_by_id(session_id, end_dt)
+    runtime_state.INVALID_DURATION_SESSIONS.pop(room_id, None)
     LiveSession.update_concurrency_by_id(session_id, avg_concurrency=average, max_concurrency=maximum)
     runtime_state.CONCURRENCY_CACHE.pop(room_id, None)
     if session_id:
@@ -47,7 +48,7 @@ def finish_live_session(
 
 def defer_live_session_finish(room_id: int, end_dt: datetime.datetime, dependencies: LifecycleDependencies) -> str | None:
     duration_str = dependencies.record_stream_segment(room_id, end_dt)
-    if duration_str is not None:
+    if duration_str is not None or room_id in runtime_state.CURRENT_SESSIONS:
         runtime_state.PENDING_SESSION_ENDS[room_id] = end_dt
     return duration_str
 
@@ -59,8 +60,11 @@ def resume_interrupted_session(room_id: int, start_dt: datetime.datetime, now: d
     session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
     if session_id is None:
         return None
+    segment_start = start_dt if interrupted_at < start_dt <= now else now
+    LiveSession.begin_duration_segment(session_id, segment_start)
+    runtime_state.INVALID_DURATION_SESSIONS.pop(room_id, None)
     runtime_state.PENDING_SESSION_ENDS.pop(room_id, None)
-    runtime_state.STREAM_STARTS[room_id] = start_dt if interrupted_at < start_dt <= now else now
+    runtime_state.STREAM_STARTS[room_id] = segment_start
     return session_id
 
 
@@ -130,6 +134,8 @@ async def delete_room_async(room_id: int, dependencies: LifecycleDependencies) -
         runtime_state.CONCURRENCY_CACHE,
         runtime_state.LOCKED_ROOM_UNTIL,
         runtime_state.PENDING_SESSION_ENDS,
+        runtime_state.INVALID_DURATION_SESSIONS,
+        runtime_state.FORCED_OFFLINE_AT,
     ):
         state_map.pop(room_id, None)
     return True, "房间已删除并停止任务"

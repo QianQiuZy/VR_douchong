@@ -10,7 +10,10 @@ from app import room_config, room_lifecycle, runtime_state
 
 
 @pytest.fixture()
-def isolated_runtime_state():
+def isolated_runtime_state(monkeypatch):
+    monkeypatch.setattr(room_lifecycle.LiveSession, "begin_duration_segment", lambda session, start: None)
+    monkeypatch.setattr(runtime_state, "INVALID_DURATION_SESSIONS", {})
+    monkeypatch.setattr(runtime_state, "FORCED_OFFLINE_AT", {})
     room_ids = list(runtime_state.ROOM_IDS)
     room_anchors = dict(runtime_state.ROOM_ANCHORS)
     room_uids = dict(runtime_state.ROOM_UIDS)

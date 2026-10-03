@@ -20,6 +20,8 @@ def cutoff_state(monkeypatch):
     for name in (
         "CURRENT_SESSIONS", "LAST_STATUS", "STREAM_STARTS", "LIVE_INFO",
         "PENDING_SESSION_ENDS", "CONCURRENCY_CACHE", "LOCKED_ROOM_UNTIL",
+        "INVALID_DURATION_SESSIONS",
+        "FORCED_OFFLINE_AT",
     ):
         monkeypatch.setattr(runtime_state, name, {})
     monkeypatch.setattr(runtime_state, "GUARD_FANS_QUEUE", Queue())
@@ -43,6 +45,8 @@ def cutoff_state(monkeypatch):
     monkeypatch.setattr(room_lock_events, "_lifecycle_dependencies", lambda: dependencies)
     monkeypatch.setattr(room_lifecycle, "flush_session", lambda *args: None)
     monkeypatch.setattr(room_lifecycle.LiveSession, "find_open_session", lambda room: None)
+    monkeypatch.setattr(room_lifecycle.LiveSession, "invalidate_duration", lambda session, event_time=None: True)
+    monkeypatch.setattr(room_lifecycle.LiveSession, "begin_duration_segment", lambda session, start: None)
     monkeypatch.setattr(room_lifecycle.LiveSession, "close_session_by_id", lambda session, end: calls.append(("close", session, end)))
     monkeypatch.setattr(room_lifecycle.LiveSession, "update_concurrency_by_id", lambda *args, **kwargs: None)
     return calls, dependencies
@@ -57,7 +61,7 @@ def open_room(room_id: int, timestamp: int) -> datetime.datetime:
 
 
 @pytest.mark.parametrize("room_id,timestamp", EXAMPLES)
-def test_cut_off_starts_grace_at_server_time_without_closing(cutoff_state, room_id, timestamp):
+def test_cut_off_starts_grace_at_server_time(cutoff_state, room_id, timestamp):
     # Given: an active session and either actual CUT_OFF example from the log.
     calls, _ = cutoff_state
     end = open_room(room_id, timestamp)
@@ -68,7 +72,7 @@ def test_cut_off_starts_grace_at_server_time_without_closing(cutoff_state, room_
     handler.handle(replay_client(room_id), command)
     handler.handle(replay_client(room_id), command)
 
-    # Then: one segment ends, but the original session stays open for the grace period.
+    # Then: the invalid broadcast stops, but the merged session stays open.
     assert calls == [("segment", room_id, end)]
     assert runtime_state.PENDING_SESSION_ENDS[room_id] == end
     assert runtime_state.CURRENT_SESSIONS[room_id] == 99
@@ -77,8 +81,8 @@ def test_cut_off_starts_grace_at_server_time_without_closing(cutoff_state, room_
 
 
 @pytest.mark.parametrize("resumes", [True, False])
-def test_cut_off_resumes_within_grace_or_closes_at_original_end(cutoff_state, resumes):
-    # Given: a CUT_OFF-interrupted session whose grace period is being resolved.
+def test_cut_off_resumes_at_grace_boundary_or_closes_after_expiry(cutoff_state, resumes):
+    # Given: a CUT_OFF broadcast in the normal grace period.
     calls, dependencies = cutoff_state
     room, timestamp = EXAMPLES[0]
     end = open_room(room, timestamp)
@@ -91,10 +95,11 @@ def test_cut_off_resumes_within_grace_or_closes_at_original_end(cutoff_state, re
         room_lifecycle.finish_expired_live_sessions(end + datetime.timedelta(seconds=181), dependencies)
         session = None
 
-    # Then: resume preserves the session ID; expiry closes at CUT_OFF time, not three minutes later.
+    # Then: a quick restart keeps the ID; expiry closes at the original cutoff time.
     assert session == (99 if resumes else None)
     assert room not in runtime_state.PENDING_SESSION_ENDS
     assert [(name, session_id, when) for name, session_id, when in calls if name == "close"] == ([] if resumes else [("close", 99, end)])
+    assert room not in runtime_state.INVALID_DURATION_SESSIONS
 
 
 def test_cut_off_keeps_grace_when_segment_cache_is_missing(cutoff_state):
@@ -108,6 +113,7 @@ def test_cut_off_keeps_grace_when_segment_cache_is_missing(cutoff_state):
 
     # Then: loss of the duration cache cannot strand this session forever.
     assert runtime_state.PENDING_SESSION_ENDS[room] == end
+    assert runtime_state.CURRENT_SESSIONS[room] == 99
 
 
 @pytest.mark.parametrize("changes", [{"room_id": 99}, {"send_time": "bad"}, {"send_time": 1}])

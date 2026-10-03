@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import BigInteger, Column, DateTime, Float, Index, Integer, String
+from sqlalchemy import BigInteger, Column, DateTime, Float, Index, Integer, String, Text
 
 from .. import DanmakuBucketTarget, DanmakuCounts
 from ..database import Base
@@ -23,6 +23,7 @@ from ..repositories.live_sessions import (
 )
 from ..repositories.session_15m import add_danmaku_counts as add_15m_danmaku_counts
 from ..repositories.session_15m import upsert_stats
+from ..repositories.session_duration import account_duration
 from ..repositories.super_chat import log_super_chat
 
 
@@ -47,6 +48,8 @@ class LiveSession(Base):
     governor_danmaku_count = Column(Integer, default=0, nullable=True)
     normal_danmaku_count = Column(Integer, default=0, nullable=True)
     payer_count = Column(Integer, default=0, nullable=False)
+    duration_valid = Column(Integer, default=1, nullable=False)
+    duration_ledger = Column(Text, nullable=True)
     __table_args__ = (
         Index("idx_ls_room_month", "room_id", "month"),
         Index("idx_ls_room_month_start", "room_id", "month", "start_time"),
@@ -71,6 +74,18 @@ class LiveSession(Base):
     @classmethod
     def find_open_session(cls, room_id: int) -> tuple[int, datetime.datetime] | None:
         return find_open_session(cls, room_id)
+
+    @classmethod
+    def record_duration(cls, session_id: int, start: datetime.datetime | None, end: datetime.datetime) -> None:
+        account_duration(cls, session_id, start, end)
+
+    @classmethod
+    def begin_duration_segment(cls, session_id: int, start: datetime.datetime) -> None:
+        account_duration(cls, session_id, start, begin=True)
+
+    @classmethod
+    def invalidate_duration(cls, session_id: int, event_time: datetime.datetime | None = None) -> bool:
+        return account_duration(cls, session_id, invalidate=True, event_time=event_time)
 
     @classmethod
     def add_values_by_id(

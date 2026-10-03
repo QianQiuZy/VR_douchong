@@ -31,7 +31,6 @@ from .models import (
     LiveSession,
     LiveSession15mStats,
     RoomInfo,
-    RoomLiveStats,
     RoomStatsMonthly,
 )
 
@@ -429,13 +428,26 @@ async def monitor_all_rooms_status() -> None:
                 if not info or "live_status" not in info:
                     continue
                 status = 0 if int(info.get("live_status", 0)) == 2 else int(info.get("live_status", 0))
-                runtime_state.LAST_STATUS[room_id] = status
                 if status == 1 and previous == 0:
                     start_raw = info.get("live_time", 0)
                     try:
                         start = datetime.datetime.fromtimestamp(int(start_raw)).astimezone().replace(tzinfo=None) if str(start_raw).isdigit() else now
                     except (ValueError, OSError, OverflowError):
                         start = now
+                    forced_end = runtime_state.FORCED_OFFLINE_AT.get(room_id)
+                    if forced_end is not None and start <= forced_end:
+                        runtime_state.LAST_STATUS[room_id] = 0
+                        continue
+                    if room_id not in runtime_state.CURRENT_SESSIONS:
+                        open_session = LiveSession.find_open_session(room_id)
+                        if open_session is not None:
+                            runtime_state.CURRENT_SESSIONS[room_id] = open_session[0]
+                            room_lifecycle.finish_expired_live_sessions(now, lifecycle_dependencies())
+                    forced_end = runtime_state.FORCED_OFFLINE_AT.get(room_id)
+                    if forced_end is not None and start <= forced_end:
+                        runtime_state.LAST_STATUS[room_id] = 0
+                        continue
+                    runtime_state.FORCED_OFFLINE_AT.pop(room_id, None)
                     session_id = room_lifecycle.resume_interrupted_session(room_id, start, now)
                     if session_id is None:
                         runtime_state.STREAM_STARTS[room_id] = start
@@ -450,22 +462,22 @@ async def monitor_all_rooms_status() -> None:
                     if previous == 1:
                         room_lifecycle.defer_live_session_finish(room_id, now, lifecycle_dependencies())
                     runtime_state.LIVE_INFO.setdefault(room_id, {}).update({"live_time": "0000-00-00 00:00:00", "title": ""})
+                runtime_state.LAST_STATUS[room_id] = status
         except Exception as exc:
             logger.exception("[LiveStatus] get_status_info_by_uids 调用异常: %s", type(exc).__name__, exc_info=False)
         await asyncio.sleep(3)
 
 
 def _record_stream_segment(room_id: int, end_dt: datetime.datetime) -> str | None:
-    start = runtime_state.STREAM_STARTS.pop(room_id, None)
+    start = runtime_state.STREAM_STARTS.get(room_id)
+    session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
+    if session_id is not None and runtime_state.INVALID_DURATION_SESSIONS.get(room_id) == session_id:
+        LiveSession.invalidate_duration(session_id)
+    if session_id is not None:
+        LiveSession.record_duration(session_id, start, end_dt)
     if start is None:
         return None
-    current = start
-    while current < end_dt:
-        boundary = end_dt if current.date() == end_dt.date() else datetime.datetime.combine(current.date() + datetime.timedelta(days=1), datetime.time.min)
-        seconds = int((min(end_dt, boundary) - current).total_seconds())
-        if seconds > 0:
-            RoomLiveStats.add_duration(room_id, current.date(), seconds)
-        current = min(end_dt, boundary)
+    runtime_state.STREAM_STARTS.pop(room_id, None)
     flush_pending_danmaku_for_room(room_id, runtime_state.CURRENT_SESSIONS.get(room_id), end_dt)
     total = int((end_dt - start).total_seconds())
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"

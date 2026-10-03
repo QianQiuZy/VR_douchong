@@ -76,6 +76,7 @@ class MyHandler(blivedm.BaseHandler):
         **blivedm.BaseHandler._CMD_CALLBACK_DICT,
         "ROOM_LOCK": room_lock_events.handle_room_lock,
         "CUT_OFF": room_lock_events.handle_cut_off,
+        "WARNING": room_lock_events.handle_warning,
     }
 
     def _resolve_session(self, client, session_id: int | None, event_time: datetime.datetime) -> int | None:
