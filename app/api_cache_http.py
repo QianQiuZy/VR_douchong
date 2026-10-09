@@ -1,4 +1,4 @@
-"""Cache-only GET transport and per-IP admission for the seven public APIs."""
+"""Cache-only GET transport and shared per-IP admission for public APIs."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ GET_PATHS = {
     "/gift/live_sessions",
     "/gift/attention",
     "/gift/sc",
+    "/gift/entry",
 }
 API_PATHS = GET_PATHS | {"/add/room", "/delete/room"}
 
@@ -150,6 +151,9 @@ class CacheMiddleware:
 
     async def serve(self, request, service, scope, receive, send):
         path = scope["path"].rstrip("/")
+        if path == "/gift/entry":
+            # Entry validation and cache responses belong to the API route.
+            return await self.app(scope, receive, send)
         if path in GET_PATHS and scope["method"] == "GET":
             try:
                 parsed = parameters(request)
@@ -174,6 +178,8 @@ class CacheMiddleware:
                 ValueError,
                 OSError,
                 EOFError,
+                TypeError,
+                KeyError,
             ) as exc:
                 response = self.failure(service, exc)
             return await response(scope, receive, send)

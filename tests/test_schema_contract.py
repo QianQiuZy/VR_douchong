@@ -100,12 +100,13 @@ class TestSchemaTablesAndColumns:
         assert all("governor_danmaku_count" not in sql for sql in archive_changes)
         assert all("normal_danmaku_count" not in sql for sql in archive_changes)
 
-    def test_metadata_contains_exactly_the_seven_tables(self, gift_module):
+    def test_metadata_contains_existing_tables_and_entry_log(self, gift_module):
         assert sorted(gift_module.Base.metadata.tables.keys()) == [
             "attention",
             "live_session",
             "live_session_15m_stats",
             "room_blind_box_monthly",
+            "room_entry_log",
             "room_info",
             "room_live_stats",
             "room_stats_monthly",

@@ -108,6 +108,7 @@ class TestImportSideEffects:
             "live_session",
             "live_session_15m_stats",
             "room_blind_box_monthly",
+            "room_entry_log",
             "room_info",
             "room_live_stats",
             "room_stats_monthly",

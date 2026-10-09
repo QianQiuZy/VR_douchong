@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import re
 import threading
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ from pymysql.constants import COMMAND
 from . import config
 from .api_cache_store import CacheStore
 from .repositories.tables import month_range, month_str, normalize_month_code
+from .runtime_state import SHANGHAI
 
 BASE_TABLES = ("room_info", "room_stats_monthly", "room_blind_box_monthly")
 MONTH_TABLES = (
@@ -21,9 +23,10 @@ MONTH_TABLES = (
     "live_session",
     "live_session_15m_stats",
     "super_chat_log",
+    "room_entry_log",
 )
 TABLE_PATTERN = re.compile(
-    r"(?:room_live_stats|attention|live_session|live_session_15m_stats|super_chat_log)(?:_[0-9]{6})?\Z"
+    r"(?:room_live_stats|attention|live_session|live_session_15m_stats|super_chat_log|room_entry_log)(?:_[0-9]{6})?\Z"
 )
 
 
@@ -60,6 +63,7 @@ class Snapshot:
     base: dict[str, list[dict]]
     tables: dict[str, list[dict]]
     months: set[str] = field(default_factory=set)
+    recent_entries: list[dict] = field(default_factory=list)
 
 
 class SnapshotReader:
@@ -114,13 +118,17 @@ class SnapshotReader:
             "SELECT month FROM live_session_15m_stats UNION "
             "SELECT DATE_FORMAT(date, '%Y%m') FROM room_live_stats UNION "
             "SELECT DATE_FORMAT(date, '%Y%m') FROM attention UNION "
-            "SELECT DATE_FORMAT(send_time, '%Y%m') FROM super_chat_log"
+            "SELECT DATE_FORMAT(send_time, '%Y%m') FROM super_chat_log UNION "
+            "SELECT DATE_FORMAT(event_time, '%Y%m') FROM room_entry_log"
         )
         self.hot_months = {
             row["month"] for row in rows if normalize_month_code(row["month"])
         }
 
     def read_table(self, prefix: str, month: str) -> list[dict]:
+        if prefix == "room_entry_log":
+            start, end = month_range(month)
+            return self.read_entries(start, end)
         table = (
             f"{prefix}_{month}"
             if month != month_str() and f"{prefix}_{month}" in self.metadata
@@ -136,6 +144,35 @@ class SnapshotReader:
             f"SELECT * FROM `{table}` WHERE `{name}` >= %s AND `{name}` < %s",
             (start, end),
         )
+
+    def read_entries(self, start, end) -> list[dict]:
+        """Merge hot and archived rows in the same read snapshot, including late writes."""
+        if not isinstance(start, datetime.datetime):
+            start = datetime.datetime.combine(start, datetime.time.min)
+        if not isinstance(end, datetime.datetime):
+            end = datetime.datetime.combine(end, datetime.time.min)
+        candidates = []
+        cursor = start
+        while cursor < end:
+            candidates.append(f"room_entry_log_{cursor:%Y%m}")
+            _, next_month = month_range(cursor.strftime("%Y%m"))
+            cursor = datetime.datetime.combine(next_month, datetime.time.min)
+        placeholders = ",".join(["%s"] * len(candidates))
+        # Discover after the transaction's first data read: archive copy/delete commits
+        # then appear either in the hot snapshot or in the discovered archive table.
+        found = self.query(
+            "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s "
+            f"AND TABLE_NAME IN ({placeholders})",
+            (config.DB_CONFIG["db"], *candidates),
+        )
+        archives = {row["TABLE_NAME"] for row in found} & set(candidates)
+        self.metadata.update(archives)
+        tables = ["room_entry_log", *sorted(archives)]
+        sql = " UNION ".join(
+            f"SELECT room_id, uid, event_time FROM `{table}` WHERE event_time >= %s AND event_time < %s"
+            for table in tables
+        )
+        return self.query(sql, tuple(value for _ in tables for value in (start, end)))
 
     def known_months(self) -> set[str]:
         months = {month_str()} | self.hot_months
@@ -205,6 +242,12 @@ class SnapshotReader:
                 )
             else:
                 sc_rows = []
+            snapshot_time = datetime.datetime.fromtimestamp(stamp, SHANGHAI).replace(tzinfo=None)
+            recent_start = snapshot_time - datetime.timedelta(hours=1)
+            month_start = datetime.datetime.combine(start, datetime.time.min)
+            entry_rows = self.read_entries(min(month_start, recent_start), end)
+            tables["room_entry_log"] = [row for row in entry_rows if row["event_time"] >= month_start]
+            recent_entries = [row for row in entry_rows if recent_start <= row["event_time"] < snapshot_time]
         self.base = base
         self.buckets = {}
         for row in buckets:
@@ -225,7 +268,7 @@ class SnapshotReader:
             row for rows in self.buckets.values() for row in rows
         ]
         tables["super_chat_log"] = list(self.sc.values())
-        return Snapshot(month, stamp, base, tables, self.known_months())
+        return Snapshot(month, stamp, base, tables, self.known_months(), recent_entries)
 
     def history(self, month: str) -> Snapshot:
         stamp = self.store.clock()

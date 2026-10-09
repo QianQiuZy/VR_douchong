@@ -32,6 +32,7 @@ from app.models import (
     Attention,
     LiveSession,
     LiveSession15mStats,
+    RoomEntryLog,
     RoomInfo,
     RoomLiveStats,
     RoomStatsMonthly,
@@ -250,6 +251,100 @@ def test_real_incremental_sc_catches_lower_id_late_commit_and_closed_bucket_upda
         == "corrected without changing count or ID"
     )
     reader.close()
+
+
+def test_real_entry_writes_archive_rollback_late_duplicates_and_cached_queries(services, monkeypatch):
+    from sqlalchemy import event
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.event_ingestion import now_local
+    from app.repositories import entries
+
+    store, engine, Session, _start = services
+    monkeypatch.setattr(entries, "engine", engine)
+    monkeypatch.setattr(entries, "Session", Session)
+    monkeypatch.setattr(entries, "ARCHIVE_BATCH_SIZE", 2)
+    recent = now_local().replace(microsecond=123000) - datetime.timedelta(minutes=1)
+    old = datetime.datetime.fromisoformat("2001-01-02T00:00:00")
+    old_rows = [{"room_id": 111111, "uid": 7, "event_time": old + datetime.timedelta(seconds=index)} for index in range(3)]
+    rows = [{"room_id": 111111, "uid": 7, "event_time": recent}, *old_rows]
+    archive = "room_entry_log_200101"
+    cache = ApiCache(store)
+    try:
+        entries.save_entries([*rows, rows[0]])
+        with Session() as session:
+            assert session.query(RoomEntryLog).count() == 4
+            assert session.get(RoomEntryLog, (111111, recent, 7)).event_time.microsecond == 123000
+
+        def fail_delete(_conn, _cursor, statement, _parameters, _context, _many):
+            if statement.startswith("DELETE FROM room_entry_log"):
+                raise SQLAlchemyError("synthetic archive interruption")
+
+        event.listen(engine, "before_cursor_execute", fail_delete)
+        try:
+            assert entries.archive_entries("200101") == 0
+        finally:
+            event.remove(engine, "before_cursor_execute", fail_delete)
+        with Session() as session:
+            assert session.query(RoomEntryLog).count() == 4
+            assert session.scalar(text(f"SELECT COUNT(*) FROM `{archive}`")) == 0
+        assert entries.archive_entries("200101") == 3
+        assert entries.archive_entries("200101") == 0
+        # A replay can live in the hot table while its original is already archived.
+        entries.save_entries([old_rows[0]])
+        cache.prewarm()
+        assert len(cache.reader.history("200101").tables["room_entry_log"]) == 3
+        monkeypatch.setattr(config, "API_CACHE_ENABLED", True)
+        app = FastAPI()
+        app.router.routes.extend(api_app.app.router.routes)
+        app.state.api_cache = cache
+        app.add_middleware(CacheMiddleware, owner=app)
+        with TestClient(app, client=("203.0.113.46", 123)) as client:
+            room = client.get("/gift/entry?room_id=111111")
+            assert room.status_code == 200
+            assert room.json() == {"mode": "room", "room_id": 111111, "month": month_str(), "items": [{"uid": 7, "event_time": recent.isoformat() + "+08:00"}]}
+            history = client.get("/gift/entry?uid=7&month=2001-01")
+            assert history.status_code == 200 and len(history.json()["items"]) == 3
+            for window in (1, 2):
+                response = client.get(f"/gift/entry?cache={window}")
+                assert response.status_code == 200 and len(response.json()["items"]) == 1
+            unavailable = client.get("/gift/entry?uid=7&month=200102")
+            assert unavailable.status_code == 200 and unavailable.json()["status"] == "unavailable"
+        assert entries.archive_entries("200101") == 1
+        with Session() as session:
+            assert session.query(RoomEntryLog).count() == 1
+            assert session.scalar(text(f"SELECT COUNT(*) FROM `{archive}`")) == 3
+    finally:
+        cache.reader.close()
+        with engine.begin() as connection:
+            connection.execute(text(f"DROP TABLE IF EXISTS `{archive}`"))
+
+
+def test_real_entry_hour_window_merges_previous_archive_and_current_hot_rows(services, monkeypatch):
+    from app.repositories import entries
+
+    store, engine, Session, start = services
+    monkeypatch.setattr(entries, "engine", engine)
+    monkeypatch.setattr(entries, "Session", Session)
+    previous_time = start - datetime.timedelta(minutes=30)
+    current_time = start + datetime.timedelta(minutes=10)
+    previous_month = previous_time.strftime("%Y%m")
+    archive = f"room_entry_log_{previous_month}"
+    reader = SnapshotReader(store, threading.Event())
+    try:
+        entries.save_entries([
+            {"room_id": 111111, "uid": 7, "event_time": previous_time},
+            {"room_id": 222222, "uid": 7, "event_time": current_time},
+        ])
+        assert entries.archive_entries(previous_month) == 1
+        with reader.transaction():
+            reader.query("SELECT room_id FROM room_info")
+            rows = reader.read_entries(start - datetime.timedelta(minutes=40), start + datetime.timedelta(minutes=20))
+        assert {(row["room_id"], row["event_time"]) for row in rows} == {(111111, previous_time), (222222, current_time)}
+    finally:
+        reader.close()
+        with engine.begin() as connection:
+            connection.execute(text(f"DROP TABLE IF EXISTS `{archive}`"))
 
 
 def test_real_lua_two_ips_and_parallel_workers_share_per_ip_limit(services):

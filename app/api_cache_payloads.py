@@ -159,6 +159,14 @@ class PayloadBuilder:
         aggregates = daily_aggregates(snapshot.tables["room_live_stats"])
         session_rooms = {int(row["room_id"]) for row in snapshot.tables["live_session"]}
         values = self.summary_values(month, snapshot.base, aggregates, session_rooms)
+        values[api_app.ENTRY_PATH] = encode(
+            {"items": api_app._serialize_entry_rows(snapshot.tables.get("room_entry_log", []))}
+        )
+        values[f"_empty:{api_app.ENTRY_PATH}"] = encode({"items": []})
+        if current:
+            values[api_app.RECENT_PATH] = encode(
+                {"items": api_app._serialize_entry_rows(snapshot.recent_entries)}
+            )
         if not current:
             self.history_summary_inputs[month] = (aggregates, session_rooms)
         if current and self.current_month != month:
@@ -170,6 +178,8 @@ class PayloadBuilder:
         groups: dict[str, dict[int, list[dict]]] = {}
         rooms = set(room_config.get_room_ids())
         for table, rows in snapshot.tables.items():
+            if table == "room_entry_log":
+                continue  # Entry-only rooms must not change existing report domains.
             grouped = defaultdict(list)
             for row in rows:
                 grouped[int(row["room_id"])].append(row)

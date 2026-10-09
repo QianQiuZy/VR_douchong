@@ -38,6 +38,12 @@ from .repositories.tables import (
 logger = logging.getLogger(__name__)
 
 
+def archive_room_entry_log(target_month: str | None = None) -> int:
+    from .repositories.entries import archive_entries
+
+    return archive_entries(target_month)
+
+
 def _archive_columns(table_name: str, candidates: tuple[str, ...]) -> list[str]:
     try:
         available = {column.get("name") for column in inspect(engine).get_columns(table_name)}

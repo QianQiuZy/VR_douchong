@@ -46,7 +46,14 @@ def get_env_int(name: str, default: int, minimum: int = 1) -> int:
 
 
 _env_file_override = os.getenv("ENV_FILE")
-load_env_file(_env_file_override if _env_file_override is not None else DEFAULT_ENV_FILE)
+ENV_FILE_PATH = Path(_env_file_override if _env_file_override is not None else DEFAULT_ENV_FILE).resolve()
+load_env_file(ENV_FILE_PATH)
+
+# Relative visitor-list paths follow the deployed env file, not the launcher cwd.
+_entry_users_path = Path(os.getenv("ENTRY_USERS_JSON_PATH", "entry_users.json"))
+ENTRY_USERS_JSON_PATH = (
+    _entry_users_path if _entry_users_path.is_absolute() else ENV_FILE_PATH.parent / _entry_users_path
+)
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),

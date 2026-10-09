@@ -27,7 +27,7 @@ import threading
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from . import api_app, archive_service, monitoring_jobs, runtime_state
+from . import api_app, archive_service, event_ingestion, monitoring_jobs, runtime_state
 from .config import APP_HOST, APP_PORT
 from .database import create_schema, ensure_runtime_schema, log_pool_status
 from .metrics_runtime import flush_session
@@ -68,6 +68,7 @@ async def _archive_month(target_month: str | None = None) -> None:
         archive_service.archive_super_chat_log,
         archive_service.archive_room_live_stats,
         archive_service.archive_attention,
+        archive_service.archive_room_entry_log,
         archive_whale_month,
     ):
         try:
@@ -182,6 +183,10 @@ async def monthly_reset_scheduler() -> None:
         wake_at = min(target, now + datetime.timedelta(seconds=SESSION_ARCHIVE_INTERVAL_SECONDS))
         await _sleep_until(wake_at)
         if _now() < target:
+            if await asyncio.to_thread(archive_service.archive_room_entry_log):
+                from .api_cache import invalidate_history
+
+                invalidate_history()
             await _archive_closed_sessions()
             continue
         previous_month = _month_str_now_at(target - datetime.timedelta(days=1))
@@ -239,6 +244,8 @@ async def main() -> None:
     init_session()
     # 先初始化 UID + 粉丝数，完成后再开启状态轮询
     await monitoring_jobs.init_uids_and_attention_once()
+    await asyncio.to_thread(event_ingestion.entry_monitor.reload)
+    entry_worker = asyncio.create_task(event_ingestion.entry_monitor.worker(), name="entry-writer")
 
     try:
         await asyncio.gather(
@@ -260,8 +267,15 @@ async def main() -> None:
             monitoring_jobs.danmaku_flush_scheduler(),
             monitoring_jobs.concurrency_poll_scheduler(),  # 开播房间每 15 秒轮询同接
             pool_status_scheduler(),
+            event_ingestion.entry_monitor.reload_scheduler(),
+            entry_worker,
         )
     finally:
+        # gather does not cancel siblings when one job raises. Stop the writer
+        # before the final drain so the same mutable batch cannot be saved twice.
+        entry_worker.cancel()
+        await asyncio.gather(entry_worker, return_exceptions=True)
+        await event_ingestion.entry_monitor.flush()
         _flush_active_metrics(_now())
         if runtime_state.aiohttp_session:
             await runtime_state.aiohttp_session.close()

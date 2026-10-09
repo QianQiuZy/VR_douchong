@@ -1,6 +1,6 @@
 """FastAPI transport and reporting layer.
 
-Owns the seven public routes Todo 5 extracts out of ``gift.py``:
+Owns the seven original public routes extracted out of ``gift.py``:
 
 * ``POST /add/room``
 * ``POST /delete/room``
@@ -9,6 +9,9 @@ Owns the seven public routes Todo 5 extracts out of ``gift.py``:
 * ``GET  /gift/live_sessions``
 * ``GET  /gift/attention``
 * ``GET  /gift/sc``
+
+Entry queries (``GET /gift/entry``) also live here, including validation,
+Redis-only reads, and minimal response presentation.
 
 Route paths, response keys, status codes, and current-versus-history
 branching are preserved verbatim.  ``/gift`` still emits
@@ -27,24 +30,30 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import gzip
+import json
 import logging
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from threading import BoundedSemaphore
 from typing import Any, Protocol, TypedDict, assert_never
 
+import anyio
+import redis
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import JsonValue
 from sqlalchemy import Column, and_, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as OrmSession
 
 from . import config, room_config, runtime_state
-from .api_cache_http import CacheMiddleware
+from .api_cache_http import CacheMiddleware, accepts_gzip
+from .api_cache_store import CacheUnavailable, encode
 from .config import API_SECRET, REPORT_ACQUIRE_TIMEOUT_SECONDS, REPORT_MAX_CONCURRENCY
 from .database import Session as _default_Session
 from .database import engine, log_pool_status
@@ -71,6 +80,7 @@ from .repositories.tables import (
     sc_log_table_name,
 )
 from .repositories.tables import sc_log_table_exists as _default_sc_log_table_exists
+from .runtime_state import SHANGHAI
 from .whale_metrics import (
     WhaleDependencyPayload,
     get_live_whale_metrics,
@@ -101,6 +111,157 @@ async def cache_lifespan(application: FastAPI):
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=cache_lifespan)
 app.add_middleware(CacheMiddleware, owner=app)
+
+
+ENTRY_PATH = "/gift/entry"
+# Internal Redis snapshot key, not an additional public route.
+RECENT_PATH = "/gift/entry/recent"
+
+
+@dataclass(frozen=True)
+class _EntryQuery:
+    mode: str
+    month: str
+    identity: int
+
+
+def _entry_parameters(request: Request) -> _EntryQuery | JSONResponse:
+    params = request.query_params
+    selectors = [name for name in ("room_id", "uid", "cache") if name in params]
+    if len(selectors) != 1 or any(
+        len(params.getlist(name)) != 1
+        for name in (*selectors, "month")
+        if name in params
+    ):
+        return JSONResponse(
+            {"error": "room_id、uid、cache 必须三选一，参数不可重复"}, status_code=400
+        )
+    name = selectors[0]
+    raw = params[name]
+    if not raw.isascii() or not raw.isdecimal() or len(raw) > 20:
+        return JSONResponse({"error": f"{name} 参数无效"}, status_code=400)
+    identity = int(raw)
+    current = month_str()
+    if name == "cache":
+        if identity not in (1, 2) or "month" in params:
+            return JSONResponse(
+                {"error": "cache 仅支持 1（10分钟）或 2（1小时），不能同时指定 month"},
+                status_code=400,
+            )
+        return _EntryQuery("cache", current, identity)
+    month = normalize_month_code(params["month"]) if "month" in params else current
+    if not 0 < identity < 2**64 or month is None or month > current:
+        return JSONResponse(
+            {
+                "error": "ID 必须为正整数，month 支持 YYYYMM 或 YYYY-MM，不能查询未来月份"
+            },
+            status_code=400,
+        )
+    return _EntryQuery("room" if name == "room_id" else "uid", month, identity)
+
+
+def _serialize_entry_rows(rows: list[dict]) -> list[dict]:
+    result = []
+    for row in sorted(
+        rows,
+        key=lambda item: (item["event_time"], item["room_id"], item["uid"]),
+        reverse=True,
+    ):
+        value = row["event_time"].replace(tzinfo=SHANGHAI).isoformat()
+        result.append(
+            {
+                "room_id": int(row["room_id"]),
+                "uid": int(row["uid"]),
+                "event_time": value,
+            }
+        )
+    return result
+
+
+def _read_entry_response(store, query: _EntryQuery) -> bytes:
+    path = RECENT_PATH if query.mode == "cache" else ENTRY_PATH
+    cached = json.loads(gzip.decompress(store.read(query.month, path)))
+    if not isinstance(cached, dict) or not isinstance(cached.get("items"), list):
+        raise CacheUnavailable("invalid entry snapshot")
+    rows = cached["items"]
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"room_id", "uid", "event_time"}:
+            raise CacheUnavailable("invalid entry record")
+        if any(
+            type(row[key]) is not int or not 0 < row[key] < 2**64
+            for key in ("room_id", "uid")
+        ):
+            raise CacheUnavailable("invalid entry identity")
+        when = datetime.datetime.fromisoformat(row["event_time"])
+        if when.tzinfo is None or when.utcoffset() != datetime.timedelta(hours=8):
+            raise CacheUnavailable("invalid entry time")
+    if query.mode == "cache":
+        end = _entry_now().replace(tzinfo=SHANGHAI)
+        start = end - datetime.timedelta(seconds=600 if query.identity == 1 else 3600)
+        items = [
+            row
+            for row in rows
+            if start <= datetime.datetime.fromisoformat(row["event_time"]) < end
+        ]
+        return encode({"mode": "cache", "cache": query.identity, "items": items})
+    identity_field = "room_id" if query.mode == "room" else "uid"
+    item_field = "uid" if query.mode == "room" else "room_id"
+    items = [
+        {item_field: row[item_field], "event_time": row["event_time"]}
+        for row in rows
+        if row[identity_field] == query.identity
+    ]
+    payload = {
+        "mode": query.mode,
+        identity_field: query.identity,
+        "month": query.month,
+        "items": items,
+    }
+    if not items and query.month < month_str():
+        payload["status"] = "unavailable"
+    return encode(payload)
+
+
+def _entry_now() -> datetime.datetime:
+    return datetime.datetime.now(SHANGHAI).replace(tzinfo=None)
+
+
+@app.get(f"{ENTRY_PATH}/", include_in_schema=False)
+@app.get(ENTRY_PATH)
+async def get_room_entries(request: Request) -> Response:
+    """Serve minimal entry queries from Redis only, never falling back to MySQL."""
+    parsed = _entry_parameters(request)
+    if isinstance(parsed, JSONResponse):
+        return parsed
+    service = getattr(request.app.state, "api_cache", None)
+    try:
+        if not config.API_CACHE_ENABLED or service is None:
+            raise CacheUnavailable("entry cache lifecycle not started")
+        body = await anyio.to_thread.run_sync(_read_entry_response, service.store, parsed)
+        headers = {"Cache-Control": "no-store", "Vary": "Accept-Encoding"}
+        if accepts_gzip(request.headers.get("accept-encoding", "")):
+            headers["Content-Encoding"] = "gzip"
+        else:
+            body = gzip.decompress(body)
+        return Response(body, media_type="application/json", headers=headers)
+    except (
+        redis.RedisError,
+        CacheUnavailable,
+        ValueError,
+        OSError,
+        EOFError,
+        TypeError,
+        KeyError,
+    ) as exc:
+        if service is not None:
+            service.store.faults.record("request-cache", exc)
+        return JSONResponse(
+            {"error": "接口缓存暂不可用"},
+            status_code=503,
+            headers={"Retry-After": "1", "Cache-Control": "no-store"},
+        )
+
+
 _report_gate = BoundedSemaphore(REPORT_MAX_CONCURRENCY)
 
 

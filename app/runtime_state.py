@@ -11,6 +11,8 @@ import aiohttp
 from . import PendingDanmaku
 from .live_client import AuthenticatedLiveClient
 
+# Entry timestamps use Shanghai time explicitly, independently of the host TZ.
+SHANGHAI = datetime.timezone(datetime.timedelta(hours=8), name="Asia/Shanghai")
 DEFAULT_ROOMS_JSON_PATH = Path(__file__).resolve().parents[1] / "rooms.json"
 ROOMS_JSON_PATH = os.getenv("ROOMS_JSON_PATH", str(DEFAULT_ROOMS_JSON_PATH))
 ROOM_CONFIG_LOCK = threading.Lock()

@@ -1,12 +1,24 @@
 """Bilibili websocket event ingestion backed by canonical runtime state."""
 
+import asyncio
 import datetime
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar
 
-from . import DanmakuCounts, PendingDanmaku, blivedm, room_lock_events, runtime_state
+from sqlalchemy.exc import SQLAlchemyError
+
+from . import (
+    DanmakuCounts,
+    PendingDanmaku,
+    blivedm,
+    config,
+    room_lock_events,
+    runtime_state,
+)
 from .metrics_runtime import (
     current_bucket_index,
     danmaku_bucket_target,
@@ -21,9 +33,141 @@ from .models import (
     SuperChatLog,
 )
 from .redis_metrics import register_payer
+from .repositories.entries import save_entries
+from .runtime_state import SHANGHAI
 from .whale_metrics import record_whale_revenue
 
 logger = logging.getLogger(__name__)
+
+ENTRY_RELOAD_SECONDS = 3600
+ENTRY_WRITE_BATCH_SIZE = 200
+ENTRY_QUEUE_SIZE = 10000
+
+
+def now_local() -> datetime.datetime:
+    return datetime.datetime.now(SHANGHAI).replace(tzinfo=None)
+
+
+def event_datetime(timestamp, received: datetime.datetime) -> datetime.datetime:
+    try:
+        value = int(timestamp)
+        seconds = value / 1000 if value >= 1_000_000_000_000 else value
+        result = datetime.datetime.fromtimestamp(seconds, SHANGHAI).replace(tzinfo=None)
+        if result.year >= 2000 and result <= received + datetime.timedelta(minutes=5):
+            return result.replace(microsecond=result.microsecond // 1000 * 1000)
+    except (TypeError, ValueError, OSError, OverflowError):
+        pass
+    return received.replace(microsecond=received.microsecond // 1000 * 1000)
+
+
+class EntryMonitor:
+    def __init__(self, path: Path):
+        self.path = path
+        self.names: dict[int, str] = {}
+        self.queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=ENTRY_QUEUE_SIZE)
+        self.batch: list[dict] = []
+
+    def reload(self) -> bool:
+        try:
+            with self.path.open(encoding="utf-8-sig") as handle:
+                rows = json.load(handle)
+            if not isinstance(rows, list):
+                raise TypeError("visitor list must be an array")
+            names = {}
+            for row in rows:
+                if not isinstance(row, dict) or set(row) != {"uid", "name"}:
+                    raise ValueError("invalid visitor fields")
+                uid, name = row["uid"], row["name"]
+                if (
+                    type(uid) is not int
+                    or not 0 < uid < 2**64
+                    or not isinstance(name, str)
+                    or not name.strip()
+                    or uid in names
+                ):
+                    raise ValueError("invalid or duplicate visitor")
+                names[uid] = name.strip()
+            self.names = names
+            return True
+        except (OSError, TypeError, ValueError, UnicodeError) as exc:
+            logger.warning(
+                "[entry] list reload failed; retaining previous list error_type=%s",
+                type(exc).__name__,
+            )
+            return False
+
+    def receive(self, client, message) -> bool:
+        try:
+            room_id, uid = int(client.room_id), int(message.uid)
+            if (
+                int(message.msg_type) != 1
+                or uid not in self.names
+                or not 0 < room_id < 2**64
+            ):
+                return False
+            owner_uid = runtime_state.ROOM_UIDS.get(room_id)
+            # Unknown owner identity cannot safely satisfy the self-entry exclusion.
+            if owner_uid is None or uid == owner_uid:
+                return False
+            event_time = event_datetime(
+                getattr(message, "timestamp", None), now_local()
+            )
+            self.queue.put_nowait(
+                {"room_id": room_id, "uid": uid, "event_time": event_time}
+            )
+            return True
+        except asyncio.QueueFull:
+            logger.error("[entry] write queue full; entry dropped")
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            logger.warning("[entry] invalid interaction event")
+        return False
+
+    async def reload_scheduler(self) -> None:
+        while True:
+            await asyncio.sleep(ENTRY_RELOAD_SECONDS)
+            await asyncio.to_thread(self.reload)
+
+    def _drain(self) -> None:
+        while len(self.batch) < ENTRY_WRITE_BATCH_SIZE:
+            try:
+                self.batch.append(self.queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+    async def _save_batch(self) -> bool:
+        try:
+            await asyncio.to_thread(save_entries, list(self.batch))
+        except SQLAlchemyError as exc:
+            logger.error(
+                "[entry] write failed; retaining batch error_type=%s",
+                type(exc).__name__,
+            )
+            return False
+        for _ in self.batch:
+            self.queue.task_done()
+        self.batch.clear()
+        return True
+
+    async def worker(self) -> None:
+        while True:
+            if not self.batch:
+                self.batch.append(await self.queue.get())
+                await asyncio.sleep(0.25)
+            self._drain()
+            if not await self._save_batch():
+                await asyncio.sleep(2)
+
+    async def flush(self) -> None:
+        """Best-effort shutdown drain; failed writes remain in memory."""
+        self._drain()
+        while self.batch:
+            if not await self._save_batch():
+                return
+            self._drain()
+
+
+entry_monitor = EntryMonitor(config.ENTRY_USERS_JSON_PATH)
+
 
 COMMON_NOTICE_GIFT_COIN_MAP = {
     "干杯之旅": 10000,
@@ -78,6 +222,12 @@ class MyHandler(blivedm.BaseHandler):
         "CUT_OFF": room_lock_events.handle_cut_off,
         "WARNING": room_lock_events.handle_warning,
     }
+
+    def _on_interact_word(self, client, message) -> None:
+        entry_monitor.receive(client, message)
+
+    def _on_interact_word_v2(self, client, message) -> None:
+        entry_monitor.receive(client, message)
 
     def _resolve_session(self, client, session_id: int | None, event_time: datetime.datetime) -> int | None:
         if session_id is not None:
