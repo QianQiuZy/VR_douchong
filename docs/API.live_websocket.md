@@ -1,6 +1,10 @@
-# 直播 WebSocket 消息协议（2026-09-14 更新）
+# 直播 WebSocket 消息协议参考
 
 > 来源：`SocialSisterYi/bilibili-API-collect` + 浏览器捕获验证。
+
+原协议资料更新于 2026-09-14，历史抓包日期保留在对应章节；2026-10-13 按本地源码校正项目行为。本次没有重新连接 B 站验证平台协议，文中的实测结论仅代表原记录时的样本。
+
+本页列举的平台 CMD 不等于本项目全部支持。实际解析与入账范围见 [parsing.md](./parsing.md)，内置库维护见 [blivedm.md](./blivedm.md)，项目入口见 [README](../readme.md)。
 
 ## 连接方式
 
@@ -74,7 +78,7 @@ wss://{host}:{wss_port}/sub
 | CMD | 说明 |
 | --- | --- |
 | `SEND_GIFT` | 送礼物。含 `giftName`, `num`, `price`, `uid`, `uname`。 |
-| `SEND_GIFT_V2` | 送礼物新版（2026-07 灰度，含新盲盒包格式）。核心字段在 `data.data.pb`（base64 protobuf），见下节。 |
+| `SEND_GIFT_V2` | 送礼物新版（历史记录为 2026-07 灰度，含新盲盒包格式）。原始命令核心字段在 `command["data"]["pb"]`（base64 protobuf），见下节。 |
 | `COMBO_SEND` | 连击礼物。 |
 | `GIFT_STAR_PROCESS` | 礼物星球进度。 |
 | `POPULARITY_RED_POCKET_NEW` | 人气红包。 |
@@ -103,6 +107,7 @@ wss://{host}:{wss_port}/sub
 | CMD | 说明 |
 | --- | --- |
 | `INTERACT_WORD` | 用户进入直播间 / 关注 / 分享。`msg_type`: 1=进入, 2=关注, 3=分享。 |
+| `INTERACT_WORD_V2` | 互动新版，`command["data"]["pb"]` 为 base64 protobuf；项目仅采集名单 UID 的进房事件。 |
 | `ENTRY_EFFECT` | 入场特效（舰长/年费老爷等）。 |
 | `WELCOME` | 欢迎老爷。 |
 | `WELCOME_GUARD` | 欢迎舰长。 |
@@ -120,7 +125,7 @@ wss://{host}:{wss_port}/sub
 | `PREPARING` | 下播。 |
 | `ROOM_CHANGE` | 房间信息变更（标题/分区）。 |
 | `ROOM_BLOCK_MSG` | 用户被封禁。 |
-| `ROOM_LOCK` | 直播间被封禁；立即结束当前场次，以 `send_time` 为下播时间。 |
+| `ROOM_LOCK` | 直播间被封禁；以 `send_time` 停止当前片段并进入三分钟宽限流程，另受解封时间约束。 |
 | `ROOM_SILENT_ON` | 全员禁言开启。 |
 | `ROOM_SILENT_OFF` | 全员禁言关闭。 |
 | `CUT_OFF` | 超管掐断直播；以 `send_time` 记为下播，保留三分钟宽限期，期内复播沿用原场次。 |
@@ -128,6 +133,8 @@ wss://{host}:{wss_port}/sub
 | `LIVE_INTERACTIVE_GAME` | 互动游戏。 |
 
 `ROOM_LOCK` 的 `room_id`、`send_time`（毫秒时间戳）和 `expire`（北京时间的解封时间）位于消息顶层，不在 `data` 中。采集器在解封前忽略该房间的滞后在播状态；不再通过 `room_init` 推断封禁。
+
+本项目也处理顶层 `WARNING`（`roomid`、毫秒 `send_time`）：仅作废当前片段有效时长，不主动下播。`CUT_OFF`、`ROOM_LOCK` 作废当前片段并强制下播，保留 180 秒场次合并边界。`LIVE`、`PREPARING` 当前未接入业务回调，状态 API 轮询仍负责开下播校正，详见 [parsing.md](./parsing.md)。
 
 ### 活动/抽奖
 
@@ -168,7 +175,7 @@ wss://{host}:{wss_port}/sub
 
 ## 关键事件 data 结构（2026-06-15 实测）
 
-> 以下为登录态 WebSocket（op7 鉴权 + protover 2/zlib）实抓样本解析。升级/等级类事件另见 [`API.live_upgrade_events.md`](./API.live_upgrade_events.md)。
+> 以下为原记录中的登录态 WebSocket（op7 鉴权 + protover 2/zlib）实抓样本解析。原资料提及的 `API.live_upgrade_events.md` 未包含在本仓库，不作为当前支持范围依据。
 
 ### DANMU_MSG.info[] 数组结构
 
@@ -208,9 +215,9 @@ wss://{host}:{wss_port}/sub
 
 ### SEND_GIFT_V2（protobuf 编码，2026-07 灰度中）
 
-> 2026-07 起 B 站对送礼事件灰度上线 `SEND_GIFT_V2`。实测 100 个直播间中仅个别直播间完全从 `SEND_GIFT` 切到 `SEND_GIFT_V2`，两者尚未全量替换，消费端需**同时兼容** `SEND_GIFT`（JSON）与 `SEND_GIFT_V2`（protobuf）。
+> 原记录观察到 2026-07 起 B 站对送礼事件灰度上线 `SEND_GIFT_V2`，当时 100 个直播间样本中仅个别房间完全切换。该样本不代表当前全平台覆盖率；本项目继续兼容 `SEND_GIFT`（JSON）与 `SEND_GIFT_V2`（protobuf）。
 
-与旧版最大区别：核心业务字段不再是明文 JSON，而是塞进 `data.data.pb`（base64 + protobuf）。外层仍是 JSON：
+与旧版最大区别：核心业务字段不再是明文 JSON，而是塞进原始命令的 `command["data"]["pb"]`（base64 + protobuf）。外层仍是 JSON：
 
 ```json
 {
@@ -223,10 +230,10 @@ wss://{host}:{wss_port}/sub
 }
 ```
 
-**解析步骤**：`base64decode(data.data.pb)` → 按下方 proto 反序列化。以下字段名依据与旧版 `SEND_GIFT` JSON 的语义对照 + 实测值逆向而来，标 `?` 的为推断字段，消费端应做类型与存在性保护。
+**解析步骤**：`base64decode(command["data"]["pb"])` → 按下方 proto 反序列化。以下字段名依据与旧版 `SEND_GIFT` JSON 的语义对照 + 实测值逆向而来，标 `?` 的为推断字段，消费端应做类型与存在性保护。本地模型只声明当前需要的字段，不实现下方所有推断结构。
 
 ```proto
-// SEND_GIFT_V2 data.data.pb 结构（逆向，字段名为推断）
+// SEND_GIFT_V2 command["data"]["pb"] 结构（逆向，字段名为推断）
 message SendGiftV2 {
   uint64 uid          = 1;  // 送礼用户 uid
   string uname        = 2;  // 送礼用户昵称
@@ -315,7 +322,7 @@ message UserInfo {           // 完整用户信息（base + medal）
 2. `gift` 为空，或任一 `GiftData` 的 `gift_id <= 0`、`num <= 0`、`gift_name` 为空时，判定整个事件无效。
 3. 判断 `blind.original_gift_id` 或 `blind.original_gift_name` 是否存在；任一存在即按盲盒处理。
 4. 为 `gift[]` 中的每一条记录生成一个 `GiftMessage`，因此一个 WebSocket 事件可能触发多条送礼回调。
-5. 普通礼物的归一化总价为 `gift[i].total_coin`；盲盒的归一化总价为 `gift[i].price × gift[i].num`。原始 `gift[i].total_coin` 仍保留，用于盲盒价值/盈亏计算。
+5. 盲盒的归一化 `total_price` 为 `gift[i].price × gift[i].num`，`total_coin` 保留原始字段用于既有盈亏计算。普通多数量礼物在 `num != 1` 且原始 `total_coin > 0` 时，两个总价字段均归一化为 `price × num`；其他普通礼物保留原始 `total_coin`，包括单个折扣礼物和原始金额为 0 的免费礼物。完整规则见 [parsing.md](./parsing.md)。
 
 处理回调必须遍历解码结果并逐条入账，不能只处理第一条：
 
@@ -328,7 +335,7 @@ for message in messages:
 **关键落地建议**：
 - `SEND_GIFT_V2` 与 `SEND_GIFT` 语义等价，映射关系：pb `uid/uname/face` ↔ 旧版 `uid/uname/face`；`gift[i].gift_id/gift_name/num/price/total_coin/coin_type/action` ↔ 旧版同名字段；`medal` ↔ `medal_info`；`blind` ↔ `blind_gift`；`sender` ↔ `sender_uinfo`。
 - 颜色字段在 pb `MedalInfo` 中为十进制整数，在 `UserInfo.medal` 中为 `#RRGGBBAA` 十六进制串（如 `#3FB4F699`），两处表示不同，勿混用。
-- `?` 字段含义未确认，切勿硬编码依赖；普通礼物以 `total_coin`（#6）作为计费/统计金额，盲盒按上面的归一化规则处理。
+- `?` 字段含义未确认，切勿硬编码依赖；本项目按上面的单个/多数量/盲盒规则先归一化，再由业务回调使用 `GiftMessage.total_price` 入账。
 - 盲盒礼物：`blind.original_gift_name`=用户抽的盲盒名，`gift[i].gift_name`=实际爆出的礼物；`blind.blind_price` 是原始盲盒价格字段，但当前解析器使用 `gift[i].price × gift[i].num` 生成归一化总价。
 
 ### 其他高频事件
@@ -348,7 +355,8 @@ for message in messages:
 - 协议版本 3（brotli 压缩）是当前 Web 端默认，需解压后按包头递归解析。无 brotli 环境可在鉴权包改用 protover 2 走 zlib。
 - `DANMU_MSG` 的 `info` 字段是数组格式（非对象），结构见上节。
 - `SEND_GIFT` 中 `coin_type` 区分金瓜子(gold)和银瓜子(silver)礼物。
-- `SEND_GIFT_V2`（2026-07 灰度，含新盲盒包）核心字段迁至 `data.data.pb`（base64 protobuf），且 field 10 为重复的 `GiftData` 列表，需先解码并逐条处理；尚未全量替换 `SEND_GIFT`，消费端需同时兼容两者。
+- `SEND_GIFT_V2` 原始命令核心字段在 `command["data"]["pb"]`（base64 protobuf），且 field 10 为重复的 `GiftData` 列表，需先解码并逐条处理；本项目保留与 `SEND_GIFT` 的兼容。
 - `INTERACT_WORD_V2`、`ONLINE_RANK_V3`、`SEND_GIFT_V2` 等新版事件已 **protobuf 编码**，明文 JSON 解析会失败，需先 base64 解码再按 proto 反序列化。
+- `ONLINE_RANK_V3` 在此仅为协议参考，本地没有对应榜单模型或业务入账；不能把协议编码说明当作实现完成。
 - 同一个事件可能同时推送多种 CMD（如上舰同时推送 `GUARD_BUY` + `USER_TOAST_MSG` + `NOTICE_MSG`）。
 - 匿名连接（uid=0）实测被风控拒绝，需带登录态 `uid` + `buvid3`。

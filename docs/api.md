@@ -2,6 +2,8 @@
 
 本文档基于当前项目实现的 FastAPI，整理所有已对外暴露的接口请求方式与返回字段说明。
 
+运行与缓存约定见 [runtime.md](./runtime.md)，接口开发与验证见 [development.md](./development.md)，项目入口见 [README](../readme.md)。
+
 ## 通用约定
 
 - 基础地址：`https://vr.qianqiuzy.cn` `https://psp.qianqiuzy.cn`
