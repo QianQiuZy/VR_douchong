@@ -171,7 +171,7 @@ class SuperChatLog(Base):
 
 
 class LiveSession15mStats(Base):
-    """Session-relative 15-minute metrics; mutable because ORM rows are updated."""  # noqa: MUTABLE_OK
+    """Session-relative 15-minute metrics; mutable because ORM rows are updated."""  # MUTABLE_OK
 
     __tablename__ = "live_session_15m_stats"
     session_id = Column(Integer, primary_key=True)

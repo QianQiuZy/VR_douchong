@@ -58,7 +58,8 @@ _EMPTY_ENV = FIXTURES_DIR / "empty.env"
 if not _EMPTY_ENV.exists():
     _EMPTY_ENV.write_text("", encoding="utf-8")
 
-_TEST_ROOMS_JSON = FIXTURES_DIR / "rooms.json"
+_TEST_ROOMS_JSON = FIXTURES_DIR / "config" / "rooms.json"
+_TEST_ROOMS_JSON.parent.mkdir(exist_ok=True)
 
 
 def _write_baseline_rooms_json() -> None:

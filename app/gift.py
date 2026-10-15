@@ -136,7 +136,7 @@ COMMON_NOTICE_GIFT_COIN_MAP = event_ingestion.COMMON_NOTICE_GIFT_COIN_MAP
 
 
 # ------------------ Archive service compat re-exports ------------------ #
-from . import archive_service as _archive_service
+from . import archive_service as _archive_service  # noqa: E402 - compatibility wiring order
 
 archive_super_chat_log = _archive_service.archive_super_chat_log
 archive_live_session_15m_stats = _archive_service.archive_live_session_15m_stats
@@ -351,7 +351,7 @@ _flush_pending_danmaku_for_room = monitoring_jobs.flush_pending_danmaku_for_room
 
 
 # ------------------ API app / route compat re-exports ------------------ #
-from . import api_app as _api_app
+from . import api_app as _api_app  # noqa: E402 - compatibility wiring order
 
 app = _api_app.app
 _run_in_main_loop = _api_app._run_in_main_loop
@@ -374,7 +374,7 @@ get_sc_logs = _api_app.get_sc_logs
 
 
 # ------------------ Bootstrap compat re-exports ------------------ #
-from . import bootstrap as _bootstrap
+from . import bootstrap as _bootstrap  # noqa: E402 - compatibility wiring order
 
 logger = logging.getLogger(__name__)
 

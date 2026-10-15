@@ -249,7 +249,7 @@ def test_deployed_list_path_follows_env_file_directory(tmp_path):
     )
     repo = str(event_ingestion.Path(__file__).resolve().parents[1])
     for setting, expected in (
-        (None, deployed_env.parent / "entry_users.json"),
+        (None, deployed_env.parent / "config" / "entry_users.json"),
         ("visitors.json", deployed_env.parent / "visitors.json"),
     ):
         if setting:

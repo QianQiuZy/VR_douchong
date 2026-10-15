@@ -1,0 +1,83 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      integration:
+        description: Run disposable MySQL / Redis integration tests
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Shanghai
+  PYTHONUTF8: "1"
+  UV_PYTHON_DOWNLOADS: automatic
+
+jobs:
+  ubuntu:
+    name: Ubuntu 24.04 x86-64 / Python 3.13.11
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.11.7"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install deployment Python
+        run: uv python install
+      - name: Run shared checks
+        run: bash scripts/check.sh
+
+  integration:
+    name: Disposable MySQL / Redis integration
+    if: github.event_name == 'workflow_dispatch' && inputs.integration
+    needs: ubuntu
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:5.7.44
+        env:
+          MYSQL_ROOT_PASSWORD: vr_cache_test
+          MYSQL_DATABASE: vr_cache_test
+        ports:
+          - 33060:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pvr_cache_test"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+      redis:
+        image: redis:8.0.5
+        ports:
+          - 63790:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=3s --health-retries=12
+    env:
+      VR_CACHE_TEST_MYSQL_PORT: "33060"
+      VR_CACHE_TEST_REDIS_PORT: "63790"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.11.7"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install
+      - run: uv sync --locked --group dev
+      - run: uv run --locked --no-sync pytest -q tests/test_api_cache_integration.py

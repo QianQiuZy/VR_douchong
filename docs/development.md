@@ -1,6 +1,6 @@
 # 开发规范
 
-核对日期：2026-10-13。以当前源码为准；运行边界见 [runtime.md](./runtime.md)，实际事件范围见 [parsing.md](./parsing.md)，业务接口见 [api.md](./api.md)。
+核对日期：2026-10-16。以当前源码为准；运行边界见 [runtime.md](./runtime.md)，实际事件范围见 [parsing.md](./parsing.md)，业务接口见 [api.md](./api.md)。
 
 ## 入口与模块归属
 
@@ -45,7 +45,13 @@
 
 ## 环境与配置
 
-默认在 WSL 中使用项目自己的解释器。新建环境不继承全局包，Windows 环境与 WSL 分开；不复用其他仓库的依赖目录。已有 `.venv` 不随意重建：本地核对其 `include-system-site-packages = true`，因此现有环境通过检查并不代表干净环境可复现。
+部署基准为 OpenCloudOS 9.2 x86-64、Python 3.13.11；本机 WSL 为 Ubuntu 24.04 x86-64。安装 uv 0.11.7，使用 `.python-version`、`pyproject.toml` 和提交的 `uv.lock`，本地和 CI 均执行 `bash scripts/check.sh`。项目按应用管理，不发布 Python 包；运行依赖在 `project.dependencies`，开发依赖在 `dependency-groups.dev`。
+
+新建环境不继承全局包，Windows 环境与 WSL 分开；不复用其他仓库的依赖目录。已有 `.venv` 不随意重建：原本地环境 `include-system-site-packages = true`，因此使用新建 `.venv-ci` 验证。命令前设置 `UV_PROJECT_ENVIRONMENT=.venv-ci` 可保留旧环境；`scripts/check_project.py` 检查 Python 补丁版本和环境隔离，拒绝继承全局包的环境。
+
+修改依赖后执行 `uv lock` 并审查 `pyproject.toml` / `uv.lock` 差异。只有明确升级依赖时才使用 `uv lock --upgrade`；部署使用 `uv sync --locked --no-dev`，检查使用 `uv sync --locked --group dev`，防止运行时静默改变锁文件。旧 requirements 文件已移除，不再维护第二份依赖清单。
+
+项目当前正式版本为 `1.0.0`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
 
 安装依赖前确认实际解释器。安装、Git 等外网开发命令沿用会话代理配置；未配置时按工作区约定检查 `http://127.0.0.1:10808` 是否可达后，仅为该命令/会话配置。回环与专用本地测试服务直连，不把本机代理写入业务配置。
 
@@ -56,9 +62,8 @@
 安装和基本检查（已有环境直接使用，不覆盖重建）：
 
 ```bash
-.venv/bin/python -m pip install -r requirements-dev.txt
-.venv/bin/python -m ruff check .
-.venv/bin/python -m pytest -q
+uv python install
+bash scripts/check.sh
 git diff --check
 ```
 
@@ -77,7 +82,7 @@ git diff --check
 这些测试位于 `tests/`。例如：
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_send_gift_v2.py tests/test_send_gift_v2_batch.py
+uv run --locked pytest -q tests/test_send_gift_v2.py tests/test_send_gift_v2_batch.py
 ```
 
 默认 `tests/conftest.py` 指向空配置、测试房间文件并阻止实际数据库初始化，不读取真实 `.env` 或连接 B 站。旧报表测试走离线路径，缓存测试分别启用隔离缓存。
@@ -87,10 +92,32 @@ git diff --check
 ```bash
 VR_CACHE_TEST_MYSQL_PORT=<本机专用 MySQL 测试端口> \
 VR_CACHE_TEST_REDIS_PORT=<本机专用 Redis 测试端口> \
-.venv/bin/python -m pytest -q tests/test_api_cache_integration.py
+uv run --locked pytest -q tests/test_api_cache_integration.py
 ```
 
 未提供端口时相应集成测试跳过，不能将跳过称为通过。离线测试、隔离数据库验证、真实 B 站与线上主机验证应分别报告；文档整理只需检查内容、相对链接和差异，不必启动真实服务。
+
+## GitHub Actions
+
+`.github/workflows/ci.yml` 默认只有一个 Ubuntu 24.04 x86-64 任务，与当前 WSL 系统保持一致，统一运行 `scripts/check.sh`：锁文件安装、`uv pip check`、Ruff、Python 语法及业务 JSON 结构检查、完整离线 pytest。Python 固定为部署版本 3.13.11，本机与云端使用同一锁文件。CI 不额外启动 OpenCloudOS 容器，不声称 Ubuntu 检查等同于云端系统验证。
+
+为节省额度，集成任务仅在手动触发并勾选 `integration` 且默认检查通过后运行；它使用 GitHub 的临时 MySQL 5.7.44 / Redis 8.0.5 服务，运行已有六项集成测试。测试数据库和凭据均为测试专用，不配置生产 Secrets。工作流只有仓库只读权限，第三方 Actions 固定提交 SHA，启用依赖缓存并自动取消同一分支的旧运行。没有配置自动部署。
+
+Ruff 明确启用 E4/E7/E9/F；内置 blivedm 仅为既有星号导入保留 F403/F405 的文件级兼容，其他规则照常检查。`gift.py` 的延后导入用于原有兼容接线，按行说明 E402 原因；不借配置迁移更改 V2 协议处理。
+
+## 提交规范
+
+参照 liveshow 的版本化提交方式，标题格式为：
+
+```text
+v<版本> <YYYY-MM-DD> <维护者> [<类型>](<范围>) <摘要>
+```
+
+例如：`v1.0.0 2026-10-16 QianQiuZy [improvement](project) 规范化项目配置与检查流程`。版本对应 `main.py` 的 `__version__`，维护者填写实际账号；Git 作者沿用本仓库真实身份，不复制参考项目的作者。
+
+正文按 `[类型](范围)` 说明最终改动，列出相关文件和验证结果，使用真实换行与仓库相对路径。常用类型包括 `feature`、`fix`、`improvement`、`performance`、`docs`。
+
+只有用户主动明确要求时才创建 commit；push 需要单独授权。授权范围限定在当前任务和指定仓库，不自动提交相邻独立 blivedm 仓库或工作区文档。
 
 ## 文档同步与交付
 

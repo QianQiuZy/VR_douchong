@@ -233,12 +233,14 @@ def month_aggregate_for_month(
         ).filter(and_(model.room_id == room_id, model.date >= start, model.date < end)).tuples().one()
         return int(total_sec), int(eff_days)
     except SQLAlchemyError as exc:
-        if not owns_session: raise
+        if not owns_session:
+            raise
         session.rollback()
         logger.error(f"[RoomLiveStats] month_aggregate_for_month 读取失败: {exc}")
         return {} if isinstance(room_id, list) else (0, 0)
     finally:
-        if owns_session: session.close()
+        if owns_session:
+            session.close()
 
 
 def month_steel_coin_for_month(
@@ -294,9 +296,11 @@ def month_steel_coin_for_month(
         ).filter(and_(model.room_id == room_id, model.date >= start, model.date < end)))
         return int(current_value or 0)
     except SQLAlchemyError as exc:
-        if not owns_session: raise
+        if not owns_session:
+            raise
         session.rollback()
         logger.error(f"[RoomLiveStats] month_steel_coin_for_month 读取失败: {exc}")
         return {} if isinstance(room_id, list) else 0
     finally:
-        if owns_session: session.close()
+        if owns_session:
+            session.close()

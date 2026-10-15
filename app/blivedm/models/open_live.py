@@ -24,6 +24,8 @@ class DanmakuMessage:
     """用户昵称"""
     open_id: str = ''
     """用户唯一标识"""
+    union_id: str = ''
+    """用户在同一个开发者下的唯一标识(默认为空，根据业务需求单独申请开通)"""
     uface: str = ''
     """用户头像"""
     timestamp: int = 0
@@ -62,6 +64,7 @@ class DanmakuMessage:
         return cls(
             uname=data['uname'],
             open_id=data['open_id'],
+            union_id=data.get('union_id', ''),
             uface=data['uface'],
             timestamp=data['timestamp'],
             room_id=data['room_id'],
@@ -90,6 +93,8 @@ class AnchorInfo:
     """收礼主播uid"""
     open_id: str = ''
     """收礼主播唯一标识"""
+    union_id: str = ''
+    """用户在同一个开发者下的唯一标识(默认为空，根据业务需求单独申请开通)"""
     uname: str = ''
     """收礼主播昵称"""
     uface: str = ''
@@ -100,6 +105,7 @@ class AnchorInfo:
         return cls(
             uid=data['uid'],
             open_id=data['open_id'],
+            union_id=data.get('union_id', ''),
             uname=data['uname'],
             uface=data['uface'],
         )
@@ -131,6 +137,25 @@ class ComboInfo:
 
 
 @dataclasses.dataclass
+class BlindGift:
+    """
+    盲盒信息
+    """
+
+    blind_gift_id: int = 0
+    """盲盒id"""
+    status: bool = False
+    """是否是盲盒"""
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        return cls(
+            blind_gift_id=data['blind_gift_id'],
+            status=data['status'],
+        )
+
+
+@dataclasses.dataclass
 class GiftMessage:
     """
     礼物消息
@@ -140,6 +165,8 @@ class GiftMessage:
     """房间号"""
     open_id: str = ''
     """用户唯一标识"""
+    union_id: str = ''
+    """用户在同一个开发者下的唯一标识(默认为空，根据业务需求单独申请开通)"""
     uname: str = ''
     """送礼用户昵称"""
     uface: str = ''
@@ -187,6 +214,8 @@ class GiftMessage:
     """是否是combo道具"""
     combo_info: ComboInfo = dataclasses.field(default_factory=ComboInfo)
     """连击信息"""
+    blind_gift: BlindGift = dataclasses.field(default_factory=BlindGift)
+    """盲盒信息"""
 
     @classmethod
     def from_command(cls, data: dict):
@@ -196,9 +225,16 @@ class GiftMessage:
         else:
             combo_info = ComboInfo.from_dict(combo_info)
 
+        blind_gift = data.get('blind_gift', None)
+        if blind_gift is None:
+            blind_gift = BlindGift()
+        else:
+            blind_gift = BlindGift.from_dict(blind_gift)
+
         return cls(
             room_id=data['room_id'],
             open_id=data['open_id'],
+            union_id=data.get('union_id', ''),
             uname=data['uname'],
             uface=data['uface'],
             gift_id=data['gift_id'],
@@ -217,6 +253,7 @@ class GiftMessage:
             gift_icon=data['gift_icon'],
             combo_gift=data.get('combo_gift', False),  # 官方的调试工具没发这个字段
             combo_info=combo_info,  # 官方的调试工具没发这个字段
+            blind_gift=blind_gift,  # 官方的调试工具没发这个字段
         )
 
 
@@ -228,6 +265,8 @@ class UserInfo:
 
     open_id: str = ''
     """用户唯一标识"""
+    union_id: str = ''
+    """用户在同一个开发者下的唯一标识(默认为空，根据业务需求单独申请开通)"""
     uname: str = ''
     """用户昵称"""
     uface: str = ''
@@ -237,6 +276,7 @@ class UserInfo:
     def from_dict(cls, data: dict):
         return cls(
             open_id=data['open_id'],
+            union_id=data.get('union_id', ''),
             uname=data['uname'],
             uface=data['uface'],
         )
@@ -298,6 +338,8 @@ class SuperChatMessage:
     """直播间id"""
     open_id: str = ''
     """用户唯一标识"""
+    union_id: str = ''
+    """用户在同一个开发者下的唯一标识(默认为空，根据业务需求单独申请开通)"""
     uname: str = ''
     """购买的用户昵称"""
     uface: str = ''
@@ -330,6 +372,7 @@ class SuperChatMessage:
         return cls(
             room_id=data['room_id'],
             open_id=data['open_id'],
+            union_id=data.get('union_id', ''),
             uname=data['uname'],
             uface=data['uface'],
             message_id=data['message_id'],
@@ -383,6 +426,8 @@ class LikeMessage:
     """用户昵称"""
     open_id: str = ''
     """用户唯一标识"""
+    union_id: str = ''
+    """用户在同一个开发者下的唯一标识(默认为空，根据业务需求单独申请开通)"""
     uface: str = ''
     """用户头像"""
     timestamp: int = 0
@@ -408,6 +453,7 @@ class LikeMessage:
         return cls(
             uname=data['uname'],
             open_id=data['open_id'],
+            union_id=data.get('union_id', ''),
             uface=data['uface'],
             timestamp=data['timestamp'],
             room_id=data['room_id'],
@@ -434,6 +480,8 @@ class RoomEnterMessage:
     """用户昵称"""
     open_id: str = ''
     """用户唯一标识"""
+    union_id: str = ''
+    """用户在同一个开发者下的唯一标识(默认为空，根据业务需求单独申请开通)"""
     timestamp: int = 0
     """发生的时间戳"""
     msg_id: str = ''  # 官方文档表格里没列出这个字段，但是实际上有
@@ -446,6 +494,7 @@ class RoomEnterMessage:
             uface=data['uface'],
             uname=data['uname'],
             open_id=data['open_id'],
+            union_id=data.get('union_id', ''),
             timestamp=data['timestamp'],
             msg_id=data.get('msg_id', ''),  # 官方文档表格里没列出这个字段，但是实际上有
         )
@@ -461,6 +510,8 @@ class LiveStartMessage:
     """直播间id"""
     open_id: str = ''
     """用户唯一标识"""
+    union_id: str = ''
+    """用户在同一个开发者下的唯一标识(默认为空，根据业务需求单独申请开通)"""
     timestamp: int = 0
     """发生的时间戳"""
     area_name: str = ''
@@ -475,6 +526,7 @@ class LiveStartMessage:
         return cls(
             room_id=data['room_id'],
             open_id=data['open_id'],
+            union_id=data.get('union_id', ''),
             timestamp=data['timestamp'],
             area_name=data['area_name'],
             title=data['title'],
@@ -492,6 +544,8 @@ class LiveEndMessage:
     """直播间id"""
     open_id: str = ''
     """用户唯一标识"""
+    union_id: str = ''
+    """用户在同一个开发者下的唯一标识(默认为空，根据业务需求单独申请开通)"""
     timestamp: int = 0
     """发生的时间戳"""
     area_name: str = ''
@@ -506,6 +560,7 @@ class LiveEndMessage:
         return cls(
             room_id=data['room_id'],
             open_id=data['open_id'],
+            union_id=data.get('union_id', ''),
             timestamp=data['timestamp'],
             area_name=data['area_name'],
             title=data['title'],

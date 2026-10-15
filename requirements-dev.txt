@@ -1,5 +1,0 @@
--r requirements.txt
-pytest
-ruff
-httpx
-fakeredis[lua]

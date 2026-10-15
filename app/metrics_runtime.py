@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 BUCKET_SECONDS = 15 * 60
 
 
-@dataclass(slots=True)  # noqa: MUTABLE_OK
+@dataclass(slots=True)  # MUTABLE_OK
 class _Bucket:
     """Mutable accumulator for one session-relative interval."""
 

@@ -1,8 +1,0 @@
-fastapi
-uvicorn
-SQLAlchemy
-PyMySQL
-requests
-aiohttp
-pure-protobuf
-redis

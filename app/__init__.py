@@ -41,9 +41,9 @@ class DanmakuBucketTarget:
     end_time: datetime.datetime
 
 
-@dataclass(slots=True)  # noqa: MUTABLE_OK
+@dataclass(slots=True)  # MUTABLE_OK
 class PendingDanmaku:
-    """Mutable per-destination queues for one room's unflushed danmaku."""  # noqa: MUTABLE_OK
+    """Mutable per-destination queues for one room's unflushed danmaku."""  # MUTABLE_OK
 
     monthly: dict[str, DanmakuCounts] = field(default_factory=dict)
     sessions: dict[int, DanmakuCounts] = field(default_factory=dict)

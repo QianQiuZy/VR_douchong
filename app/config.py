@@ -7,7 +7,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
+DEFAULT_CONFIG_DIR = PROJECT_ROOT / "config"
 
 
 def load_env_file(env_path: str | Path = DEFAULT_ENV_FILE) -> None:
@@ -49,11 +51,15 @@ _env_file_override = os.getenv("ENV_FILE")
 ENV_FILE_PATH = Path(_env_file_override if _env_file_override is not None else DEFAULT_ENV_FILE).resolve()
 load_env_file(ENV_FILE_PATH)
 
-# Relative visitor-list paths follow the deployed env file, not the launcher cwd.
-_entry_users_path = Path(os.getenv("ENTRY_USERS_JSON_PATH", "entry_users.json"))
-ENTRY_USERS_JSON_PATH = (
-    _entry_users_path if _entry_users_path.is_absolute() else ENV_FILE_PATH.parent / _entry_users_path
-)
+
+def resolve_config_path(name: str, filename: str) -> Path:
+    """Resolve JSON settings beside the selected env file, independent of cwd."""
+    path = Path(os.getenv(name) or str(Path("config") / filename))
+    return path if path.is_absolute() else ENV_FILE_PATH.parent / path
+
+
+ROOMS_JSON_PATH = resolve_config_path("ROOMS_JSON_PATH", "rooms.json")
+ENTRY_USERS_JSON_PATH = resolve_config_path("ENTRY_USERS_JSON_PATH", "entry_users.json")
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),

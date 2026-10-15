@@ -2,19 +2,18 @@
 
 import asyncio
 import datetime
-import os
 import threading
-from pathlib import Path
 
 import aiohttp
 
 from . import PendingDanmaku
+from . import config
 from .live_client import AuthenticatedLiveClient
 
 # Entry timestamps use Shanghai time explicitly, independently of the host TZ.
 SHANGHAI = datetime.timezone(datetime.timedelta(hours=8), name="Asia/Shanghai")
-DEFAULT_ROOMS_JSON_PATH = Path(__file__).resolve().parents[1] / "rooms.json"
-ROOMS_JSON_PATH = os.getenv("ROOMS_JSON_PATH", str(DEFAULT_ROOMS_JSON_PATH))
+DEFAULT_ROOMS_JSON_PATH = config.DEFAULT_CONFIG_DIR / "rooms.json"
+ROOMS_JSON_PATH = str(config.ROOMS_JSON_PATH)
 ROOM_CONFIG_LOCK = threading.Lock()
 ROOM_IDS: list[int] = []
 ROOM_ANCHORS: dict[int, str] = {}

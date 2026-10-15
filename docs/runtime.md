@@ -43,9 +43,9 @@
 
 ## 访客进房记录
 
-原有 `rooms.json` 仍只管理 WS 连接房间。新增 `entry_users.json` 为独立访客名单，初始从 StarBot 导入 UID 和名称，此后直接维护本项目部署文件，不再同步 StarBot。
+`config/rooms.json` 只管理 VR 的 WS 连接房间，`config/psp_rooms.json` 为 PSP 房间配置，通过 `ROOMS_JSON_PATH` 选择。`config/entry_users.json` 为独立访客名单，初始从 StarBot 导入 UID 和名称，此后直接维护本项目部署文件，不再同步 StarBot。
 
-部署时把名单放到实际使用的 `.env` 同一目录。默认路径为 `entry_users.json`；可通过 `ENTRY_USERS_JSON_PATH` 指定其他路径，相对路径以 `ENV_FILE` / `.env` 所在目录为基准，不受启动目录影响。格式如下：
+业务 JSON 默认放到实际 `.env` 所在目录下的 `config/`。房间和访客名单默认分别为 `config/rooms.json` 与 `config/entry_users.json`；可通过 `ROOMS_JSON_PATH`、`ENTRY_USERS_JSON_PATH` 指定其他路径，显式绝对路径保持原意，相对路径均以 `ENV_FILE` / `.env` 所在目录为基准，不受启动目录影响。升级时移动部署中的 JSON 并更新环境变量，不覆盖线上已有名单或房间。访客名单格式如下：
 
 ```json
 [

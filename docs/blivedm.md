@@ -7,12 +7,14 @@ VR_douchong 实际导入的是本仓库 `app/blivedm/`，例如 `app/live_client
 当前用户保留的版本标识为：
 
 ```python
-__version__ = '1.0.0-VR_douchong'
+__version__ = '1.0.1-VR_douchong'
 ```
 
 该值标识本项目内置维护版本，不应在同步上游时覆盖回 `1.1.5-dev`。它不是发布到 PyPI 或打包可用性的验证结论。
 
-本次只整理文档并保留该修改；独立维护分支以后处理，不创建或切换相邻 blivedm 仓库分支，不改成 pip 包或子模块，不迁移源码、不提交或推送。
+独立维护库位于相邻的 `blivedm` 仓库，当前维护分支为 `dev`。VR_douchong 继续使用内置源码，同步时保持两份库源码一致，不改为包依赖或子模块。
+
+`1.0.1-VR_douchong` 同步上游 `a5d38ab` 的 UA 更新、`e9be374` 与 `0da0c10` 的开放平台 `union_id` 和盲盒模型更新，并补齐 `logged_unknown_cmds`。开放平台保留 `open_id`，缺少 `union_id` 时默认为空；Web 端 V2 解析、金额映射及回调保持不变。
 
 ## 源码职责与现有定制
 
@@ -29,23 +31,23 @@ __version__ = '1.0.0-VR_douchong'
 
 这是当前维护面清单，不是对上游全部差异的完整审计。具体行为见 [parsing.md](./parsing.md)；提交上游或迁移分支前应比较确定的上游基线。
 
-## 后续独立分支维护流程
+## 独立分支维护流程
 
-1. 确认目标独立 blivedm 仓库、现有分支和脏工作树，记录上游基线提交与 VR_douchong 来源提交；分支名可采用 `vr-douchong`，实际创建时确定。
+1. 确认目标独立 blivedm 仓库、现有 `dev` 分支和脏工作树，记录上游基线提交与 VR_douchong 来源提交。
 2. 将通用协议模型、兼容处理和回调修正迁入维护分支，保留本版本标识；不迁入 MySQL、Redis、FastAPI、访客名单或本项目场次业务。
 3. 对比维护分支与上游的真实 diff，给每项本地改动写明原因、字段样本和回归测试。不要用覆盖整个目录的方式同步上游。
 4. 同步上游时先合并/挑选明确提交，再核对旧 JSON、V2 批量、盲盒、互动与成功鉴权的兼容合同。保留上游许可证与来源说明。
 5. 选择回同步 VR_douchong 的方式：继续内置源码、子模块或包依赖需另行确定。继续内置时记录独立库提交，避免两个目录分别修改后无法追溯。
 6. 在两个仓库各自环境中验证，并记录“独立库验证”与“VR_douchong 集成验证”；跨仓库同步、提交和推送按实际授权执行。
 
-原版本字符串是否符合未来打包要求应在发布任务中验证，不在本次文档整理中擅自更改。
+原版本字符串是否符合未来打包要求应在发布任务中验证。
 
 ## 同步后的相关回归
 
 从 VR_douchong 仓库根目录，使用本项目解释器：
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_send_gift_v2.py tests/test_send_gift_v2_batch.py tests/test_entry_events.py tests/test_live_client_authentication.py tests/test_live_first_startup.py
+uv run --locked pytest -q tests/test_send_gift_v2.py tests/test_send_gift_v2_batch.py tests/test_entry_events.py tests/test_live_client_authentication.py tests/test_live_first_startup.py
 ```
 
 若调整 CMD 分发或生命周期，再运行 `test_room_lock.py`、`test_room_cut_off.py`、`test_session_duration_validity.py`。不得启动第二个真实采集器验证分支；隔离测试方法见 [development.md](./development.md)。
