@@ -51,7 +51,7 @@
 
 修改依赖后执行 `uv lock` 并审查 `pyproject.toml` / `uv.lock` 差异。只有明确升级依赖时才使用 `uv lock --upgrade`；部署使用 `uv sync --locked --no-dev`，检查使用 `uv sync --locked --group dev`，防止运行时静默改变锁文件。旧 requirements 文件已移除，不再维护第二份依赖清单。
 
-项目当前正式版本为 `1.0.0`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
+项目当前正式版本为 `1.0.1`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
 
 安装依赖前确认实际解释器。安装、Git 等外网开发命令沿用会话代理配置；未配置时按工作区约定检查 `http://127.0.0.1:10808` 是否可达后，仅为该命令/会话配置。回环与专用本地测试服务直连，不把本机代理写入业务配置。
 

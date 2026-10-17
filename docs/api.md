@@ -7,6 +7,7 @@
 ## 通用约定
 
 - 基础地址：`https://vr.qianqiuzy.cn` `https://psp.qianqiuzy.cn`
+- 数据许可：上述两个 host 对外提供的直播统计数据集，在本项目有权许可的范围内采用 **CC BY-NC-SA 4.0**；使用与公开分享条件见 [数据许可说明](../LICENSE-DATA.md)。软件代码继续采用 GPLv2。
 - 返回格式：`application/json`。
 - 错误响应：统一返回 `{"error": "错误信息"}`，并配合相应的 HTTP 状态码。
 - 八个 API 按实际客户端 IP 合计限流，每滚动秒最多放行 20 次，超额返回 `429 {"error":"请求过于频繁"}` 和 `Retry-After: 1`。
