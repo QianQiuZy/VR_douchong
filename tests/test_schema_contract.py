@@ -1,9 +1,7 @@
-"""Characterization: SQLAlchemy metadata snapshot.
+"""SQLAlchemy schema compatibility with current and archived business tables.
 
-The extraction plan freezes every table name, column name, column type
-category, nullability, default, primary-key, and index name.  This module
-asserts the exact metadata gift.py wires up, so any Todo 2 move must
-produce an equal snapshot (extraction is behaviour-preserving).
+Check table and column names, types, nullability, defaults, keys and indexes
+so schema changes account for existing databases and monthly archives.
 """
 
 from __future__ import annotations

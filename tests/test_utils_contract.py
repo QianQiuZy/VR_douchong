@@ -1,8 +1,7 @@
 """Characterization: pure helpers gift.py exposes.
 
-Extraction (Todo 2 onwards) moves these into a maintenance / persistence
-module.  Any move must preserve exact string outputs, boundary conditions
-and rounding behaviour.  All tests run with zero DB and zero network.
+Verify string outputs, date boundaries and rounding behaviour without
+database or network access.
 """
 
 from __future__ import annotations
@@ -73,7 +72,7 @@ class TestMonthHelpers:
 
 
 class TestArchiveTableNaming:
-    """Suffix rules Todo 5 must NOT change."""
+    """Monthly table names remain compatible with existing archives."""
 
     def test_super_chat_log_suffix_format(self, gift_module):
         assert gift_module.sc_log_table_name("202601") == "super_chat_log_202601"

@@ -7,6 +7,13 @@ import pytest
 from app import bilibili_gateway, event_ingestion, monitoring_jobs, runtime_state
 
 
+@pytest.fixture(autouse=True)
+def isolated_event_state(monkeypatch):
+    for name in ("CURRENT_SESSIONS", "LAST_STATUS", "DANMAKU_PENDING", "ROOM_UIDS"):
+        monkeypatch.setattr(runtime_state, name, {})
+    monkeypatch.setattr(runtime_state, "GUARD_FANS_QUEUE", asyncio.Queue())
+
+
 class _FailedResponse:
     status = 500
 
@@ -22,7 +29,7 @@ class _FailedSession:
         return _FailedResponse()
 
 
-def test_extracted_handler_replays_gift_guard_sc_notice_and_danmaku(monkeypatch):
+def test_handler_records_gift_guard_sc_notice_and_danmaku(monkeypatch):
     calls = []
     client = SimpleNamespace(room_id=301)
     runtime_state.CURRENT_SESSIONS[301] = 44
@@ -107,7 +114,7 @@ def test_super_chat_recovers_open_session_before_runtime_bucket_write(monkeypatc
     runtime_state.CURRENT_SESSIONS.pop(305, None)
 
 
-def test_extracted_handler_ignores_malformed_and_unknown_events():
+def test_handler_ignores_malformed_and_unknown_events():
     client = SimpleNamespace(room_id=302)
     handler = event_ingestion.MyHandler()
     handler.__getattribute__("_on_common_notice_danmaku")(client, SimpleNamespace(content_segments=[], content_text=""))
@@ -134,3 +141,14 @@ def test_guard_worker_cancellation_cleans_queue(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(monitoring_jobs.guard_fans_worker())
     assert runtime_state.GUARD_FANS_QUEUE.empty()
+
+
+def test_danmaku_scheduler_propagates_cancellation_without_flushing(monkeypatch):
+    async def cancelled_sleep(_seconds):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(monitoring_jobs.asyncio, "sleep", cancelled_sleep)
+    monkeypatch.setattr(runtime_state, "DANMAKU_PENDING", {})
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(monitoring_jobs.danmaku_flush_scheduler())

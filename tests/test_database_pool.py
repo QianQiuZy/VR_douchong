@@ -43,7 +43,7 @@ print(json.dumps({
     )
 
 
-def test_pool_settings_accept_non_secret_environment_overrides() -> None:
+def test_pool_settings_accept_environment_overrides() -> None:
     # Given: non-default, non-secret QueuePool environment settings.
     result = _pool_process(
         {

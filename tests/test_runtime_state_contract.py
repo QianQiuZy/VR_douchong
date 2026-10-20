@@ -23,7 +23,10 @@ class TestRuntimeStateCompatibility:
 
         # Then: gift re-exports the same empty asyncio.Queue instances.
         assert all(isinstance(queue, asyncio.Queue) and queue.empty() for queue in actual_queues)
-        assert actual_queues == tuple(getattr(gift_module, name) for name in expected_queues)
+        assert all(
+            queue is getattr(gift_module, name)
+            for name, queue in zip(expected_queues, actual_queues, strict=True)
+        )
 
     def test_room_registry_singletons_are_shared_with_gift(self, gift_module):
         # Given: canonical room registry containers.
@@ -33,4 +36,7 @@ class TestRuntimeStateCompatibility:
         gift_registries = tuple(getattr(gift_module, name) for name in registry_names)
 
         # Then: legacy imports still point at the canonical mutable containers.
-        assert gift_registries == tuple(getattr(runtime_state, name) for name in registry_names)
+        assert all(
+            registry is getattr(runtime_state, name)
+            for name, registry in zip(registry_names, gift_registries, strict=True)
+        )

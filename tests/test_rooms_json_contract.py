@@ -5,9 +5,8 @@
   - "room_anchors": dict[str(room_id), str(anchor_name)] (str keys)
 
 `load_rooms_config()` populates ``ROOM_IDS`` / ``ROOM_ANCHORS`` at import
-and `save_rooms_config()` writes the same shape back.  Todo 3 must not
-alter the key names, ordering, or the string-key convention on
-``room_anchors``.
+and `save_rooms_config()` writes the same shape back. The key names,
+ordering and string-key convention remain compatible with existing files.
 """
 
 from __future__ import annotations

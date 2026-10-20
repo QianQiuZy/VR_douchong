@@ -1,18 +1,13 @@
-import asyncio
-import importlib
 from types import SimpleNamespace
 
-import pytest
-
-event_ingestion = importlib.import_module("app.event_ingestion")
-monitoring_jobs = importlib.import_module("app.monitoring_jobs")
+from app import event_ingestion
 
 
-def test_my_handler_records_gift_and_common_notice_with_existing_repository_calls(monkeypatch):
+def test_gift_and_common_notice_convert_coins_to_rmb(monkeypatch):
     # Given: a live-room client and repository methods that record their arguments.
     calls = []
     client = SimpleNamespace(room_id=100)
-    event_ingestion.runtime_state.CURRENT_SESSIONS[100] = 9
+    monkeypatch.setattr(event_ingestion.runtime_state, "CURRENT_SESSIONS", {100: 9})
     monkeypatch.setattr(
         event_ingestion.RoomStatsMonthly,
         "add_amounts",
@@ -54,16 +49,3 @@ def test_my_handler_records_gift_and_common_notice_with_existing_repository_call
         ("monthly", 100, {"gift": 10.0}),
         ("session", 9, {"gift": 10.0}),
     ]
-
-
-def test_danmaku_scheduler_propagates_cancellation_without_flushing(monkeypatch):
-    # Given: a scheduler whose first scheduled sleep is cancelled.
-    async def cancelled_sleep(_seconds):
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(monitoring_jobs.asyncio, "sleep", cancelled_sleep)
-    monitoring_jobs.runtime_state.DANMAKU_PENDING.clear()
-
-    # When / Then: cancellation exits the background job immediately and cleanly.
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(monitoring_jobs.danmaku_flush_scheduler())

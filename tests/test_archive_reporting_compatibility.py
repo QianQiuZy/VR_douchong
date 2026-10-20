@@ -3,23 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from sqlalchemy.pool import QueuePool
-
-from app import bootstrap, database, gift
-
-
-def test_default_engine_pool_contract_is_current_sqlalchemy_default() -> None:
-    # Given: the import-time engine built by the isolated test configuration.
-    pool = database.engine.pool
-
-    # When: its QueuePool settings are observed without checking out a connection.
-    # Then: the implicit pre-Todo-4 defaults are pinned.
-    assert isinstance(pool, QueuePool)
-    assert pool.size() == 5
-    assert pool._max_overflow == 10
-    assert pool._timeout == 30
-    assert pool._recycle == 1800
-    assert pool._pre_ping is True
+from app import bootstrap, gift
 
 
 def test_archive_scheduler_current_dispatch_order(monkeypatch) -> None:
@@ -35,7 +19,7 @@ def test_archive_scheduler_current_dispatch_order(monkeypatch) -> None:
     # When: one monthly archive operation is run directly.
     asyncio.run(bootstrap._archive_month("202601"))
 
-    # Then: the four monthly jobs precede the live-session archive.
+    # Then: dependent records are archived before their live sessions.
     assert calls == [
         "archive_super_chat_log",
         "archive_room_live_stats",

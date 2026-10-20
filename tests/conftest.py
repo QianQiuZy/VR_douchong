@@ -1,28 +1,10 @@
-"""Characterization test harness for VR_douchong (app.gift + app.migrate_sc_archive).
+"""Offline fixtures for VR_douchong's business and API regression tests.
 
-This conftest.py *safely imports* app.gift inside the test process by
-neutralising exactly the two import-time side effects that would otherwise
-require a live MySQL server:
-
-   1. `Base.metadata.create_all(engine)` at app/gift.py:1471
-   2. `ensure_runtime_schema()` at app/gift.py:1494 (which calls
-     ``inspect(engine).get_columns("live_session")`` and then optionally
-     ``ALTER TABLE ... ADD COLUMN``)
-
-`ensure_runtime_schema` already swallows ``SQLAlchemyError`` internally, so
-we only have to intercept the ``MetaData.create_all`` call.  We do this by
-monkey-patching ``sqlalchemy.sql.schema.MetaData.create_all`` **before**
-``import app.gift`` runs.  The patch records what tables the module tried to
-DDL-create so schema-contract tests can prove that this call still happens
-(and still targets exactly the tables the plan freezes).
-
-Import-time DB connectivity is also blocked defensively by patching
-``sqlalchemy.engine.reflection.Inspector.get_columns`` to raise a
-``SQLAlchemyError``; ``ensure_runtime_schema`` treats that as a no-op.
-
-Never reads the user's real ``.env``.  Never calls a Bilibili endpoint.
-Never touches the repo's real ``rooms.json``: the fixture writes and points
-``ROOMS_JSON_PATH`` at a private tmp copy under ``tests/_fixtures/``.
+Select an empty env file and synthetic room configuration before importing
+the application. Reject unexpected table creation; replace database reflection
+with an offline inspector. Integration tests explicitly restore the originals
+for their disposable services. Fresh-process import checks live in
+``test_import_contract.py`` and do not inherit these SQLAlchemy patches.
 """
 
 from __future__ import annotations
@@ -129,33 +111,20 @@ if str(REPO_ROOT) not in sys.path:
 
 
 # --------------------------------------------------------------------------- #
-# 2. Neutralise import-time DDL by patching MetaData.create_all.              #
-#    We do NOT silently skip: we record the call so schema-contract tests     #
-#    can assert that app.gift still asks SQLAlchemy to create exactly the      #
-#    frozen set of tables.  Extraction must preserve this call site.         #
+# 2. Reject unexpected DDL; integration tests use the saved original.       #
 # --------------------------------------------------------------------------- #
-IMPORT_DDL_CALLS: list[dict[str, Any]] = []
 _ORIG_CREATE_ALL = _sa_schema.MetaData.create_all
 
 
-def _record_create_all(self: _sa_schema.MetaData, *args: Any, **kwargs: Any) -> None:
-    """Record the create_all invocation instead of issuing DDL to a real DB."""
-    IMPORT_DDL_CALLS.append(
-        {
-            "tables": sorted(self.tables.keys()),
-            "checkfirst": kwargs.get("checkfirst", True),
-        }
-    )
+def _block_create_all(self: _sa_schema.MetaData, *args: Any, **kwargs: Any) -> None:
+    raise AssertionError("table creation requires an explicit disposable test database")
 
 
-_sa_schema.MetaData.create_all = _record_create_all  # type: ignore[assignment]
+_sa_schema.MetaData.create_all = _block_create_all  # type: ignore[assignment]
 
 
 # --------------------------------------------------------------------------- #
-# 3. Also make sure ensure_runtime_schema()'s inspect(engine).get_columns     #
-#    call fails cleanly without a live DB.  app.gift already catches           #
-#    SQLAlchemyError there, so we deliver one deterministically by replacing  #
-#    ``sqlalchemy.inspect`` *before* `import app.gift` binds it.              #
+# 3. Keep schema reflection offline for tests without disposable services.   #
 # --------------------------------------------------------------------------- #
 class _StubInspector:
     """Drop-in Inspector that never connects and always raises for reflection."""
@@ -208,12 +177,6 @@ gift = _import_gift_module()
 def gift_module():
     """Session-scoped fixture yielding the imported gift module."""
     return gift
-
-
-@pytest.fixture(scope="session")
-def import_ddl_calls():
-    """List of ``MetaData.create_all`` invocations captured at import time."""
-    return list(IMPORT_DDL_CALLS)
 
 
 @pytest.fixture()
