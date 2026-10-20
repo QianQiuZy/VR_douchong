@@ -322,7 +322,7 @@ message UserInfo {           // 完整用户信息（base + medal）
 2. `gift` 为空，或任一 `GiftData` 的 `gift_id <= 0`、`num <= 0`、`gift_name` 为空时，判定整个事件无效。
 3. 判断 `blind.original_gift_id` 或 `blind.original_gift_name` 是否存在；任一存在即按盲盒处理。
 4. 为 `gift[]` 中的每一条记录生成一个 `GiftMessage`，因此一个 WebSocket 事件可能触发多条送礼回调。
-5. 盲盒的归一化 `total_price` 为 `gift[i].price × gift[i].num`，`total_coin` 保留原始字段用于既有盈亏计算。普通多数量礼物在 `num != 1` 且原始 `total_coin > 0` 时，两个总价字段均归一化为 `price × num`；其他普通礼物保留原始 `total_coin`，包括单个折扣礼物和原始金额为 0 的免费礼物。完整规则见 [parsing.md](./parsing.md)。
+5. 盲盒的归一化 `total_price` 为 `gift[i].price × gift[i].num`，`total_coin` 保留原始字段；盈亏使用独立的 `blind_cost_coin`，仅成本单价缺失时回退旧原始金额。普通多数量礼物在 `num != 1` 且原始 `total_coin > 0` 时，两个总价字段均归一化为 `price × num`；其他普通礼物保留原始 `total_coin`，包括单个折扣礼物和原始金额为 0 的免费礼物。完整规则见 [parsing.md](./parsing.md)。
 
 处理回调必须遍历解码结果并逐条入账，不能只处理第一条：
 
@@ -336,7 +336,7 @@ for message in messages:
 - `SEND_GIFT_V2` 与 `SEND_GIFT` 语义等价，映射关系：pb `uid/uname/face` ↔ 旧版 `uid/uname/face`；`gift[i].gift_id/gift_name/num/price/total_coin/coin_type/action` ↔ 旧版同名字段；`medal` ↔ `medal_info`；`blind` ↔ `blind_gift`；`sender` ↔ `sender_uinfo`。
 - 颜色字段在 pb `MedalInfo` 中为十进制整数，在 `UserInfo.medal` 中为 `#RRGGBBAA` 十六进制串（如 `#3FB4F699`），两处表示不同，勿混用。
 - `?` 字段含义未确认，切勿硬编码依赖；本项目按上面的单个/多数量/盲盒规则先归一化，再由业务回调使用 `GiftMessage.total_price` 入账。
-- 盲盒礼物：`blind.original_gift_name`=用户抽的盲盒名，`gift[i].gift_name`=实际爆出的礼物；`blind.blind_price` 是原始盲盒价格字段，但当前解析器使用 `gift[i].price × gift[i].num` 生成归一化总价。
+- 盲盒礼物：`blind.original_gift_name`=用户抽的盲盒名，`gift[i].gift_name`=实际爆出的礼物；`blind.blind_price` 是盲盒单价字段。当前解析器使用 `gift[i].price × gift[i].num` 生成流水总价，同时以 `is_blind_box` 显式标记盲盒，并独立保存 `blind_cost_coin = blind.blind_price × gift[i].num`。单价缺失时告警并回退该条原始 `total_coin`；均不可用时成本为 `None`，业务只累计数量。详见 [当前解析说明](./parsing.md)。
 
 ### 其他高频事件
 

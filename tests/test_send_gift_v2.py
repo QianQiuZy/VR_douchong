@@ -87,6 +87,8 @@ def test_send_gift_v2_fills_outer_and_nested_fields_for_each_record():
         medal_level=5,
         medal_name="medal",
         medal_ruid=9,
+        is_blind_box=True,
+        blind_cost_coin=200,
     )
 
 

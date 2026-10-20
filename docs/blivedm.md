@@ -7,7 +7,7 @@ VR_douchong 实际导入的是本仓库 `app/blivedm/`，例如 `app/live_client
 当前用户保留的版本标识为：
 
 ```python
-__version__ = '1.0.1-VR_douchong'
+__version__ = '1.0.2-VR_douchong'
 ```
 
 该值标识本项目内置维护版本，不应在同步上游时覆盖回 `1.1.5-dev`。它不是发布到 PyPI 或打包可用性的验证结论。
@@ -15,6 +15,11 @@ __version__ = '1.0.1-VR_douchong'
 独立维护库位于相邻的 `blivedm` 仓库，当前维护分支为 `dev`。VR_douchong 继续使用内置源码，同步时保持两份库源码一致，不改为包依赖或子模块。
 
 `1.0.1-VR_douchong` 同步上游 `a5d38ab` 的 UA 更新、`e9be374` 与 `0da0c10` 的开放平台 `union_id` 和盲盒模型更新，并补齐 `logged_unknown_cmds`。开放平台保留 `open_id`，缺少 `union_id` 时默认为空；Web 端 V2 解析、金额映射及回调保持不变。
+
+`1.0.2-VR_douchong` 在 Web 礼物模型保留显式盲盒标记与独立的盲盒总成本，
+V2 优先取 `blind.blind_price * num`，缺失时告警并回退旧 `total_coin`；
+旧 JSON 传递已有盲盒标记及成本。既有流水金额字段保持原算法。
+独立库与内置副本同步，不涉及开放平台解析及数据库结构变更。
 
 ## 源码职责与现有定制
 

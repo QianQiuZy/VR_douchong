@@ -315,6 +315,11 @@ class GiftMessage:
     medal_ruid: int = 0
     """勋章主播ID"""
 
+    is_blind_box: Optional[bool] = None
+    """明确的盲盒标记；None 兼容未经过协议解析的旧调用方"""
+    blind_cost_coin: Optional[int] = None
+    """盲盒总成本（瓜子），独立于礼物流水；None 表示成本未知"""
+
     @classmethod
     def from_command(cls, data: dict):
         medal_info = data.get('medal_info', None)
@@ -372,6 +377,8 @@ class GiftMessage:
             medal_name=medal_name,
             medal_room_id=medal_room_id,
             medal_ruid=medal_ruid,
+            is_blind_box=is_blind_box,
+            blind_cost_coin=total_coin if is_blind_box and total_coin > 0 else None,
         )
 
 
@@ -459,6 +466,16 @@ class SendGiftV2Message:
                 raise SendGiftV2DecodeError
             total_price = gift.price * gift.num if is_blind_box or (gift.num != 1 and gift.total_coin > 0) else gift.total_coin
             total_coin = gift.total_coin if is_blind_box else total_price
+            blind_cost_coin = None
+            if is_blind_box:
+                if blind.blind_price > 0:
+                    blind_cost_coin = blind.blind_price * gift.num
+                else:
+                    blind_cost_coin = gift.total_coin if gift.total_coin > 0 else None
+                    logger.warning(
+                        'SEND_GIFT_V2 blind-box price missing; legacy cost fallback gift_id=%d',
+                        gift.gift_id,
+                    )
             messages.append(
                 GiftMessage(
                     gift_name=gift.gift_name,
@@ -481,6 +498,8 @@ class SendGiftV2Message:
                     medal_level=proto.medal.medal_level,
                     medal_name=proto.medal.medal_name,
                     medal_ruid=proto.medal.anchor_uid,
+                    is_blind_box=is_blind_box,
+                    blind_cost_coin=blind_cost_coin,
                 )
             )
         return tuple(messages)

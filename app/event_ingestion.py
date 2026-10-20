@@ -295,13 +295,17 @@ class MyHandler(blivedm.BaseHandler):
         client,
         num: int,
         total_price: int,
-        total_coin: int,
+        total_coin: int | None,
         event_time: datetime.datetime,
     ) -> None:
         if num <= 0:
             return
         dependencies = _configured_dependencies()
-        profit = dependencies.profit_to_tenths(total_price, total_coin)
+        if total_coin is None:
+            logger.warning("[%s] 盲盒成本未知，仅累计数量，不累计盈亏", client.room_id)
+            profit = 0
+        else:
+            profit = dependencies.profit_to_tenths(total_price, total_coin)
         RoomBlindBoxMonthly.add_amounts(client.room_id, event_time.strftime("%Y%m"), count=num, profit=profit)
         session_id = runtime_state.CURRENT_SESSIONS.get(client.room_id)
         if session_id:
@@ -414,12 +418,18 @@ class MyHandler(blivedm.BaseHandler):
                     else None
                 ),
             )
-            if message.total_price != total_coin:
+            is_blind_box = getattr(message, "is_blind_box", None)
+            if is_blind_box is None:
+                is_blind_box = message.total_price != total_coin
+            if is_blind_box:
+                cost = getattr(message, "blind_cost_coin", None)
+                if cost is None and int(total_coin or 0) > 0:
+                    cost = int(total_coin)
                 self._record_blind_box(
                     client,
                     int(message.num or 0),
                     int(message.total_price or 0),
-                    int(total_coin or 0),
+                    cost,
                     event_time or datetime.datetime.now().astimezone().replace(tzinfo=None),
                 )
         except Exception as exc:

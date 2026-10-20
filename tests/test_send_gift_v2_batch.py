@@ -61,13 +61,15 @@ def test_v2_normal_batch_does_not_trigger_blind_box_accounting(monkeypatch):
     assert blind_calls == []
 
 
-def test_legacy_send_gift_preserves_existing_amount_semantics():
+@pytest.mark.parametrize("blind", [None, {"gift_tip_price": 70}])
+def test_legacy_send_gift_preserves_existing_amount_semantics(blind, monkeypatch):
     # Given: a legacy JSON gift with a deliberately distinct explicit total amount.
     payload = {
         "giftName": "legacy", "num": 10, "uname": "fixture", "uid": 1,
         "face": "", "guard_level": 0, "timestamp": 1, "giftId": 1,
         "giftType": 0, "gift_info": {"img_basic": ""}, "action": "赠送",
         "price": 100, "rnd": "", "coin_type": "gold", "total_coin": 700, "tid": "",
+        "blind_gift": blind,
     }
 
     # When: the legacy decoder handles it, not SEND_GIFT_V2.
@@ -75,3 +77,13 @@ def test_legacy_send_gift_preserves_existing_amount_semantics():
 
     # Then: V2's batch rule does not leak into the shipped legacy interpretation.
     assert (message.total_price, message.total_coin) == (700, 700)
+    assert message.is_blind_box is bool(blind)
+    assert message.blind_cost_coin == (700 if blind else None)
+    handler = event_ingestion.MyHandler()
+    blind_calls = []
+    monkeypatch.setattr(handler, "_record_gift", lambda *args, **kwargs: None)
+    monkeypatch.setattr(handler, "_record_blind_box", lambda *args: blind_calls.append(args))
+    handler._on_gift(type("Client", (), {"room_id": 1})(), message)
+    assert len(blind_calls) == int(bool(blind))
+    if blind:
+        assert blind_calls[0][1:4] == (10, 700, 700)
