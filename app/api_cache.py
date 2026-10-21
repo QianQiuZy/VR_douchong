@@ -12,6 +12,7 @@ from . import config
 from .api_cache_payloads import PayloadBuilder
 from .api_cache_source import SnapshotReader
 from .api_cache_store import CacheStore, CacheUnavailable
+from .logging_setup import api_log_context
 from .repositories.tables import month_str, normalize_month_code
 
 
@@ -150,6 +151,10 @@ class ApiCache:
             self.refresh_history(min(due)[1])
 
     def run(self) -> None:
+        with api_log_context():
+            self._run()
+
+    def _run(self) -> None:
         leader = False
         try:
             while not self.stop.is_set():

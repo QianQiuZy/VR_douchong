@@ -1,6 +1,6 @@
 [project]
 name = "vr-douchong"
-version = "1.0.2"
+version = "1.0.3"
 description = "VR/PSP live event collection and statistics API"
 readme = "readme.md"
 requires-python = ">=3.13,<3.14"

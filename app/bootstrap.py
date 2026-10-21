@@ -30,6 +30,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import api_app, archive_service, event_ingestion, monitoring_jobs, runtime_state
 from .config import APP_HOST, APP_PORT
 from .database import create_schema, ensure_runtime_schema, log_pool_status
+from .logging_setup import configure_logging
 from .metrics_runtime import flush_session
 from .models import RoomInfo
 from .whale_archive import archive_whale_month
@@ -285,7 +286,10 @@ async def main() -> None:
 def _run_api_server() -> None:
     import uvicorn
 
-    config = uvicorn.Config(api_app.app, host=APP_HOST, port=APP_PORT, log_level="info",
+    from .api_request_logging import RequestLoggingMiddleware
+
+    config = uvicorn.Config(RequestLoggingMiddleware(api_app.app), host=APP_HOST, port=APP_PORT,
+                            log_level="info", log_config=None, access_log=False,
                             forwarded_allow_ips="127.0.0.1,::1")
     server = uvicorn.Server(config)
     server.run()
@@ -294,6 +298,7 @@ def _run_api_server() -> None:
 # ------------------ launcher entry ------------------ #
 def run() -> None:
     """Reproduce the pre-extraction ``__main__`` block launcher order."""
+    configure_logging()
     create_schema()
     ensure_runtime_schema()
     threading.Thread(target=_run_api_server, daemon=True).start()

@@ -1,6 +1,6 @@
 # VR斗虫自搭版
 
-当前正式版本：**1.0.2**。版本号在 `main.py` 的 `__version__` 中维护；项目元数据和锁文件同步更新，CI 检查版本一致性。
+当前正式版本：**1.0.3**。版本号在 `main.py` 的 `__version__` 中维护；项目元数据和锁文件同步更新，CI 检查版本一致性。
 
 VR/PSP 直播礼物、上舰、SC、场次、弹幕及访客进房统计服务。使用内置 blivedm 采集，FastAPI 提供查询接口，MySQL 保存业务数据，Redis 保存指标与 API 缓存。月度归档在月切时执行，跨月场次确认结束后补归档。
 
@@ -63,6 +63,8 @@ VR/PSP 直播礼物、上舰、SC、场次、弹幕及访客进房统计服务�
    ```
 
    启动路径是 `main.py → app.gift → app.bootstrap`，同一进程的后台线程提供 `APP_HOST:APP_PORT` 上的 Uvicorn API（默认端口 4666）。B 站采集和接口调用保持单实例，禁止通过多个进程、多 Uvicorn worker 或开发自动重载重复启动采集。
+
+   宝塔继续收集采集控制台日志到原 `error.log`。API 日志独立写入项目根目录 `logs/api.log`，按 50 MiB 轮转到 `logs/api-history_logs/VR_douchong_日期_时间_log.log`；路径可通过 `API_LOG_PATH` 覆盖。目录权限、归档和请求耗时口径见[运行约定](./docs/runtime.md#日志分离与归档)。
 
 ## 开发检查
 

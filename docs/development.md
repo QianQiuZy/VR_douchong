@@ -9,6 +9,7 @@
 | 职责 | 现有模块 | 修改约定 |
 | --- | --- | --- |
 | 配置与启动 | `app/config.py`、`app/bootstrap.py` | 配置集中读取，启动和退出任务集中接线 |
+| 日志路由与访问记录 | `app/logging_setup.py`、`app/api_request_logging.py` | 仅显式启动时创建文件；API 上下文不能传入长期采集任务 |
 | 进程内共享状态 | `app/runtime_state.py` | 保留唯一状态来源；不要复制房间、场次、队列字典 |
 | 房间配置、增删与场次生命周期 | `app/room_config.py`、`app/room_lifecycle.py` | 沿用房间锁、主循环调度、场次合并与结束规则 |
 | 启动排序与鉴权 | `app/live_startup.py`、`app/live_client.py` | 判断成功鉴权，不能用任务创建或连接打开替代 |
@@ -51,7 +52,7 @@
 
 修改依赖后执行 `uv lock` 并审查 `pyproject.toml` / `uv.lock` 差异。只有明确升级依赖时才使用 `uv lock --upgrade`；部署使用 `uv sync --locked --no-dev`，检查使用 `uv sync --locked --group dev`，防止运行时静默改变锁文件。旧 requirements 文件已移除，不再维护第二份依赖清单。
 
-项目当前正式版本为 `1.0.2`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
+项目当前正式版本为 `1.0.3`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
 
 安装依赖前确认实际解释器。安装、Git 等外网开发命令沿用会话代理配置；未配置时按工作区约定检查 `http://127.0.0.1:10808` 是否可达后，仅为该命令/会话配置。回环与专用本地测试服务直连，不把本机代理写入业务配置。
 
@@ -81,6 +82,7 @@ git diff --check
 | 启动优先级与鉴权 | `test_live_first_startup.py`、`test_live_client_authentication.py` |
 | 路由、月份、响应兼容 | `test_routes_contract.py`、`test_month_parameter_contract.py` |
 | API 缓存与预算 | `test_api_cache.py`、`test_api_cache_integration.py` |
+| 日志分流、请求计时与大小轮转 | `test_api_logging.py`、`test_import_contract.py` |
 | 归档与表结构 | `test_archive_catchup.py`、`test_schema_contract.py`、`test_room_live_stats_decimal.py` |
 
 这些测试位于 `tests/`。例如：

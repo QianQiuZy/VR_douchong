@@ -56,9 +56,13 @@ async def _sleep_until(target: datetime.datetime) -> None:
 
 async def start_client(room_id: int) -> None:
     """Start and register one BLive client using the canonical handler."""
+    from .logging_setup import api_log_context
+
     client = AuthenticatedLiveClient(room_id, session=runtime_state.aiohttp_session)
     client.set_handler(event_ingestion.MyHandler())
-    client.start()
+    # A room added by HTTP must not tag its long-lived gift/WS tasks as API work.
+    with api_log_context(None):
+        client.start()
     runtime_state.ROOM_CLIENTS[room_id] = client
     runtime_state.LAST_RECONNECT.setdefault(room_id, _now() - datetime.timedelta(days=random.random() * 3.0))
     logger.info("[connect] 已启动房间连接 room_id=%s", room_id)

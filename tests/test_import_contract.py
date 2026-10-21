@@ -13,7 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize(
-    "module_name", ["app.api_app", "app.archive_service", "app.bootstrap", "app.gift"]
+    "module_name", [
+        "app.api_app", "app.archive_service", "app.bootstrap", "app.gift",
+        "app.logging_setup", "app.api_request_logging",
+    ]
 )
 def test_import_is_offline_in_a_fresh_process(module_name):
     environment = os.environ.copy()
@@ -21,6 +24,7 @@ def test_import_is_offline_in_a_fresh_process(module_name):
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     program = """
 import importlib
+import logging
 import socket
 import sys
 from unittest.mock import Mock, patch
@@ -34,6 +38,7 @@ with (
     patch.object(socket.socket, 'connect', forbidden),
     patch.object(Engine, 'connect', forbidden),
     patch.object(MetaData, 'create_all', forbidden),
+    patch.object(logging.FileHandler, '_open', forbidden),
 ):
     importlib.import_module(sys.argv[1])
 forbidden.assert_not_called()

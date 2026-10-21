@@ -100,6 +100,13 @@ EMAIL_FROM = os.getenv("EMAIL_FROM", "")
 EMAIL_TO = os.getenv("EMAIL_TO", "")
 APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
 APP_PORT = get_env_int("APP_PORT", 4666)
+_api_log_path = Path(os.getenv("API_LOG_PATH") or PROJECT_ROOT / "logs" / "api.log")
+API_LOG_PATH = (
+    _api_log_path if _api_log_path.is_absolute() else ENV_FILE_PATH.parent / _api_log_path
+)
+API_LOG_PROJECT_NAME = os.getenv("API_LOG_PROJECT_NAME", "VR_douchong").strip() or "VR_douchong"
+if any(char in API_LOG_PROJECT_NAME for char in ("/", "\\", "\x00")):
+    raise ValueError("API_LOG_PROJECT_NAME must be a file name, not a path")
 API_SECRET = os.getenv("API_SECRET", "").strip()
 ATTENTION_DAILY_ROOM_SLEEP_SECONDS = float(
     os.getenv("ATTENTION_DAILY_ROOM_SLEEP_SECONDS", "1")

@@ -19,10 +19,13 @@ def test_default_config_paths_are_anchored_to_repository_root() -> None:
 
 @pytest.mark.parametrize(
     ("variable", "filename"),
-    [("ROOMS_JSON_PATH", "rooms.json"), ("ENTRY_USERS_JSON_PATH", "entry_users.json")],
+    [
+        ("ROOMS_JSON_PATH", "rooms.json"), ("ENTRY_USERS_JSON_PATH", "entry_users.json"),
+        ("API_LOG_PATH", "api.log"),
+    ],
 )
 @pytest.mark.parametrize("setting", [None, "", "relative", "absolute"])
-def test_deployed_json_paths_follow_env_file_instead_of_cwd(tmp_path, variable, filename, setting):
+def test_deployed_paths_are_independent_of_cwd(tmp_path, variable, filename, setting):
     deployment = tmp_path / "deployment"
     deployment.mkdir()
     env_file = deployment / "service.env"
@@ -32,6 +35,7 @@ def test_deployed_json_paths_follow_env_file_instead_of_cwd(tmp_path, variable, 
     env = {**os.environ, "ENV_FILE": str(env_file), "PYTHONPATH": str(REPO_ROOT)}
     env.pop("ROOMS_JSON_PATH", None)
     env.pop("ENTRY_USERS_JSON_PATH", None)
+    env.pop("API_LOG_PATH", None)
     if setting == "relative":
         env[variable] = f"custom/{filename}"
         expected = deployment / "custom" / filename
@@ -39,7 +43,10 @@ def test_deployed_json_paths_follow_env_file_instead_of_cwd(tmp_path, variable, 
         expected = tmp_path / "absolute" / filename
         env[variable] = str(expected)
     else:
-        expected = deployment / "config" / filename
+        expected = (
+            REPO_ROOT / "logs" / filename
+            if variable == "API_LOG_PATH" else deployment / "config" / filename
+        )
         if setting == "":
             env[variable] = ""
     script = (
