@@ -373,3 +373,60 @@ def test_real_atomic_generations_and_readiness_expiry(services):
     with pytest.raises(CacheUnavailable):
         store.read(current, "/gift")
     cache.reader.close()
+
+
+def test_real_room_visibility_keeps_mysql_writes_and_complete_snapshots(services, monkeypatch):
+    from app import room_visibility
+    from app.repositories import entries, monthly
+
+    store, engine, Session, _start = services
+    policy = room_visibility.RoomVisibilityStore(store.client, prefix=store.prefix)
+    monkeypatch.setattr(room_visibility, "_store", policy)
+    monkeypatch.setattr(entries, "engine", engine)
+    monkeypatch.setattr(entries, "Session", Session)
+    monkeypatch.setattr(monthly, "Session", Session)
+    recent = datetime.datetime.now() - datetime.timedelta(minutes=1)
+    entries.save_entries([
+        {"room_id": room_id, "uid": 7, "event_time": recent}
+        for room_id in (111111, 222222)
+    ])
+    cache = ApiCache(store)
+    cache.prewarm()
+    monkeypatch.setattr(config, "API_CACHE_ENABLED", True)
+    app = FastAPI()
+    app.router.routes.extend(api_app.app.router.routes)
+    app.state.api_cache = cache
+    app.add_middleware(CacheMiddleware, owner=app)
+    app.add_middleware(room_visibility.RoomVisibilityMiddleware)
+    auth = {"X-API-Key": api_app.API_SECRET}
+    try:
+        with TestClient(app, client=("203.0.113.71", 123)) as client:
+            response = client.post("/delete/room/temporary", json={"room_id": 111111}, headers=auth)
+            assert response.status_code == 200 and response.json()["hidden"] is True
+            assert store.client.ttl(policy.key) == -1
+            assert room_visibility.RoomVisibilityStore(store.client, prefix=store.prefix).hidden_rooms() == {111111}
+            for path in ("/gift", "/gift/by_month?month=190001"):
+                assert all(row["room_id"] != 111111 for row in client.get(path).json())
+            for path in ("live_sessions", "attention", "sc", "entry"):
+                response = client.get(f"/gift/{path}?room_id=111111")
+                assert response.status_code == 404 and response.json() == {"error": "房间不存在"}
+            assert [row["room_id"] for row in client.get("/gift/entry?uid=7").json()["items"]] == [222222]
+
+            # Use the real collector repository writer while publication is blocked.
+            RoomStatsMonthly.add_amounts(111111, month_str(), gift=2.0)
+            entries.save_entries([{"room_id": 111111, "uid": 7, "event_time": recent + datetime.timedelta(seconds=1)}])
+            with Session() as session:
+                assert float(session.get(RoomStatsMonthly, (111111, month_str())).gift) == 14.5
+                assert session.get(LiveSession, 1).end_time is None
+                assert session.query(RoomEntryLog).filter_by(room_id=111111).count() == 2
+            cache.refresh_hot()
+            raw = json.loads(gzip.decompress(store.read(month_str(), "/gift")))
+            assert next(row for row in raw if row["room_id"] == 111111)["gift"] == 14.5
+            assert all(row["room_id"] != 111111 for row in client.get("/gift").json())
+            response = client.post("/restore/room/temporary", json={"room_id": 111111}, headers=auth)
+            assert response.status_code == 200 and response.json()["hidden"] is False
+            restored = next(row for row in client.get("/gift").json() if row["room_id"] == 111111)
+            assert restored["gift"] == 14.5
+            assert len(client.get("/gift/entry?room_id=111111").json()["items"]) == 2
+    finally:
+        cache.reader.close()

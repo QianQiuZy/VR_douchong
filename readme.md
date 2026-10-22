@@ -1,6 +1,6 @@
 # VR斗虫自搭版
 
-当前正式版本：**1.0.3**。版本号在 `main.py` 的 `__version__` 中维护；项目元数据和锁文件同步更新，CI 检查版本一致性。
+当前正式版本：**1.0.4**。版本号在 `main.py` 的 `__version__` 中维护；项目元数据和锁文件同步更新，CI 检查版本一致性。
 
 VR/PSP 直播礼物、上舰、SC、场次、弹幕及访客进房统计服务。使用内置 blivedm 采集，FastAPI 提供查询接口，MySQL 保存业务数据，Redis 保存指标与 API 缓存。月度归档在月切时执行，跨月场次确认结束后补归档。
 
@@ -10,7 +10,7 @@ VR/PSP 直播礼物、上舰、SC、场次、弹幕及访客进房统计服务�
 
 | 文档 | 内容 |
 | --- | --- |
-| [API 文档](./docs/api.md) | 八个业务接口、鉴权、参数、响应、缓存与限流 |
+| [API 文档](./docs/api.md) | 十个业务接口、鉴权、参数、响应、临时隐藏与恢复、缓存与限流 |
 | [直播 WebSocket 协议参考](./docs/API.live_websocket.md) | 包头、认证、CMD、JSON/protobuf 字段；包含历史抓包资料 |
 | [当前解析说明](./docs/parsing.md) | 当前真正处理的事件、金额归一化、互动与违规事件规则 |
 | [运行与数据约定](./docs/runtime.md) | 连接启动、跨月归档、有效时长、Redis 缓存、访客进房 |
@@ -53,6 +53,8 @@ VR/PSP 直播礼物、上舰、SC、场次、弹幕及访客进房统计服务�
 4. 将仓库中的 `.env.example` 复制为 `.env`，配置数据库、Redis、B 站 Cookies、管理 API 密钥等。变量名与默认值可查模板、`app/config.py`、`app/bilibili_gateway.py`，不要复制其他项目的配置。
 
    业务 JSON 集中到 `config/`：`rooms.json` 为 VR 房间配置，`psp_rooms.json` 为 PSP 房间配置，`entry_users.json` 为独立访客名单。通过 `ROOMS_JSON_PATH` 选择房间文件；两类 JSON 相对路径都以实际使用的 `.env` 所在目录为基准，默认是 `config/rooms.json` 和 `config/entry_users.json`。也可通过带鉴权的 `POST /add/room`、`POST /delete/room` 管理房间。
+
+   `POST /delete/room/temporary` 和 `POST /restore/room/temporary` 仅改变房间对外可见性，JSON payload 只需 `room_id`，密钥通过请求头传递。临时隐藏覆盖当前月、历史月和所有访客查询，MySQL 写入、blivedm 连接及归档照常运行；隐藏状态保存在 Redis DB2，不设过期时间。共用 Redis 的 VR/PSP 部署必须配置不同的 `API_CACHE_PREFIX`。
 
    **升级现有部署时**，先将原 JSON 文件原样移入 `config/`，保留线上房间和名单内容，并更新 `.env` 中的路径；原来的显式绝对路径仍可使用。若旧 `.venv` 继承了全局包，先新建独立环境验证，不覆盖正在使用的环境。
 

@@ -13,6 +13,9 @@ Owns the seven original public routes extracted out of ``gift.py``:
 Entry queries (``GET /gift/entry``) also live here, including validation,
 Redis-only reads, and minimal response presentation.
 
+Temporary deletion/restoration POSTs live here as well; the outer
+``RoomVisibilityMiddleware`` enforces their Redis publication policy on all GETs.
+
 Route paths, response keys, status codes, and current-versus-history
 branching are preserved verbatim.  ``/gift`` still emits
 ``current_concurrency``; ``/gift/by_month`` still omits it.
@@ -51,7 +54,7 @@ from sqlalchemy import Column, and_, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as OrmSession
 
-from . import config, room_config, runtime_state
+from . import config, room_config, room_visibility, runtime_state
 from .api_cache_http import CacheMiddleware, accepts_gzip
 from .api_cache_store import CacheUnavailable, encode
 from .config import API_SECRET, REPORT_ACQUIRE_TIMEOUT_SECONDS, REPORT_MAX_CONCURRENCY
@@ -94,6 +97,15 @@ logger = logging.getLogger(__name__)
 # ------------------ FastAPI app (Todo 5 canonical owner) ------------------ #
 @asynccontextmanager
 async def cache_lifespan(application: FastAPI):
+    try:
+        async with _cache_lifespan(application):
+            yield
+    finally:
+        await asyncio.to_thread(room_visibility.get_store().close)
+
+
+@asynccontextmanager
+async def _cache_lifespan(application: FastAPI):
     if not config.API_CACHE_ENABLED:
         yield
         return
@@ -111,6 +123,8 @@ async def cache_lifespan(application: FastAPI):
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=cache_lifespan)
 app.add_middleware(CacheMiddleware, owner=app)
+# Added last so it also filters responses returned directly by CacheMiddleware.
+app.add_middleware(room_visibility.RoomVisibilityMiddleware)
 
 
 ENTRY_PATH = "/gift/entry"
@@ -297,6 +311,10 @@ class RoomPayload(TypedDict, total=False):
     room_id: JsonValue
     room_anchors: JsonValue
     api_key: JsonValue
+
+
+class RoomVisibilityPayload(TypedDict, total=False):
+    room_id: JsonValue
 
 
 _ROOM_PAYLOAD_BODY = Body(default={})
@@ -837,6 +855,45 @@ def _session_15m_stats(
 
 
 # ------------------ Routes ------------------ #
+def _set_room_visibility(request: Request, payload: RoomVisibilityPayload, hidden: bool):
+    ok, error = _check_api_secret(request, {})
+    if not ok:
+        return JSONResponse({"error": error}, status_code=401)
+    value = payload.get("room_id")
+    if isinstance(value, str) and value.isascii() and value.isdecimal() and len(value) <= 20:
+        value = int(value)
+    if type(value) is not int or not 0 < value < 2**64:
+        return JSONResponse({"error": "room_id 必须为正整数且小于 2^64"}, status_code=400)
+    try:
+        changed = room_visibility.get_store().set_hidden(value, hidden)
+    except redis.RedisError as exc:
+        return room_visibility.unavailable(exc)
+    return JSONResponse(
+        {
+            "ok": True,
+            "room_id": value,
+            "hidden": hidden,
+            "changed": changed,
+            "message": "房间已临时删除" if hidden else "房间已恢复展示",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/delete/room/temporary")
+def temporarily_delete_room_api(
+    request: Request, payload: RoomVisibilityPayload = _ROOM_PAYLOAD_BODY
+):
+    return _set_room_visibility(request, payload, True)
+
+
+@app.post("/restore/room/temporary")
+def restore_temporarily_deleted_room_api(
+    request: Request, payload: RoomVisibilityPayload = _ROOM_PAYLOAD_BODY
+):
+    return _set_room_visibility(request, payload, False)
+
+
 @app.post("/add/room")
 def add_room_api(request: Request, payload: RoomPayload = _ROOM_PAYLOAD_BODY):
     ok, error = _check_api_secret(request, payload)

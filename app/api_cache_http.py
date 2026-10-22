@@ -24,7 +24,9 @@ GET_PATHS = {
     "/gift/sc",
     "/gift/entry",
 }
-API_PATHS = GET_PATHS | {"/add/room", "/delete/room"}
+API_PATHS = GET_PATHS | {
+    "/add/room", "/delete/room", "/delete/room/temporary", "/restore/room/temporary"
+}
 
 
 def client_ip(request: Request) -> str:

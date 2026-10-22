@@ -179,6 +179,34 @@ def gift_module():
     return gift
 
 
+@pytest.fixture(autouse=True)
+def isolated_room_visibility(monkeypatch):
+    """Every public GET checks Redis policy, including offline legacy reports."""
+    import fakeredis
+
+    from app import room_visibility
+
+    client = fakeredis.FakeRedis()
+    store = room_visibility.RoomVisibilityStore(client, prefix="test:visibility")
+    monkeypatch.setattr(room_visibility, "_store", store)
+    yield store
+    client.close()
+
+
+@pytest.fixture(autouse=True)
+def isolated_metric_redis_clients(monkeypatch):
+    """Default offline tests must not read or write the host's metric databases."""
+    import fakeredis
+
+    from app import redis_metrics, whale_metrics
+
+    client = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(redis_metrics, "_client", client)
+    monkeypatch.setattr(whale_metrics, "_client", client)
+    yield
+    client.close()
+
+
 @pytest.fixture()
 def isolated_rooms_json(tmp_path, monkeypatch):
     """Per-test rooms.json path with baseline content, restored automatically."""

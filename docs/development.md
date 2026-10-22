@@ -1,6 +1,6 @@
 # 开发规范
 
-核对日期：2026-10-20。以当前源码为准；运行边界见 [runtime.md](./runtime.md)，实际事件范围见 [parsing.md](./parsing.md)，业务接口见 [api.md](./api.md)。
+核对日期：2026-10-23。以当前源码为准；运行边界见 [runtime.md](./runtime.md)，实际事件范围见 [parsing.md](./parsing.md)，业务接口见 [api.md](./api.md)。
 
 ## 入口与模块归属
 
@@ -21,6 +21,7 @@
 | 15 分钟指标与 Redis 指标 | `app/metrics_runtime.py`、`app/redis_metrics.py`、`app/whale_metrics.py` | 区分统计桶、人数集合和鲸鱼收入去重的作用域 |
 | 月归档 | `app/archive_service.py`、`app/whale_archive.py` | 使用统一候选场次、截止时间和子表先行规则 |
 | FastAPI 路由与查询 | `app/api_app.py` | 公共接口统一放在这里；不要新增平行的 `entry_api.py` |
+| 房间对外可见性 | `app/room_visibility.py` | Redis DB2 持久隐藏集合与统一 GET 过滤；不得复用采集房间删除逻辑 |
 | API 缓存协调 | `app/api_cache.py` | 启动、刷新、历史失效通知与指标 |
 | API 缓存读写链路 | `app/api_cache_http.py`、`api_cache_source.py`、`api_cache_payloads.py`、`api_cache_store.py` | 分别负责 HTTP 策略、预算化快照、响应构建、Redis 存储 |
 
@@ -52,11 +53,35 @@
 
 修改依赖后执行 `uv lock` 并审查 `pyproject.toml` / `uv.lock` 差异。只有明确升级依赖时才使用 `uv lock --upgrade`；部署使用 `uv sync --locked --no-dev`，检查使用 `uv sync --locked --group dev`，防止运行时静默改变锁文件。旧 requirements 文件已移除，不再维护第二份依赖清单。
 
-项目当前正式版本为 `1.0.3`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
+项目当前正式版本为 `1.0.4`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
 
 安装依赖前确认实际解释器。安装、Git 等外网开发命令沿用会话代理配置；未配置时按工作区约定检查 `http://127.0.0.1:10808` 是否可达后，仅为该命令/会话配置。回环与专用本地测试服务直连，不把本机代理写入业务配置。
 
 不提交真实 `.env`、Cookie、token、SQL 快照或日志明细；配置排障只输出变量名、存在性与脱敏结构。日志异常输出错误类型和必要上下文，避免新增原始认证包或完整凭据输出。当前源码部分未知 CMD 日志会包含消息内容，导出抓包/日志用于测试或文档时须先脱敏。
+
+### 1.0.4 依赖更新（2026-10-23）
+
+使用项目固定的 uv 0.11.7 重新解析锁文件，Python 保持 3.13.11。若本机 uv 版本不同，可通过 `uvx --from uv==0.11.7 uv <命令>` 使用项目要求的版本；验证环境仍显式设置 `UV_PROJECT_ENVIRONMENT=.venv-ci`。
+
+| 依赖 | 原锁定版本 | 本次锁定版本 |
+| --- | --- | --- |
+| FastAPI | 0.140.0 | 0.161.0 |
+| Starlette | 1.2.1（间接依赖） | 1.9.0（显式声明） |
+| aiohttp / anyio | 3.14.3 / 4.14.2 | 3.14.5 / 4.15.1 |
+| Brotli / yarl | 1.2.0 / 1.24.5 | 1.2.1 / 1.25.1 |
+| Pydantic | 2.13.4 | 2.14.1 |
+| PyMySQL | 1.2.0 | 1.2.3 |
+| redis（Python 客户端） | 8.0.1 | 8.1.0 |
+| SQLAlchemy | 2.0.51 | 2.1.6 |
+| Uvicorn | 0.51.0 | 0.54.0 |
+| fakeredis / Ruff | 2.39.0 / 0.16.3 | 2.40.0 / 0.17.2 |
+| pure-protobuf / httpx / pytest | 3.1.5 / 0.28.1 / 9.1.1 | 保持不变 |
+
+其余间接依赖随解析更新，完整版本和文件哈希以 `uv.lock` 为准。SQLAlchemy 2.1 默认不再安装 greenlet（[迁移说明](https://docs.sqlalchemy.org/en/21/changelog/migration_21.html)）；本项目使用同步 PyMySQL 引擎，不使用 SQLAlchemy asyncio 扩展，因此未额外安装该依赖。FastAPI 新增的 OpenTelemetry 间接依赖按发行元数据安装。未升级 MySQL/Redis 服务端版本。
+
+在 Python 3.13.11 独立环境完成依赖一致性、Ruff、项目检查和全量离线回归；另外使用 **MySQL 5.7.44 / Redis 8.0.5** 临时容器执行全部七项集成测试，版本在夹具中强制核验。涵盖查询兼容、真实写入/归档、缓存预算、分代发布、限流以及隐藏期间持续写库和恢复展示。这些是 WSL 本地隔离验证，不代表已完成线上 OpenCloudOS/B 站连接验证。
+
+当前仍有 `httpx` TestClient、SQLAlchemy `tuples()`、aiohttp `client.loop` 和 SQLite 日期适配弃用警告，未屏蔽。`httpx2` 属于另一包的迁移，本次保留现有 httpx 测试调用方式；SQLAlchemy 的现有调用仍在 2.1.6 上通过上述验证。
 
 ## 最小验证与回归
 
@@ -81,6 +106,7 @@ git diff --check
 | 违规、锁定与有效时长 | `test_room_lock.py`、`test_room_cut_off.py`、`test_session_duration_validity.py` |
 | 启动优先级与鉴权 | `test_live_first_startup.py`、`test_live_client_authentication.py` |
 | 路由、月份、响应兼容 | `test_routes_contract.py`、`test_month_parameter_contract.py` |
+| 临时隐藏、恢复及采集隔离 | `test_room_visibility.py` |
 | API 缓存与预算 | `test_api_cache.py`、`test_api_cache_integration.py` |
 | 日志分流、请求计时与大小轮转 | `test_api_logging.py`、`test_import_contract.py` |
 | 归档与表结构 | `test_archive_catchup.py`、`test_schema_contract.py`、`test_room_live_stats_decimal.py` |
@@ -107,7 +133,7 @@ uv run --locked pytest -q tests/test_api_cache_integration.py
 
 `.github/workflows/ci.yml` 默认只有一个 Ubuntu 24.04 x86-64 任务，与当前 WSL 系统保持一致，统一运行 `scripts/check.sh`：锁文件安装、`uv pip check`、Ruff、Python 语法及业务 JSON 结构检查、完整离线 pytest。Python 固定为部署版本 3.13.11，本机与云端使用同一锁文件。CI 不额外启动 OpenCloudOS 容器，不声称 Ubuntu 检查等同于云端系统验证。
 
-为节省额度，集成任务仅在手动触发并勾选 `integration` 且默认检查通过后运行；它使用 GitHub 的临时 MySQL 5.7.44 / Redis 8.0.5 服务，运行已有六项集成测试。测试数据库和凭据均为测试专用，不配置生产 Secrets。工作流只有仓库只读权限，第三方 Actions 固定提交 SHA，启用依赖缓存并自动取消同一分支的旧运行。没有配置自动部署。
+为节省额度，集成任务仅在手动触发并勾选 `integration` 且默认检查通过后运行；它使用 GitHub 的临时 MySQL 5.7.44 / Redis 8.0.5 服务，运行七项集成测试。测试数据库和凭据均为测试专用，不配置生产 Secrets。工作流只有仓库只读权限，第三方 Actions 固定提交 SHA，启用依赖缓存并自动取消同一分支的旧运行。没有配置自动部署。
 
 Ruff 明确启用 E4/E7/E9/F；内置 blivedm 仅为既有星号导入保留 F403/F405 的文件级兼容，其他规则照常检查。`gift.py` 的延后导入用于原有兼容接线，按行说明 E402 原因；不借配置迁移更改 V2 协议处理。
 

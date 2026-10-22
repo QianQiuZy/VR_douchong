@@ -595,7 +595,10 @@ def test_inflight_capacity_is_not_a_global_requests_per_second_limit(
     monkeypatch.setattr(config, "API_CACHE_MAX_INFLIGHT", 1)
     with app_client(store, monkeypatch) as client:
         assert client.get("/gift").status_code == 200
-        gate = client.app.middleware_stack.app.gate
+        middleware = client.app.middleware_stack
+        while not isinstance(middleware, CacheMiddleware):
+            middleware = middleware.app
+        gate = middleware.gate
         gate.acquire()
         try:
             response = client.get("/gift")
