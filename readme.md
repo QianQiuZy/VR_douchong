@@ -39,6 +39,8 @@ VR/PSP 直播礼物、上舰、SC、场次、弹幕及访客进房统计服务�
 
    部署基准为 **OpenCloudOS 9.2 x86-64、Python 3.13.11**。`.python-version` 固定 Python 补丁版本，`pyproject.toml` 集中管理运行依赖、开发依赖、pytest 和 Ruff 配置，`uv.lock` 固定依赖版本。WSL 使用 Ubuntu 24.04 x86-64，并保持相同 Python 和锁文件；Windows 原生环境单独安装，不复用 WSL 虚拟环境。
 
+   **Brotli 兼容要求：** 新版 aiohttp 的 HTTP 解压要求 `Brotli>=1.2`，锁文件固定为 1.2.1。若房间初始化出现 `process() takes exactly 1 argument (2 given)` / `Can not decode content-encoding: br`，应在实际运行环境同步依赖并重启采集进程。宝塔使用自有解释器时，确认安装与启动使用同一环境；不要只更新系统 Python 的包。具体排查见[开发规范](./docs/development.md#http-brotli-依赖兼容修复2026-10-24)。
+
 3. 安装 MySQL 和 Redis，为 MySQL 创建独立数据库与用户：
 
    ```sql

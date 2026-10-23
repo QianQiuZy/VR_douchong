@@ -1,6 +1,6 @@
 # 开发规范
 
-核对日期：2026-10-23。以当前源码为准；运行边界见 [runtime.md](./runtime.md)，实际事件范围见 [parsing.md](./parsing.md)，业务接口见 [api.md](./api.md)。
+核对日期：2026-10-24。以当前源码为准；运行边界见 [runtime.md](./runtime.md)，实际事件范围见 [parsing.md](./parsing.md)，业务接口见 [api.md](./api.md)。
 
 ## 入口与模块归属
 
@@ -58,6 +58,14 @@
 安装依赖前确认实际解释器。安装、Git 等外网开发命令沿用会话代理配置；未配置时按工作区约定检查 `http://127.0.0.1:10808` 是否可达后，仅为该命令/会话配置。回环与专用本地测试服务直连，不把本机代理写入业务配置。
 
 不提交真实 `.env`、Cookie、token、SQL 快照或日志明细；配置排障只输出变量名、存在性与脱敏结构。日志异常输出错误类型和必要上下文，避免新增原始认证包或完整凭据输出。当前源码部分未知 CMD 日志会包含消息内容，导出抓包/日志用于测试或文档时须先脱敏。
+
+### HTTP Brotli 依赖兼容修复（2026-10-24）
+
+aiohttp 在处理 HTTP `Content-Encoding: br` 时调用有限长的 `process(data, max_length)`；旧 Brotli 仅支持单参数，会抛出 TypeError，随后包装为 ContentEncodingError / ClientPayloadError。上游已要求 Brotli/brotlicffi 至少 1.2（[变更记录](https://docs.aiohttp.org/en/stable/changes.html)）；本项目将 Brotli 下限由 1.1 收紧至 1.2，锁定版本保持 1.2.1，其他依赖及项目版本 1.0.4 保持不变。
+
+在实际启动解释器中检查 `python -m pip show aiohttp Brotli brotlicffi`，确认实际包路径及版本，不能由仓库锁文件推断线上安装情况。标准部署执行 `uv sync --locked --no-dev`；宝塔旧部署若使用 pip，在同一解释器中执行 `python -m pip install 'Brotli==1.2.1'`，随后重启采集进程。aiohttp 优先导入 brotlicffi（若已安装），所以还需确认其版本至少为 1.2；仅更新未被选中的 Brotli 无法修复旧 brotlicffi。
+
+本地使用真实 Brotli 1.1.0 与 aiohttp 3.14.5 复现了相同的单参数 TypeError；同一 aiohttp 配合 Brotli 1.2.0 可完成有限长解压。回归测试 `test_bilibili_http_compression.py` 使用本地 HTTP 服务返回实际 Brotli 压缩的弹幕服务器配置，在锁定的 Brotli 1.2.1 环境中，通过共享会话与真实 `_init_host_server()` 验证自动解压和初始化。测试不访问 B 站或真实数据库；现场连接仍需部署后核验。HTTP 协商、WebSocket Brotli 解包和内置 blivedm 源码均不作修改。
 
 ### 1.0.4 依赖更新（2026-10-23）
 

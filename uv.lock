@@ -638,7 +638,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9,<4" },
     { name = "anyio", specifier = ">=4,<5" },
-    { name = "brotli", specifier = ">=1.1,<2" },
+    { name = "brotli", specifier = ">=1.2,<2" },
     { name = "fastapi", specifier = ">=0.161.0,<1" },
     { name = "pure-protobuf", specifier = "~=3.1.2" },
     { name = "pydantic", specifier = ">=2.9,<3" },
