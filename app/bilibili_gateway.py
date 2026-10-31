@@ -108,26 +108,44 @@ async def ensure_bili_ticket(force: bool = False) -> str:
     return ticket
 
 
-async def fetch_room_info_and_update(room_id: int, update_uid: bool) -> bool:
-    """Fetch room info and persist attention, optionally refreshing its UID."""
+async def _fetch_room_info(room_id: int) -> dict | None:
+    """Fetch room info without persisting a snapshot."""
     session = runtime_state.aiohttp_session
     if session is None:
         logger.error("[RoomInfo] aiohttp_session 未初始化")
-        return False
+        return None
     try:
         async with session.get(f"{ROOM_INFO_API}?room_id={room_id}", timeout=aiohttp.ClientTimeout(total=5), headers={"User-Agent": USER_AGENT, "Referer": "https://live.bilibili.com"}) as response:
             if response.status != 200:
                 logger.warning("[RoomInfo] 房间 %s get_info HTTP %s", room_id, response.status)
-                return False
+                return None
             try:
                 payload = await response.json(content_type=None)
             except ContentTypeError:
                 logger.warning("[RoomInfo] 房间 %s get_info 返回非 JSON，前 200 字：%s", room_id, (await response.text())[:200])
-                return False
+                return None
     except Exception as exc:
         logger.exception("[RoomInfo] 房间 %s 请求异常: %s", room_id, type(exc).__name__, exc_info=False)
+        return None
+    if payload.get("code", 0) != 0:
+        return None
+    return payload.get("data") or {}
+
+
+async def fetch_room_attention(room_id: int) -> int | None:
+    """Read attention for an in-memory end snapshot; failure is not a zero."""
+    data = await _fetch_room_info(room_id)
+    try:
+        return int(data["attention"]) if data is not None else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+async def fetch_room_info_and_update(room_id: int, update_uid: bool) -> bool:
+    """Fetch room info and persist attention, optionally refreshing its UID."""
+    data = await _fetch_room_info(room_id)
+    if data is None:
         return False
-    data = payload.get("data") or {}
     try:
         attention = int(data.get("attention", 0))
     except (TypeError, ValueError):

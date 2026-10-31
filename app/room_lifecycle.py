@@ -23,6 +23,37 @@ class LifecycleDependencies:
     now: Callable[[], datetime.datetime]
     initialize_room: Callable[[int], Awaitable[None]]
     start_client: Callable[[int], Awaitable[None]]
+    capture_end_snapshot: Callable[[runtime_state.SessionEndSnapshot], Awaitable[None]] | None = None
+
+
+def _write_end_snapshot(snapshot: runtime_state.SessionEndSnapshot) -> None:
+    if snapshot.guard_counts is not None or snapshot.fans_count is not None:
+        guards = snapshot.guard_counts or (None, None, None)
+        LiveSession.update_end_counts(
+            snapshot.session_id, guard_1=guards[0], guard_2=guards[1],
+            guard_3=guards[2], fans_count=snapshot.fans_count,
+        )
+    if snapshot.attention is not None:
+        LiveSession.update_end_attention(snapshot.session_id, snapshot.attention)
+    runtime_state.SESSION_END_SNAPSHOTS.pop(snapshot.session_id, None)
+
+
+async def _collect_end_snapshot(
+    snapshot: runtime_state.SessionEndSnapshot,
+    capture: Callable[[runtime_state.SessionEndSnapshot], Awaitable[None]],
+) -> None:
+    try:
+        await capture(snapshot)
+    except Exception as exc:
+        logger.error("[EndSnapshot] room_id=%s 采集失败 error_type=%s", snapshot.room_id, type(exc).__name__)
+    if runtime_state.SESSION_END_SNAPSHOTS.get(snapshot.session_id) is snapshot and snapshot.confirmed:
+        _write_end_snapshot(snapshot)
+
+
+def _discard_end_snapshot(session_id: int | None) -> None:
+    snapshot = runtime_state.SESSION_END_SNAPSHOTS.pop(session_id, None)
+    if snapshot is not None and snapshot.task is not None:
+        snapshot.task.cancel()
 
 
 def finish_live_session(
@@ -40,9 +71,13 @@ def finish_live_session(
     runtime_state.INVALID_DURATION_SESSIONS.pop(room_id, None)
     LiveSession.update_concurrency_by_id(session_id, avg_concurrency=average, max_concurrency=maximum)
     runtime_state.CONCURRENCY_CACHE.pop(room_id, None)
-    if session_id:
-        runtime_state.GUARD_FANS_QUEUE.put_nowait((room_id, session_id, "end"))
-        runtime_state.ATTENTION_QUEUE.put_nowait((room_id, session_id, "end", dependencies.now().date()))
+    snapshot = runtime_state.SESSION_END_SNAPSHOTS.get(session_id)
+    if snapshot is not None:
+        snapshot.confirmed = True
+        if snapshot.task is None or snapshot.task.done():
+            _write_end_snapshot(snapshot)
+    elif session_id:
+        logger.warning("[EndSnapshot] room_id=%s session_id=%s 缺少下播快照，不补采宽限期结束数据", room_id, session_id)
     return duration_str
 
 
@@ -50,6 +85,15 @@ def defer_live_session_finish(room_id: int, end_dt: datetime.datetime, dependenc
     duration_str = dependencies.record_stream_segment(room_id, end_dt)
     if duration_str is not None or room_id in runtime_state.CURRENT_SESSIONS:
         runtime_state.PENDING_SESSION_ENDS[room_id] = end_dt
+        session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
+        if session_id is not None and session_id not in runtime_state.SESSION_END_SNAPSHOTS:
+            snapshot = runtime_state.SessionEndSnapshot(room_id, session_id)
+            runtime_state.SESSION_END_SNAPSHOTS[session_id] = snapshot
+            if dependencies.capture_end_snapshot is not None:
+                snapshot.task = asyncio.create_task(
+                    _collect_end_snapshot(snapshot, dependencies.capture_end_snapshot),
+                    name=f"end-snapshot-{session_id}",
+                )
     return duration_str
 
 
@@ -62,6 +106,7 @@ def resume_interrupted_session(room_id: int, start_dt: datetime.datetime, now: d
         return None
     segment_start = start_dt if interrupted_at < start_dt <= now else now
     LiveSession.begin_duration_segment(session_id, segment_start)
+    _discard_end_snapshot(session_id)
     runtime_state.INVALID_DURATION_SESSIONS.pop(room_id, None)
     runtime_state.PENDING_SESSION_ENDS.pop(room_id, None)
     runtime_state.STREAM_STARTS[room_id] = segment_start
@@ -117,6 +162,7 @@ async def delete_room_async(room_id: int, dependencies: LifecycleDependencies) -
         dependencies.record_stream_segment(room_id, end_dt)
         runtime_state.PENDING_SESSION_ENDS.pop(room_id, None)
         session_id = runtime_state.CURRENT_SESSIONS.pop(room_id, None)
+        _discard_end_snapshot(session_id)
         dependencies.flush_pending_danmaku(room_id, session_id)
         flush_session(session_id, end_dt)
         LiveSession.close_session_by_id(session_id, end_dt)

@@ -107,7 +107,13 @@ async def _archive_closed_sessions(target_month: str | None = None) -> None:
         return
     try:
         await asyncio.wait_for(
-            asyncio.gather(runtime_state.GUARD_FANS_QUEUE.join(), runtime_state.ATTENTION_QUEUE.join()),
+            asyncio.gather(
+                runtime_state.GUARD_FANS_QUEUE.join(), runtime_state.ATTENTION_QUEUE.join(),
+                *(asyncio.shield(snapshot.task)
+                  for session_id in session_ids
+                  if (snapshot := runtime_state.SESSION_END_SNAPSHOTS.get(session_id)) is not None
+                  and snapshot.task is not None),
+            ),
             timeout=SESSION_ARCHIVE_DRAIN_TIMEOUT_SECONDS,
         )
     except TimeoutError:
@@ -277,6 +283,12 @@ async def main() -> None:
         entry_worker.cancel()
         await asyncio.gather(entry_worker, return_exceptions=True)
         await event_ingestion.entry_monitor.flush()
+        snapshot_tasks = [snapshot.task for snapshot in runtime_state.SESSION_END_SNAPSHOTS.values()
+                          if snapshot.task is not None]
+        for task in snapshot_tasks:
+            task.cancel()
+        await asyncio.gather(*snapshot_tasks, return_exceptions=True)
+        runtime_state.SESSION_END_SNAPSHOTS.clear()
         _flush_active_metrics(_now())
         if runtime_state.aiohttp_session:
             await runtime_state.aiohttp_session.close()

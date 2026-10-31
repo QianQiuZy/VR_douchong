@@ -180,6 +180,14 @@ def gift_module():
 
 
 @pytest.fixture(autouse=True)
+def isolated_end_snapshots(monkeypatch):
+    """Interruption snapshots must not leak between lifecycle scenarios."""
+    from app import runtime_state
+
+    monkeypatch.setattr(runtime_state, "SESSION_END_SNAPSHOTS", {})
+
+
+@pytest.fixture(autouse=True)
 def isolated_room_visibility(monkeypatch):
     """Every public GET checks Redis policy, including offline legacy reports."""
     import fakeredis

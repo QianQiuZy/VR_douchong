@@ -3,6 +3,7 @@
 import asyncio
 import datetime
 import threading
+from dataclasses import dataclass
 
 import aiohttp
 
@@ -29,6 +30,22 @@ LAST_STATUS: dict[int, int] = {}
 STREAM_STARTS: dict[int, datetime.datetime] = {}
 LIVE_INFO: dict[int, dict[str, str]] = {}
 PENDING_SESSION_ENDS: dict[int, datetime.datetime] = {}
+
+
+@dataclass
+class SessionEndSnapshot:
+    """One interruption's values, collected before its grace period expires."""
+
+    room_id: int
+    session_id: int
+    guard_counts: tuple[int, int, int] | None = None
+    fans_count: int | None = None
+    attention: int | None = None
+    confirmed: bool = False
+    task: asyncio.Task[None] | None = None
+
+
+SESSION_END_SNAPSHOTS: dict[int, SessionEndSnapshot] = {}
 INVALID_DURATION_SESSIONS: dict[int, int] = {}
 FORCED_OFFLINE_AT: dict[int, datetime.datetime] = {}
 DANMAKU_PENDING: dict[int, PendingDanmaku] = {}

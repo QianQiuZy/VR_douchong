@@ -189,6 +189,30 @@ def _read_room_attention(room_id: int) -> int:
         session.close()
 
 
+async def capture_end_snapshot(snapshot: runtime_state.SessionEndSnapshot) -> None:
+    """Start all end reads immediately, independently of the periodic queues."""
+    uid = runtime_state.ROOM_UIDS.get(snapshot.room_id)
+
+    async def capture(field, fetch, *args):
+        try:
+            value = await fetch(*args)
+            setattr(snapshot, field, value)
+            if value is None:
+                logger.warning("[EndSnapshot] room_id=%s field=%s 采集失败，保留缺失值", snapshot.room_id, field)
+        except Exception as exc:
+            logger.error("[EndSnapshot] room_id=%s field=%s 采集失败 error_type=%s", snapshot.room_id, field, type(exc).__name__)
+
+    reads = [capture("attention", bilibili_gateway.fetch_room_attention, snapshot.room_id)]
+    if uid is not None:
+        reads.extend((
+            capture("guard_counts", bilibili_gateway.fetch_guard_counts, uid, snapshot.room_id),
+            capture("fans_count", bilibili_gateway.fetch_fans_count, uid, snapshot.room_id),
+        ))
+    else:
+        logger.warning("[EndSnapshot] room_id=%s 未找到 uid，守护与粉丝团快照缺失", snapshot.room_id)
+    await asyncio.gather(*reads)
+
+
 async def attention_worker() -> None:
     while True:
         room_id, session_id, phase, target_date = await runtime_state.ATTENTION_QUEUE.get()
@@ -489,7 +513,7 @@ def _record_stream_segment(room_id: int, end_dt: datetime.datetime) -> str | Non
 
 def lifecycle_dependencies():
     from . import room_lifecycle
-    return room_lifecycle.LifecycleDependencies(_record_stream_segment, flush_pending_danmaku_for_room, finalize_concurrency_cache, _now, init_uid_and_attention_for_room, start_client)
+    return room_lifecycle.LifecycleDependencies(_record_stream_segment, flush_pending_danmaku_for_room, finalize_concurrency_cache, _now, init_uid_and_attention_for_room, start_client, capture_end_snapshot)
 
 
 room_lock_events.configure(lifecycle_dependencies)

@@ -99,7 +99,8 @@ def test_room_lock_stops_broadcast_at_event_time_with_grace(lock_state, monkeypa
     assert runtime_state.GUARD_FANS_QUEUE.qsize() == 0
     room_lifecycle.finish_expired_live_sessions(ended + datetime.timedelta(seconds=181), dependencies)
     assert calls == [("danmaku", 17436), ("bucket", 17436, ended), ("close", 17436, ended)]
-    assert runtime_state.GUARD_FANS_QUEUE.qsize() == 1
+    assert runtime_state.GUARD_FANS_QUEUE.empty()
+    assert runtime_state.ATTENTION_QUEUE.empty()
 
 
 @pytest.mark.parametrize("changes", [{"room_id": 99}, {"send_time": "invalid"}, {"expire": "invalid"}])

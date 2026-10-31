@@ -168,7 +168,5 @@ class TestRoomLifecycleWithoutBilibiliClient:
         assert room_id not in runtime_state.CURRENT_SESSIONS
         assert room_id not in runtime_state.PENDING_SESSION_ENDS
         assert room_id not in runtime_state.CONCURRENCY_CACHE
-        runtime_state.GUARD_FANS_QUEUE.get_nowait()
-        runtime_state.GUARD_FANS_QUEUE.task_done()
-        runtime_state.ATTENTION_QUEUE.get_nowait()
-        runtime_state.ATTENTION_QUEUE.task_done()
+        assert runtime_state.GUARD_FANS_QUEUE.empty()
+        assert runtime_state.ATTENTION_QUEUE.empty()
