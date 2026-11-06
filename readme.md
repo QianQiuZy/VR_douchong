@@ -1,10 +1,10 @@
 # VR斗虫自搭版
 
-当前正式版本：**1.0.5**。版本号在 `main.py` 的 `__version__` 中维护；项目元数据和锁文件同步更新，CI 检查版本一致性。
+当前正式版本：**1.0.6**。版本号在 `main.py` 的 `__version__` 中维护；项目元数据和锁文件同步更新，CI 检查版本一致性。
 
-VR/PSP 直播礼物、上舰、SC、场次、弹幕及访客进房统计服务。使用内置 blivedm 采集，FastAPI 提供查询接口，MySQL 保存业务数据，Redis 保存指标与 API 缓存。月度归档在月切时执行，跨月场次确认结束后补归档。
+VR/PSP/VUP 直播礼物、上舰、SC、场次、弹幕及访客进房统计服务。使用内置 blivedm 采集，FastAPI 提供查询接口，MySQL 保存业务数据，Redis 保存指标与 API 缓存。月度归档在月切时执行，跨月场次确认结束后补归档。
 
-> host：`https://vr.qianqiuzy.cn` `https://psp.qianqiuzy.cn`
+> host：`https://vr.qianqiuzy.cn` `https://psp.qianqiuzy.cn` `https://vup.qianqiuzy.cn`
 
 ## 文档索引
 
@@ -16,7 +16,7 @@ VR/PSP 直播礼物、上舰、SC、场次、弹幕及访客进房统计服务�
 | [运行与数据约定](./docs/runtime.md) | 连接启动、跨月归档、有效时长、Redis 缓存、访客进房 |
 | [开发规范](./docs/development.md) | 模块归属、单进程边界、修改流程、环境与测试 |
 | [blivedm 维护规范](./docs/blivedm.md) | 内置版本、自定义改动边界、后续独立分支维护流程 |
-| [数据许可说明](./LICENSE-DATA.md) | 两个官方 host 的数据集范围、CC BY-NC-SA 4.0 与署名方式 |
+| [数据许可说明](./LICENSE-DATA.md) | 三个官方 host 的数据集范围、CC BY-NC-SA 4.0 与署名方式 |
 | [历史问题与修复记录](./docs/history.md) | 已有问题、一次性修复、历史验证数据与适用限制 |
 
 文档以本仓库源码为准。新增接口或调整解析、统计、归档行为时，同步更新对应文档；历史测量不能作为当前线上性能保证。
@@ -54,9 +54,9 @@ VR/PSP 直播礼物、上舰、SC、场次、弹幕及访客进房统计服务�
 
 4. 将仓库中的 `.env.example` 复制为 `.env`，配置数据库、Redis、B 站 Cookies、管理 API 密钥等。变量名与默认值可查模板、`app/config.py`、`app/bilibili_gateway.py`，不要复制其他项目的配置。
 
-   业务 JSON 集中到 `config/`：`rooms.json` 为 VR 房间配置，`psp_rooms.json` 为 PSP 房间配置，`entry_users.json` 为独立访客名单。通过 `ROOMS_JSON_PATH` 选择房间文件；两类 JSON 相对路径都以实际使用的 `.env` 所在目录为基准，默认是 `config/rooms.json` 和 `config/entry_users.json`。也可通过带鉴权的 `POST /add/room`、`POST /delete/room` 管理房间。
+   业务 JSON 集中到 `config/`：`rooms.json` 为 VR 房间配置，`psp_rooms.json` 为 PSP 房间配置，`vup_rooms.json` 为 VUP 房间配置，`entry_users.json` 为独立访客名单。通过 `ROOMS_JSON_PATH` 选择房间文件；两类 JSON 相对路径都以实际使用的 `.env` 所在目录为基准，默认是 `config/rooms.json` 和 `config/entry_users.json`。也可通过带鉴权的 `POST /add/room`、`POST /delete/room` 管理房间。
 
-   `POST /delete/room/temporary` 和 `POST /restore/room/temporary` 仅改变房间对外可见性，JSON payload 只需 `room_id`，密钥通过请求头传递。临时隐藏覆盖当前月、历史月和所有访客查询，MySQL 写入、blivedm 连接及归档照常运行；隐藏状态保存在 Redis DB2，不设过期时间。共用 Redis 的 VR/PSP 部署必须配置不同的 `API_CACHE_PREFIX`。
+   `POST /delete/room/temporary` 和 `POST /restore/room/temporary` 仅改变房间对外可见性，JSON payload 只需 `room_id`，密钥通过请求头传递。临时隐藏覆盖当前月、历史月和所有访客查询，MySQL 写入、blivedm 连接及归档照常运行；隐藏状态保存在 Redis DB2，不设过期时间。共用 Redis 的 VR/PSP/VUP 部署必须配置不同的 `API_CACHE_PREFIX`。
 
    **升级现有部署时**，先将原 JSON 文件原样移入 `config/`，保留线上房间和名单内容，并更新 `.env` 中的路径；原来的显式绝对路径仍可使用。若旧 `.venv` 继承了全局包，先新建独立环境验证，不覆盖正在使用的环境。
 
@@ -94,6 +94,6 @@ git diff --check
 
 ### 官方数据集
 
-由 `https://vr.qianqiuzy.cn` 和 `https://psp.qianqiuzy.cn` 对外提供的直播统计数据集，在本项目有权许可的范围内，单独采用 **CC BY-NC-SA 4.0（署名—非商业性使用—相同方式共享）**。公开分享时须注明来源、许可及修改情况；许可范围内的使用仅限非商业目的，公开分享构成改编的数据成果时须遵循相同方式共享条款。具体范围、署名示例与权利边界见 [LICENSE-DATA.md](./LICENSE-DATA.md)，完整条款见 [CC 官方法律文本](https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.zh-hans)。
+由 `https://vr.qianqiuzy.cn`、`https://psp.qianqiuzy.cn` 和 `https://vup.qianqiuzy.cn` 对外提供的直播统计数据集，在本项目有权许可的范围内，单独采用 **CC BY-NC-SA 4.0（署名—非商业性使用—相同方式共享）**。公开分享时须注明来源、许可及修改情况；许可范围内的使用仅限非商业目的，公开分享构成改编的数据成果时须遵循相同方式共享条款。具体范围、署名示例与权利边界见 [LICENSE-DATA.md](./LICENSE-DATA.md)，完整条款见 [CC 官方法律文本](https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.zh-hans)。
 
 数据许可与软件代码许可分别适用，不因使用本软件就要求公开独立采集的数据，也不要求公开使用者的全部数据库或网站源码。

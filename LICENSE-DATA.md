@@ -6,10 +6,11 @@ SPDX-License-Identifier: CC-BY-NC-SA-4.0
 
 VR_douchong 官方数据集由 QianQiuZy 以 **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International（CC BY-NC-SA 4.0，署名—非商业性使用—相同方式共享 4.0 国际）** 许可提供。
 
-当前数据集范围为以下两个 host 对外提供的直播统计数据，包括通过其查询接口提供的礼物、上舰、SC、场次、弹幕及访客进房等统计或记录：
+当前数据集范围为以下三个 host 对外提供的直播统计数据，包括通过其查询接口提供的礼物、上舰、SC、场次、弹幕及访客进房等统计或记录：
 
 - VR：<https://vr.qianqiuzy.cn>
 - PSP：<https://psp.qianqiuzy.cn>
+- VUP：<https://vup.qianqiuzy.cn>
 
 本声明适用于上述数据集中本项目实际拥有并有权许可的著作权及其他适用的类似权利，不将整个网站的软件代码、页面素材或未对外提供的内部数据库纳入数据授权。
 

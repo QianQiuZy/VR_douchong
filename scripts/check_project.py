@@ -40,7 +40,7 @@ def check_project() -> None:
     for path in paths:
         compile(path.read_bytes(), str(path.relative_to(ROOT)), "exec")
 
-    for name in ("rooms.json", "psp_rooms.json"):
+    for name in ("rooms.json", "psp_rooms.json", "vup_rooms.json"):
         path = ROOT / "config" / name
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or set(data) != {"room_ids", "room_anchors"}:

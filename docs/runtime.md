@@ -77,7 +77,7 @@ API 上下文随请求进入同步工作线程和主循环管理操作；缓存�
 
 ## 房间临时隐藏与恢复
 
-`app/room_visibility.py` 使用 Redis DB2 的 `<API_CACHE_PREFIX>:hidden-rooms` 集合保存房间号；隐藏通过 `SADD`、恢复通过 `SREM` 原子执行，不设 TTL。状态属于管理数据，不写进分代快照，不被预热和月份刷新删除；应用重启后继续读取，Redis 自身重启后的保留依赖部署的持久化配置。VR/PSP 共用 Redis 时必须使用不同的 `API_CACHE_PREFIX`；切换前缀或迁移 Redis 时应一起迁移隐藏集合。
+`app/room_visibility.py` 使用 Redis DB2 的 `<API_CACHE_PREFIX>:hidden-rooms` 集合保存房间号；隐藏通过 `SADD`、恢复通过 `SREM` 原子执行，不设 TTL。状态属于管理数据，不写进分代快照，不被预热和月份刷新删除；应用重启后继续读取，Redis 自身重启后的保留依赖部署的持久化配置。VR/PSP/VUP 共用 Redis 时必须使用不同的 `API_CACHE_PREFIX`；切换前缀或迁移 Redis 时应一起迁移隐藏集合。
 
 最外层可见性中间件在每个 GET 请求读取一次当前集合，统一覆盖 Redis 缓存直接响应、gzip、访客查询和关闭缓存后的旧 MySQL 报表。汇总直接删除房间对象；单房间查询返回 404；按 UID 或时间窗口查询移除该房间的所有访客记录。无法读取可信状态时返回 503，不允许数据绕过隐藏规则。已开始的请求按自身读取到的状态处理。
 
@@ -85,7 +85,7 @@ API 上下文随请求进入同步工作线程和主循环管理操作；缓存�
 
 ## 访客进房记录
 
-`config/rooms.json` 只管理 VR 的 WS 连接房间，`config/psp_rooms.json` 为 PSP 房间配置，通过 `ROOMS_JSON_PATH` 选择。`config/entry_users.json` 为独立访客名单，初始从 StarBot 导入 UID 和名称，此后直接维护本项目部署文件，不再同步 StarBot。
+`config/rooms.json` 只管理 VR 的 WS 连接房间，`config/psp_rooms.json` 为 PSP 房间配置，`config/vup_rooms.json` 为 VUP 房间配置，通过 `ROOMS_JSON_PATH` 选择。`config/entry_users.json` 为独立访客名单，初始从 StarBot 导入 UID 和名称，此后直接维护本项目部署文件，不再同步 StarBot。
 
 业务 JSON 默认放到实际 `.env` 所在目录下的 `config/`。房间和访客名单默认分别为 `config/rooms.json` 与 `config/entry_users.json`；可通过 `ROOMS_JSON_PATH`、`ENTRY_USERS_JSON_PATH` 指定其他路径，显式绝对路径保持原意，相对路径均以 `ENV_FILE` / `.env` 所在目录为基准，不受启动目录影响。升级时移动部署中的 JSON 并更新环境变量，不覆盖线上已有名单或房间。访客名单格式如下：
 
