@@ -1,10 +1,11 @@
 [project]
 name = "vr-douchong"
-version = "1.0.6"
+version = "1.0.7"
 description = "VR/PSP/VUP live event collection and statistics API"
 readme = "readme.md"
 requires-python = ">=3.13,<3.14"
-license = { file = "LICENSE" }
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "LICENSE-DATA.md", "app/blivedm/LICENSE"]
 dependencies = [
     "aiohttp>=3.9,<4",
     "anyio>=4,<5",

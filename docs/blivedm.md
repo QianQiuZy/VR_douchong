@@ -7,7 +7,7 @@ VR_douchong 实际导入的是本仓库 `app/blivedm/`，例如 `app/live_client
 当前用户保留的版本标识为：
 
 ```python
-__version__ = '1.0.2-VR_douchong'
+__version__ = '1.0.3-VR_douchong'
 ```
 
 该值标识本项目内置维护版本，不应在同步上游时覆盖回 `1.1.5-dev`。它不是发布到 PyPI 或打包可用性的验证结论。
@@ -21,12 +21,15 @@ V2 优先取 `blind.blind_price * num`，缺失时告警并回退旧 `total_coin
 旧 JSON 传递已有盲盒标记及成本。既有流水金额字段保持原算法。
 独立库与内置副本同步，不涉及开放平台解析及数据库结构变更。
 
+`1.0.3-VR_douchong` 修复 `getDanmuInfo` 返回 `-352` 后初始化任务退出的问题，保留 3～48 秒单房间退避；同一事件循环内跨会话共用至少 3 秒的请求间隔，并增加弹幕配置专用的 60 秒熔断和单请求恢复探测。连续风控只刷新一次 WBI，按签名代次忽略旧失败，诊断日志只保留脱敏状态；详细条件与进程边界见 [运行约定](./runtime.md#弹幕连接的--352-退避重试)。同步独立 `blivedm` 仓库的 `dev` 工作树，独立库保留 MIT License，不随主项目改为 GPL-3.0-or-later。
+
 ## 源码职责与现有定制
 
 | 位置 | 职责与需要保留的接口 |
 | --- | --- |
 | `app/blivedm/clients/ws_base.py` | 压缩包、心跳、鉴权及消息传递；异常与连接生命周期 |
-| `app/blivedm/clients/web.py` | Web 房间初始化、WBI、弹幕服务器认证参数 |
+| `app/blivedm/clients/web.py` | Web 房间初始化、WBI、弹幕服务器认证参数与脱敏诊断 |
+| `app/blivedm/clients/danmaku.py` | 弹幕配置请求的共享限速、专用熔断与恢复探测 |
 | `app/blivedm/handlers.py` | CMD 后缀处理、老/V2 事件分发、V2 礼物多条回调及解码失败跳过 |
 | `app/blivedm/models/web.py` | 老 JSON、SEND_GIFT_V2 repeated field 10、金额归一化、老/V2 互动模型 |
 | `app/blivedm/models/pb.py` | INTERACT_WORD_V2 字段与枚举兼容 |
@@ -52,7 +55,7 @@ V2 优先取 `blind.blind_price * num`，缺失时告警并回退旧 `total_coin
 从 VR_douchong 仓库根目录，使用本项目解释器：
 
 ```bash
-uv run --locked pytest -q tests/test_send_gift_v2.py tests/test_send_gift_v2_batch.py tests/test_entry_events.py tests/test_live_client_authentication.py tests/test_live_first_startup.py
+uv run --locked pytest -q tests/test_send_gift_v2.py tests/test_send_gift_v2_batch.py tests/test_entry_events.py tests/test_live_client_authentication.py tests/test_live_first_startup.py tests/test_danmaku_retry.py tests/test_danmaku_policy.py
 ```
 
 若调整 CMD 分发或生命周期，再运行 `test_room_lock.py`、`test_room_cut_off.py`、`test_session_duration_validity.py`。不得启动第二个真实采集器验证分支；隔离测试方法见 [development.md](./development.md)。

@@ -12,6 +12,7 @@ import yarl
 
 from .. import utils
 from . import ws_base
+from .danmaku import get_request_policy
 
 __all__ = (
     'BLiveClient',
@@ -27,6 +28,17 @@ DANMAKU_SERVER_CONF_URL = 'https://api.live.bilibili.com/xlive/web-room/v1/index
 DEFAULT_DANMAKU_SERVER_LIST = [
     {'host': 'broadcastlv.chat.bilibili.com', 'port': 2243, 'wss_port': 443, 'ws_port': 2244}
 ]
+
+
+def _log_failure(endpoint, response, data=None, room_id=None):
+    # Never log response bodies, vouchers, cookies, signatures or signed URLs.
+    code = data.get('code', 'missing') if isinstance(data, dict) else 'missing'
+    if not isinstance(code, int):
+        code = 'missing' if code == 'missing' else 'invalid'
+    logger.warning('room=%s endpoint=%s http_status=%d code=%s gaia_vvoucher=%s',
+                   room_id, endpoint, response.status, code,
+                   'X-Bili-Gaia-Vvoucher' in response.headers)
+
 
 _session_to_wbi_signer = weakref.WeakKeyDictionary()
 
@@ -50,6 +62,8 @@ class _WbiSigner:
         self._session = session
 
         self._wbi_key = ''
+        self.generation = 0
+        self.risk_refresh_used = False
         """缓存的wbi鉴权口令"""
         self._refresh_future: Optional[Awaitable] = None
         """用来避免同时刷新"""
@@ -65,6 +79,17 @@ class _WbiSigner:
     def reset(self):
         self._wbi_key = ''
         self._last_refresh_time = None
+
+    def reject(self, generation):
+        # A risk episode gets one refresh; late failures cannot invalidate a newer key.
+        if generation != self.generation or self.risk_refresh_used:
+            return
+        self.risk_refresh_used = True
+        self.reset()
+
+    def accepted(self, generation):
+        if generation == self.generation:
+            self.risk_refresh_used = False
 
     @property
     def need_refresh_wbi_key(self):
@@ -89,6 +114,7 @@ class _WbiSigner:
             return
 
         self._wbi_key = wbi_key
+        self.generation += 1
         self._last_refresh_time = datetime.datetime.now().astimezone().replace(tzinfo=None)
 
     async def _get_wbi_key(self):
@@ -98,19 +124,19 @@ class _WbiSigner:
                 headers={'User-Agent': utils.USER_AGENT},
             ) as res:
                 if res.status != 200:
-                    logger.warning('WbiSigner failed to get wbi key: status=%d %s', res.status, res.reason)
+                    _log_failure('nav', res)
                     return ''
                 data = await res.json()
-        except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
-            logger.exception('WbiSigner failed to get wbi key:')
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            logger.warning('endpoint=nav request failed (connection or timeout)')
             return ''
 
         try:
             wbi_img = data['data']['wbi_img']
             img_key = wbi_img['img_url'].rpartition('/')[2].partition('.')[0]
             sub_key = wbi_img['sub_url'].rpartition('/')[2].partition('.')[0]
-        except KeyError:
-            logger.warning('WbiSigner failed to get wbi key: data=%s', data)
+        except (KeyError, TypeError, AttributeError):
+            _log_failure('nav', res, data)
             return ''
 
         shuffled_key = img_key + sub_key
@@ -170,6 +196,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
     ):
         super().__init__(session, heartbeat_interval)
         self._wbi_signer = _get_wbi_signer(self._session)
+        self._danmaku_policy = get_request_policy()
 
         self._tmp_room_id = room_id
         """用来init_room的临时房间ID，可以用短ID"""
@@ -249,8 +276,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
                 headers={'User-Agent': utils.USER_AGENT},
             ) as res:
                 if res.status != 200:
-                    logger.warning('room=%d _init_uid() failed, status=%d, reason=%s', self._tmp_room_id,
-                                   res.status, res.reason)
+                    _log_failure('nav', res, room_id=self._tmp_room_id)
                     return False
                 data = await res.json()
                 if data['code'] != 0:
@@ -258,8 +284,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
                         # 未登录
                         self._uid = 0
                         return True
-                    logger.warning('room=%d _init_uid() failed, message=%s', self._tmp_room_id,
-                                   data['message'])
+                    _log_failure('nav', res, data, self._tmp_room_id)
                     return False
 
                 data = data['data']
@@ -287,8 +312,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
                 headers={'User-Agent': utils.USER_AGENT},
             ) as res:
                 if res.status != 200:
-                    logger.warning('room=%d _init_buvid() status error, status=%d, reason=%s',
-                                   self._tmp_room_id, res.status, res.reason)
+                    _log_failure('homepage', res, room_id=self._tmp_room_id)
         except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
             logger.exception('room=%d _init_buvid() exception:', self._tmp_room_id)
         return self._get_buvid() != ''
@@ -303,13 +327,11 @@ class BLiveClient(ws_base.WebSocketClientBase):
                 },
             ) as res:
                 if res.status != 200:
-                    logger.warning('room=%d _init_room_id_and_owner() failed, status=%d, reason=%s', self._tmp_room_id,
-                                   res.status, res.reason)
+                    _log_failure('get_info', res, room_id=self._tmp_room_id)
                     return False
                 data = await res.json()
                 if data['code'] != 0:
-                    logger.warning('room=%d _init_room_id_and_owner() failed, message=%s', self._tmp_room_id,
-                                   data['message'])
+                    _log_failure('get_info', res, data, self._tmp_room_id)
                     return False
                 if not self._parse_room_init(data['data']):
                     return False
@@ -324,39 +346,68 @@ class BLiveClient(ws_base.WebSocketClientBase):
         return True
 
     async def _init_host_server(self):
-        if self._wbi_signer.need_refresh_wbi_key:
-            await self._wbi_signer.refresh_wbi_key()
-            # 如果没刷新成功先用旧的key
-            if self._wbi_signer.wbi_key == '':
-                logger.exception('room=%d _init_host_server() failed: no wbi key', self._room_id)
-                return False
+        retry_delay = 3
+        recovering = False
+        while True:
+            async with self._danmaku_policy.request():
+                if self._wbi_signer.need_refresh_wbi_key:
+                    await asyncio.shield(self._wbi_signer.refresh_wbi_key())
+                if self._wbi_signer.wbi_key == '':
+                    logger.warning('room=%d endpoint=getDanmuInfo unavailable: no wbi key', self._room_id)
+                    if not recovering:
+                        self._danmaku_policy.other_failure()
+                        return False
+                    self._danmaku_policy.failed_probe()
+                else:
+                    generation = self._wbi_signer.generation
+                    refreshed = self._wbi_signer.risk_refresh_used
+                    try:
+                        self._danmaku_policy.started()
+                        async with self._session.get(
+                            DANMAKU_SERVER_CONF_URL,
+                            headers={'User-Agent': utils.USER_AGENT},
+                            params=self._wbi_signer.add_wbi_sign({'id': self._room_id, 'type': 0}),
+                        ) as res:
+                            if res.status != 200:
+                                _log_failure('getDanmuInfo', res, room_id=self._room_id)
+                                self._danmaku_policy.other_failure()
+                                if not recovering:
+                                    return False
+                            else:
+                                data = await res.json()
+                                if data['code'] == 0:
+                                    if self._parse_danmaku_server_conf(data['data']):
+                                        self._wbi_signer.accepted(generation)
+                                        self._danmaku_policy.success()
+                                        return True
+                                    self._danmaku_policy.other_failure()
+                                    if not recovering:
+                                        return False
+                                else:
+                                    _log_failure('getDanmuInfo', res, data, self._room_id)
+                                    if data['code'] != -352:
+                                        self._danmaku_policy.other_failure()
+                                        if not recovering:
+                                            return False
+                                    else:
+                                        self._wbi_signer.reject(generation)
+                                        self._danmaku_policy.rejected(
+                                            self._room_id, refreshed=refreshed,
+                                            gaia='X-Bili-Gaia-Vvoucher' in res.headers,
+                                        )
+                                        recovering = True
+                    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, TypeError):
+                        logger.warning('room=%d endpoint=getDanmuInfo request or response failed',
+                                       self._room_id)
+                        self._danmaku_policy.other_failure()
+                        if not recovering:
+                            return False
 
-        try:
-            async with self._session.get(
-                DANMAKU_SERVER_CONF_URL,
-                headers={'User-Agent': utils.USER_AGENT},
-                params=self._wbi_signer.add_wbi_sign({
-                    'id': self._room_id,
-                    'type': 0
-                }),
-            ) as res:
-                if res.status != 200:
-                    logger.warning('room=%d _init_host_server() failed, status=%d, reason=%s', self._room_id,
-                                   res.status, res.reason)
-                    return False
-                data = await res.json()
-                if data['code'] != 0:
-                    if data['code'] == -352:
-                        # wbi签名错误
-                        self._wbi_signer.reset()
-                    logger.warning('room=%d _init_host_server() failed, message=%s', self._room_id, data['message'])
-                    return False
-                if not self._parse_danmaku_server_conf(data['data']):
-                    return False
-        except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
-            logger.exception('room=%d _init_host_server() failed:', self._room_id)
-            return False
-        return True
+            # Backoff and admission waits are both cancellable; no HTTP response is held.
+            logger.warning('room=%d getDanmuInfo recovery, retrying in %d seconds',
+                           self._room_id, retry_delay)
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 48)
 
     def _parse_danmaku_server_conf(self, data):
         self._host_server_list = data['host_list']
