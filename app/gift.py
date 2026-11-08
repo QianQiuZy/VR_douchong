@@ -148,7 +148,7 @@ archive_attention = _archive_service.archive_attention
 # ------------------ Cookie invalidation notification ------------------ #
 def send_cookie_invalid_email_async(log_line: str) -> None:
     """
-    检测到 uid=0 时发送一次告警邮件（进程生命周期内只发一次）。
+    检测到 Cookie 失效信号时发送告警邮件（进程生命周期内只发一次）。
     """
     global _cookie_alert_sent
     if _cookie_alert_sent:
@@ -159,9 +159,10 @@ def send_cookie_invalid_email_async(log_line: str) -> None:
         try:
             subject = "B站直播礼物监听 Cookies 失效告警"
             body = (
-                "检测到 B 站直播礼物消息 uid=0，疑似 SESSDATA Cookies 已失效。\n\n"
+                "检测到 B 站 Cookies 失效信号（礼物消息 uid=0 或 GUARD_API code=-101），"
+                "疑似 SESSDATA Cookies 已失效。\n\n"
                 f"原始日志：{log_line}\n"
-                "请尽快检查并更新 douchong.py 使用的 SESSDATA。"
+                "请尽快检查并更新采集服务使用的 SESSDATA。"
             )
             msg = MIMEText(body, "plain", "utf-8")
             msg["Subject"] = subject
@@ -249,6 +250,8 @@ def _profit_to_tenths(total_price: int, total_coin: int) -> int:
 
 
 # ------------------ Event ingestion wiring ------------------ #
+bilibili_gateway.configure_cookie_invalid_alert(send_cookie_invalid_email_async)
+
 event_ingestion.configure(
     event_ingestion.EventDependencies(
         month_str=month_str,

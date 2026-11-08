@@ -7,6 +7,7 @@ import http.cookies
 import logging
 import os
 import time
+from collections.abc import Callable
 
 import aiohttp
 from aiohttp import ContentTypeError
@@ -49,6 +50,13 @@ ROOM_INFO_API = "https://api.live.bilibili.com/room/v1/Room/get_info"
 FANS_API = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/getFansMembersRank"
 GUARD_API = "https://api.live.bilibili.com/xlive/general-interface/v1/guard/GuardActive"
 CONTRIBUTION_RANK_API = "https://api.live.bilibili.com/xlive/general-interface/v1/rank/queryContributionRank"
+_cookie_invalid_alert: Callable[[str], None] | None = None
+
+
+def configure_cookie_invalid_alert(callback: Callable[[str], None]) -> None:
+    """Use the runtime's shared, deduplicated Cookie alert sender."""
+    global _cookie_invalid_alert
+    _cookie_invalid_alert = callback
 
 
 def init_session() -> None:
@@ -185,6 +193,16 @@ async def fetch_guard_counts(uid: int, room_id: int) -> tuple[int, int, int] | N
                 return None
     except Exception as exc:
         logger.exception("[Guard] room_id=%s 请求异常: %s", room_id, type(exc).__name__, exc_info=False)
+        return None
+    code = payload.get("code")
+    if code != 0:
+        log_message = (
+            f"[Guard] room_id={room_id} ruid={uid} GUARD_API 返回异常: "
+            f"code={code} message={payload.get('message', '')}"
+        )
+        logger.warning(log_message)
+        if code == -101 and _cookie_invalid_alert is not None:
+            _cookie_invalid_alert(log_message)
         return None
     data = payload.get("data") or {}
     def as_int(value):
