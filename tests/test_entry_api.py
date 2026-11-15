@@ -7,11 +7,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app import api_app, config, room_config
+from app import api_app, config, event_ingestion, room_config
 from app.api_cache_http import CacheMiddleware
 from app.api_cache_payloads import PayloadBuilder
 from app.api_cache_source import BASE_TABLES, MONTH_TABLES, Snapshot, SnapshotReader
 from app.api_cache_store import CacheStore, encode
+from app.blivedm.models.web import PopularityRedPocketV2NewMessage
 from app.event_ingestion import now_local
 from app.repositories.tables import month_str
 
@@ -126,7 +127,8 @@ def test_ten_minute_and_hour_windows_include_previous_month(cache, monkeypatch):
     publish(store, recent=recent)
     ten = client.get("/gift/entry?cache=1")
     assert ten.status_code == 200
-    assert set(ten.json()) == {"mode", "cache", "items"}
+    assert set(ten.json()) == {"mode", "cache", "items", "red_pocket"}
+    assert ten.json()["red_pocket"] == []
     assert [row["uid"] for row in ten.json()["items"]] == [599, 600]
     hour = client.get("/gift/entry?cache=2").json()
     assert [row["uid"] for row in hour["items"]] == [599, 600, 601, 3599, 3600]
@@ -217,7 +219,62 @@ def test_entry_trailing_slash_preserves_cache_transport_behavior(cache):
     publish(store)
     response = client.get("/gift/entry/?cache=1", follow_redirects=False)
     assert response.status_code == 200
-    assert response.json() == {"mode": "cache", "cache": 1, "items": []}
+    assert response.json() == {"mode": "cache", "cache": 1, "items": [], "red_pocket": []}
+
+
+def test_red_pockets_match_example_and_appear_only_in_cache_one(cache, monkeypatch):
+    store, client = cache
+    now = now_local().replace(microsecond=0)
+    monkeypatch.setattr(event_ingestion, "now_local", lambda: now)
+    monkeypatch.setattr(api_app, "_entry_now", lambda: now)
+    monkeypatch.setattr(event_ingestion, "save_entries", lambda *_: pytest.fail("red pockets must not write SQL"))
+    monkeypatch.setattr(api_app, "_default_Session", lambda: pytest.fail("red pockets must not query SQL"))
+    publish(store)
+    start = now - datetime.timedelta(seconds=60)
+    handler = event_ingestion.MyHandler()
+    for lot, kind, price in ((1, 2, 9805), (2, 3, 100), (3, 0, 20)):
+        handler.handle(SimpleNamespace(room_id=111111), {
+            "cmd": "POPULARITY_RED_POCKET_V2_NEW", "data": {
+                "lot_id": lot, "rp_type": kind, "price": price,
+                "start_time": int(start.replace(tzinfo=api_app.SHANGHAI).timestamp()),
+            },
+        })
+    expected = [
+        {"room_id": 111111, "pocket_type": "gift", "gift_num": 20, "event_time": start.replace(tzinfo=api_app.SHANGHAI).isoformat()},
+        {"room_id": 111111, "pocket_type": "battery", "battery_num": 100, "event_time": start.replace(tzinfo=api_app.SHANGHAI).isoformat()},
+        {"room_id": 111111, "pocket_type": "guard", "guard_num": 5, "event_time": start.replace(tzinfo=api_app.SHANGHAI).isoformat()},
+    ]
+    response = client.get("/gift/entry?cache=1", headers={"Accept-Encoding": "identity"})
+    assert response.json() == {"mode": "cache", "cache": 1, "items": [], "red_pocket": expected}
+    assert client.get("/gift/entry/?cache=1").json()["red_pocket"] == expected
+    for query in ("cache=2", "room_id=111111", "uid=7", "room_id=111111&month=190001", "uid=7&month=190001"):
+        assert "red_pocket" not in client.get("/gift/entry?" + query).json()
+    for path in ("/gift", "/gift/by_month", "/gift/live_sessions?room_id=111111",
+                 "/gift/attention?room_id=111111", "/gift/sc?room_id=111111"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert "red_pocket" not in response.text
+    import gzip
+    import json
+    assert "red_pocket" not in json.loads(gzip.decompress(store.read(month_str(), api_app.RECENT_PATH)))
+    assert event_ingestion.entry_monitor.queue.empty()
+
+
+def test_red_pocket_expiration_uses_start_time_not_receipt_or_entry_snapshot(cache, monkeypatch):
+    store, client = cache
+    now = [now_local().replace(microsecond=0)]
+    monkeypatch.setattr(event_ingestion, "now_local", lambda: now[0])
+    monkeypatch.setattr(api_app, "_entry_now", lambda: now[0])
+    start = now[0] - datetime.timedelta(seconds=599)
+    command = {"data": {"lot_id": 1, "rp_type": 3, "price": 100,
+                        "start_time": int(start.replace(tzinfo=api_app.SHANGHAI).timestamp())}}
+    message = PopularityRedPocketV2NewMessage.from_command(command["data"])
+    assert event_ingestion.red_pocket_monitor.receive(SimpleNamespace(room_id=111111), message)
+    publish(store)
+    assert len(client.get("/gift/entry?cache=1").json()["red_pocket"]) == 1
+    now[0] += datetime.timedelta(seconds=1)
+    assert client.get("/gift/entry?cache=1").json()["red_pocket"] == []
+    assert not event_ingestion.red_pocket_monitor.receive(SimpleNamespace(room_id=111111), message)
 
 
 def test_entry_only_rooms_do_not_expand_existing_report_domains(cache):

@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
     "module_name", [
         "app.api_app", "app.archive_service", "app.bootstrap", "app.gift",
         "app.logging_setup", "app.api_request_logging",
+        "app.health_events", "app.health_check",
     ]
 )
 def test_import_is_offline_in_a_fresh_process(module_name):

@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import json
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,7 @@ from .metrics_runtime import (
     record_payment,
     start_session,
 )
+from .blivedm.models.web import PopularityRedPocketV2NewMessage
 from .models import (
     LiveSession,
     RoomBlindBoxMonthly,
@@ -169,6 +171,58 @@ class EntryMonitor:
 entry_monitor = EntryMonitor(config.ENTRY_USERS_JSON_PATH)
 
 
+class RedPocketMonitor:
+    """Ten-minute, process-local announcements; never use the entry SQL queue."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.pockets: dict[tuple[int, int], tuple[datetime.datetime, dict]] = {}
+
+    def _prune(self, now: datetime.datetime) -> None:
+        for key in [key for key, (start, _) in self.pockets.items()
+                    if now >= start + datetime.timedelta(minutes=10)]:
+            del self.pockets[key]
+
+    def receive(self, client, message: PopularityRedPocketV2NewMessage) -> bool:
+        try:
+            room_id, lot_id = client.room_id, message.lot_id
+            if any(type(value) is not int or not 0 < value < 2**64 for value in (room_id, lot_id)):
+                return False
+            kind = message.pocket_type
+            if kind is None:
+                return False
+            count = getattr(message, f"{kind}_num")
+            if count is None:
+                logger.warning("[red-pocket] 未知上舰红包价格，跳过 room_id=%s price=%s", room_id, message.price)
+                return False
+            start = datetime.datetime.fromtimestamp(message.start_time, SHANGHAI)
+            now = now_local().replace(tzinfo=SHANGHAI)
+            if now >= start + datetime.timedelta(minutes=10):
+                return False
+            record = {"room_id": room_id, "pocket_type": kind, f"{kind}_num": count,
+                      "event_time": start.isoformat()}
+            with self.lock:
+                self._prune(now)
+                key = (room_id, lot_id)
+                if key in self.pockets:
+                    return False
+                self.pockets[key] = (start, record)
+            return True
+        except (AttributeError, KeyError, TypeError, ValueError, OSError, OverflowError):
+            logger.warning("[red-pocket] 无效红包事件，跳过")
+            return False
+
+    def snapshot(self, now: datetime.datetime) -> list[dict]:
+        with self.lock:
+            self._prune(now)
+            return [record.copy() for _, (start, record) in sorted(
+                self.pockets.items(), key=lambda item: (item[1][0], *item[0]), reverse=True,
+            ) if start <= now]
+
+
+red_pocket_monitor = RedPocketMonitor()
+
+
 COMMON_NOTICE_GIFT_COIN_MAP = {
     "干杯之旅": 10000,
     "启航之旅": 100000,
@@ -216,6 +270,9 @@ def _timestamp_to_datetime(value: float | str | None) -> datetime.datetime | Non
 
 
 class MyHandler(blivedm.BaseHandler):
+    def _on_red_pocket_v2_new(self, client, message: PopularityRedPocketV2NewMessage) -> None:
+        red_pocket_monitor.receive(client, message)
+
     _CMD_CALLBACK_DICT: ClassVar[dict] = {
         **blivedm.BaseHandler._CMD_CALLBACK_DICT,
         "ROOM_LOCK": room_lock_events.handle_room_lock,

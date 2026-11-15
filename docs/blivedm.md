@@ -7,7 +7,7 @@ VR_douchong 实际导入的是本仓库 `app/blivedm/`，例如 `app/live_client
 当前用户保留的版本标识为：
 
 ```python
-__version__ = '1.0.3-VR_douchong'
+__version__ = '1.0.4-VR_douchong'
 ```
 
 该值标识本项目内置维护版本，不应在同步上游时覆盖回 `1.1.5-dev`。它不是发布到 PyPI 或打包可用性的验证结论。
@@ -24,6 +24,8 @@ V2 优先取 `blind.blind_price * num`，缺失时告警并回退旧 `total_coin
 `1.0.3-VR_douchong` 修复 `getDanmuInfo` 返回 `-352` 后初始化任务退出的问题，保留 3～48 秒单房间退避；同一事件循环内跨会话共用至少 3 秒的请求间隔，并增加弹幕配置专用的 60 秒熔断和单请求恢复探测。连续风控只刷新一次 WBI，按签名代次忽略旧失败，诊断日志只保留脱敏状态；详细条件与进程边界见 [运行约定](./runtime.md#弹幕连接的--352-退避重试)。同步独立 `blivedm` 仓库的 `dev` 工作树，独立库保留 MIT License，不随主项目改为 GPL-3.0-or-later。
 
 ## 源码职责与现有定制
+
+`1.0.4-VR_douchong` 新增 `POPULARITY_RED_POCKET_V2_NEW` 的 `PopularityRedPocketV2NewMessage` 模型和 `BaseHandler._on_red_pocket_v2_new` 回调。模型保留全部 20 个已知协议字段，提供 `pocket_type` 及 `guard_num`、`battery_num`、`gift_num` 属性：上舰价格 `9805/19610/39220/98050` 映射 `5/10/20/50`，电池和礼物保留原始价格；未知类型或未知上舰价格不猜测归一化值。核心字段无效时仅记录脱敏警告并跳过分发。库内不加入缓存、MySQL、Redis、FastAPI 或访客名单逻辑；十分钟有效期、去重和响应字段仍归业务层。同步相邻独立库的 `dev` 工作树，保留其已有未提交修改，不提交独立库。
 
 | 位置 | 职责与需要保留的接口 |
 | --- | --- |

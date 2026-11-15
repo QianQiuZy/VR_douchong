@@ -54,12 +54,13 @@ from sqlalchemy import Column, and_, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as OrmSession
 
-from . import config, room_config, room_visibility, runtime_state
+from . import config, health_check, room_config, room_visibility, runtime_state
 from .api_cache_http import CacheMiddleware, accepts_gzip
 from .api_cache_store import CacheUnavailable, encode
 from .config import API_SECRET, REPORT_ACQUIRE_TIMEOUT_SECONDS, REPORT_MAX_CONCURRENCY
 from .database import Session as _default_Session
 from .database import engine, log_pool_status
+from .health_events import HealthTrackingMiddleware
 from .models import (
     Attention,
     LiveSession,
@@ -97,10 +98,12 @@ logger = logging.getLogger(__name__)
 # ------------------ FastAPI app (Todo 5 canonical owner) ------------------ #
 @asynccontextmanager
 async def cache_lifespan(application: FastAPI):
+    health_check.service.start()
     try:
         async with _cache_lifespan(application):
             yield
     finally:
+        await asyncio.to_thread(health_check.service.close)
         await asyncio.to_thread(room_visibility.get_store().close)
 
 
@@ -123,8 +126,16 @@ async def _cache_lifespan(application: FastAPI):
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=cache_lifespan)
 app.add_middleware(CacheMiddleware, owner=app)
-# Added last so it also filters responses returned directly by CacheMiddleware.
+# Wrap the cache so visibility also filters its direct responses.
 app.add_middleware(room_visibility.RoomVisibilityMiddleware)
+app.add_middleware(HealthTrackingMiddleware)
+
+
+@app.get("/health/check")
+async def health_check_route():
+    payload = health_check.service.snapshot(getattr(app.state, "api_cache", None))
+    return JSONResponse(payload, status_code=200 if payload["ok"] else 503,
+                        headers={"Cache-Control": "no-store"})
 
 
 ENTRY_PATH = "/gift/entry"
@@ -217,7 +228,12 @@ def _read_entry_response(store, query: _EntryQuery) -> bytes:
             for row in rows
             if start <= datetime.datetime.fromisoformat(row["event_time"]) < end
         ]
-        return encode({"mode": "cache", "cache": query.identity, "items": items})
+        payload = {"mode": "cache", "cache": query.identity, "items": items}
+        if query.identity == 1:
+            from . import event_ingestion
+
+            payload["red_pocket"] = event_ingestion.red_pocket_monitor.snapshot(end)
+        return encode(payload)
     identity_field = "room_id" if query.mode == "room" else "uid"
     item_field = "uid" if query.mode == "room" else "room_id"
     items = [

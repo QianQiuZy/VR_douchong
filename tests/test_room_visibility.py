@@ -17,6 +17,7 @@ from app import api_app, config, event_ingestion, gift, room_config, room_visibi
 from app.api_cache_payloads import PayloadBuilder
 from app.api_cache_source import BASE_TABLES, MONTH_TABLES, Snapshot
 from app.api_cache_store import CacheStore, encode
+from app.blivedm.models.web import PopularityRedPocketV2NewMessage
 from app.repositories.tables import month_str
 
 HIDE = "/delete/room/temporary"
@@ -24,6 +25,26 @@ RESTORE = "/restore/room/temporary"
 AUTH = {"X-API-Key": "test-api-secret-abc123"}
 ROOM = 111111
 OTHER = 222222
+
+
+def test_red_pockets_follow_room_visibility_and_remain_exclusive_to_cache_one(published, monkeypatch):
+    now = api_app._entry_now().replace(microsecond=0)
+    monkeypatch.setattr(event_ingestion, "now_local", lambda: now)
+    monkeypatch.setattr(api_app, "_entry_now", lambda: now)
+    command = {"data": {"lot_id": 42, "rp_type": 3, "price": 100,
+                        "start_time": int((now - datetime.timedelta(seconds=60)).replace(tzinfo=runtime_state.SHANGHAI).timestamp())}}
+    for room in (ROOM, OTHER):
+        assert event_ingestion.red_pocket_monitor.receive(
+            SimpleNamespace(room_id=room), PopularityRedPocketV2NewMessage.from_command(command["data"]),
+        )
+    published.policy.set_hidden(ROOM, True)
+    response = published.http.get("/gift/entry?cache=1")
+    assert response.status_code == 200
+    assert {row["room_id"] for row in response.json()["items"]} == {OTHER}
+    assert {row["room_id"] for row in response.json()["red_pocket"]} == {OTHER}
+    assert "red_pocket" not in published.http.get("/gift/entry?cache=2").json()
+    published.policy.set_hidden(ROOM, False)
+    assert {row["room_id"] for row in published.http.get("/gift/entry?cache=1").json()["red_pocket"]} == {ROOM, OTHER}
 
 
 @pytest.fixture

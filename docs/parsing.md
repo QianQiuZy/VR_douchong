@@ -26,6 +26,7 @@
 | `SUPER_CHAT_MESSAGE` | JSON → SC 模型 | 金额、文本日志、日/月/场次/统计桶、付费指标 |
 | `SUPER_CHAT_MESSAGE_DELETE` | 可转为删除消息 | 未覆盖删除回调，当前不会删除已保存 SC |
 | `INTERACT_WORD` / `INTERACT_WORD_V2` | 老 JSON / base64 protobuf → 互动模型 | 仅 `msg_type=1` 的名单访客进房，排除房主本人 |
+| `POPULARITY_RED_POCKET_V2_NEW` | `data` → `PopularityRedPocketV2NewMessage` → `_on_red_pocket_v2_new` | 按 `rp_type` 识别红包，进程内暂存 10 分钟，仅追加到 `/gift/entry?cache=1` 的 `red_pocket`，不写 MySQL、不进入礼物/上舰金额统计 |
 | `WARNING` | 直接消费顶层 `roomid`、`send_time` | 作废当前片段的有效时长，不主动下播 |
 | `CUT_OFF` | 顶层 `room_id`、`send_time` | 强制停止当前片段，进入 180 秒宽限流程 |
 | `ROOM_LOCK` | 顶层 `room_id`、`send_time`、`expire` | 同强制下播并记录锁定到期，阻止滞后状态恢复 |
@@ -33,6 +34,10 @@
 | `ONLINE_RANK_V3`、PK、点赞等 | 部分为已知忽略，部分首次记录未知命令 | 当前没有对应业务入账或榜单 protobuf 模型 |
 
 内置库还注册开放平台 `LIVE_OPEN_PLATFORM_*` 回调，但本项目启动使用 Web 客户端，`MyHandler` 没有开放平台统计实现。不要把库具有的协议入口表述为本项目已启用功能。
+
+红包只处理 V2 NEW：`rp_type=0` 为礼物，`gift_num` 直接取原始 `price`；`rp_type=3` 为电池，`battery_num` 同样直接取 `price`；`rp_type=2` 为上舰红包，严格映射 `9805/19610/39220/98050 → 5/10/20/50` 个舰长。未知类型、未知上舰价格和无效时间跳过，不推算或回退成其他类型。每条只返回 `room_id`、`pocket_type`、对应数量字段和 `event_time`，不依赖发送者是否在访客名单中。
+
+`event_time` 使用原始秒级 `start_time` 转上海时区，不替换成接收时间。按 `(room_id, lot_id)` 去重，重复推送不续期；达到 `start_time + 600 秒` 时从接口结果中移除。旧版 NEW、START、开奖事件不进入该缓存，避免旧事件类型值退化和多阶段重复计数。
 
 ## SEND_GIFT_V2 与金额归一化
 

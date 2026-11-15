@@ -17,9 +17,57 @@ from sqlalchemy.schema import CreateTable
 
 from app import bootstrap, event_ingestion, runtime_state
 from app.blivedm.models.pb import InteractWordV2
+from app.blivedm.models.web import PopularityRedPocketV2NewMessage
 from app.event_ingestion import EntryMonitor, event_datetime
 from app.models import RoomEntryLog
 from app.repositories import entries
+
+
+@pytest.mark.parametrize("kind,price,fields", [
+    (2, 9805, {"pocket_type": "guard", "guard_num": 5}),
+    (2, 19610, {"pocket_type": "guard", "guard_num": 10}),
+    (2, 39220, {"pocket_type": "guard", "guard_num": 20}),
+    (2, 98050, {"pocket_type": "guard", "guard_num": 50}),
+    (3, 100, {"pocket_type": "battery", "battery_num": 100}),
+    (0, 20, {"pocket_type": "gift", "gift_num": 20}),
+])
+def test_red_pocket_dispatch_mapping_and_fixed_expiration(monkeypatch, kind, price, fields):
+    now = [datetime.datetime(2026, 11, 15, 23, 59, 50)]
+    monkeypatch.setattr(event_ingestion, "now_local", lambda: now[0])
+    monkeypatch.setattr(event_ingestion, "save_entries", lambda *_: pytest.fail("no red pocket SQL writes"))
+    start = now[0].replace(tzinfo=runtime_state.SHANGHAI)
+    command = {"cmd": "POPULARITY_RED_POCKET_V2_NEW", "data": {
+        "lot_id": 42, "start_time": int(start.timestamp()), "rp_type": kind, "price": price,
+    }}
+    client = SimpleNamespace(room_id=111111)
+    handler = event_ingestion.MyHandler()
+    handler.handle(client, command)
+    monitor = event_ingestion.red_pocket_monitor
+    assert monitor.snapshot(start) == [{"room_id": 111111, **fields, "event_time": start.isoformat()}]
+    now[0] += datetime.timedelta(seconds=599)
+    handler.handle(client, command)  # Repeated push must not extend its lifetime.
+    assert len(monitor.snapshot(now[0].replace(tzinfo=runtime_state.SHANGHAI))) == 1
+    assert monitor.snapshot(start + datetime.timedelta(seconds=600)) == []
+    now[0] += datetime.timedelta(seconds=1)
+    assert not monitor.receive(client, PopularityRedPocketV2NewMessage.from_command(command["data"]))
+    assert event_ingestion.entry_monitor.queue.empty()
+
+
+@pytest.mark.parametrize("changes", [
+    {"rp_type": 1}, {"rp_type": True}, {"rp_type": "3"},
+    {"rp_type": 2, "price": 123}, {"price": -1}, {"price": True},
+    {"start_time": None}, {"start_time": 0}, {"start_time": "1794758390"},
+    {"start_time": 1794758390000}, {"lot_id": 0}, {"lot_id": True},
+])
+def test_invalid_red_pockets_are_skipped_without_fabricating_values(monkeypatch, changes):
+    now = datetime.datetime(2026, 11, 15, 23, 59, 50)
+    monkeypatch.setattr(event_ingestion, "now_local", lambda: now)
+    data = {"lot_id": 42, "rp_type": 3, "price": 100,
+            "start_time": int(now.replace(tzinfo=runtime_state.SHANGHAI).timestamp()), **changes}
+    event_ingestion.MyHandler().handle(SimpleNamespace(room_id=111111), {
+        "cmd": "POPULARITY_RED_POCKET_V2_NEW", "data": data,
+    })
+    assert event_ingestion.red_pocket_monitor.snapshot(now.replace(tzinfo=runtime_state.SHANGHAI)) == []
 
 
 @pytest.fixture

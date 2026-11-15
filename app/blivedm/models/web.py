@@ -20,6 +20,7 @@ __all__ = (
     'HeartbeatMessage',
     'InteractWordMessage',
     'InteractWordV2Message',
+    'PopularityRedPocketV2NewMessage',
     'SendGiftV2DecodeError',
     'SendGiftV2Message',
     'SuperChatDeleteMessage',
@@ -40,6 +41,72 @@ class HeartbeatMessage:
     def from_command(cls, data: dict):
         return cls(
             popularity=data['popularity'],
+        )
+
+
+@dataclasses.dataclass
+class PopularityRedPocketV2NewMessage:
+    """POPULARITY_RED_POCKET_V2_NEW, preserving protocol prices and seconds."""
+
+    lot_id: int = 0
+    start_time: int = 0
+    current_time: int = 0
+    wait_num: int = 0
+    wait_num_v2: int = 0
+    uid: int = 0
+    uname: str = ''
+    action: str = ''
+    num: int = 1
+    gift_id: int = 0
+    gift_name: str = ''
+    price: int = 0
+    name_color: str = ''
+    medal_info: Optional[dict] = None
+    wealth_level: int = 0
+    group_medal: Optional[dict] = None
+    is_mystery: bool = False
+    sender_info: Optional[dict] = None
+    gift_icon: str = ''
+    rp_type: int = 0
+
+    @property
+    def pocket_type(self) -> Optional[str]:
+        return {0: 'gift', 2: 'guard', 3: 'battery'}.get(self.rp_type)
+
+    @property
+    def guard_num(self) -> Optional[int]:
+        if self.rp_type != 2:
+            return None
+        return {9805: 5, 19610: 10, 39220: 20, 98050: 50}.get(self.price)
+
+    @property
+    def battery_num(self) -> Optional[int]:
+        return self.price if self.rp_type == 3 else None
+
+    @property
+    def gift_num(self) -> Optional[int]:
+        return self.price if self.rp_type == 0 else None
+
+    @classmethod
+    def from_command(cls, data: dict):
+        if not isinstance(data, dict):
+            raise ValueError('Invalid red pocket payload')
+        for key in ('lot_id', 'start_time', 'rp_type', 'price'):
+            value = data.get(key)
+            minimum = 1 if key in ('lot_id', 'start_time') else 0
+            if type(value) is not int or value < minimum:
+                raise ValueError('Invalid red pocket field: ' + key)
+        return cls(
+            lot_id=data['lot_id'], start_time=data['start_time'],
+            current_time=data.get('current_time', 0), wait_num=data.get('wait_num', 0),
+            wait_num_v2=data.get('wait_num_v2', 0), uid=data.get('uid', 0),
+            uname=data.get('uname', ''), action=data.get('action', ''),
+            num=data.get('num', 1), gift_id=data.get('gift_id', 0),
+            gift_name=data.get('gift_name', ''), price=data['price'],
+            name_color=data.get('name_color', ''), medal_info=data.get('medal_info'),
+            wealth_level=data.get('wealth_level', 0), group_medal=data.get('group_medal'),
+            is_mystery=data.get('is_mystery', False), sender_info=data.get('sender_info'),
+            gift_icon=data.get('gift_icon', ''), rp_type=data['rp_type'],
         )
 
 

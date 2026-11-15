@@ -99,6 +99,16 @@ _TEST_ENV = {
 for _k, _v in _TEST_ENV.items():
     os.environ[_k] = _v
 
+
+@pytest.fixture(autouse=True)
+def offline_health_probes(monkeypatch):
+    """Ordinary API tests must not start real MySQL/Redis probe threads."""
+    from app import health_check, health_events
+
+    monkeypatch.setattr(health_check.service, "start", lambda: None)
+    monkeypatch.setattr(health_check.service, "close", lambda: None)
+    monkeypatch.setattr(health_events, "events", health_events.HealthEvents())
+
 # Production stores local, naive MySQL DATETIME values in Asia/Shanghai.
 # Pin the test process's wall-clock convention independently of the runner host.
 os.environ["TZ"] = "Asia/Shanghai"
@@ -177,6 +187,13 @@ gift = _import_gift_module()
 def gift_module():
     """Session-scoped fixture yielding the imported gift module."""
     return gift
+
+
+@pytest.fixture(autouse=True)
+def isolated_red_pockets(monkeypatch):
+    from app import event_ingestion
+
+    monkeypatch.setattr(event_ingestion, "red_pocket_monitor", event_ingestion.RedPocketMonitor())
 
 
 @pytest.fixture(autouse=True)

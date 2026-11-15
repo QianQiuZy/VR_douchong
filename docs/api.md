@@ -14,7 +14,7 @@
 - 默认六类 GET 从 Redis DB2 返回预热数据。未就绪、缺失、损坏、Redis 故障、当前快照超过 30 秒或在途请求过载时返回 `503 {"error":"接口缓存暂不可用"}` 和 `Retry-After: 1`，不直接回源 MySQL。
 - 正常缓存响应支持 gzip，携带 `Vary: Accept-Encoding`；正常缓存响应与 429/503 均设置 `Cache-Control: no-store`。未知但合法的月份/房间保持原空结果语义。
 - `API_CACHE_ENABLED=0` 是离线诊断旧路径，其报表并发容量耗尽仍返回 `503 {"error":"报表请求繁忙"}`；新增 `/gift/entry` 仍返回 `503`，不提供 MySQL 直读路径。
-- 临时隐藏房间从所有 GET 结果中排除，包括历史月、按 UID 查询和最近访客窗口。直接查询隐藏房间返回 `404 {"error":"房间不存在"}`，不返回带房间号的空对象。可见性检查不受 `API_CACHE_ENABLED` 开关影响；Redis 状态不可用或损坏时返回 `503 {"error":"房间可见状态暂不可用"}`，不放行原始数据。管理接口仍可操作隐藏房间并返回鉴权后的结果。
+- 临时隐藏房间从所有业务 GET 结果中排除，包括历史月、按 UID 查询和最近访客窗口。直接查询隐藏房间返回 `404 {"error":"房间不存在"}`，不返回带房间号的空对象。可见性检查不受 `API_CACHE_ENABLED` 开关影响；Redis 状态不可用或损坏时返回 `503 {"error":"房间可见状态暂不可用"}`，不放行原始数据。管理接口仍可操作隐藏房间并返回鉴权后的结果。
 
 ## 1. POST /add/room
 
@@ -465,4 +465,68 @@
 
 本月或滚动窗口无记录时，HTTP `200` 返回 `items: []`。历史月在指定房间或 UID 下没有匹配记录时，HTTP `200` 的同一结构额外包含 `"status": "unavailable"`，`items` 为空。只有后台完成数据读取并确认无数据才返回 unavailable；缓存缺失/故障返回 `503`，请求超限返回 `429`，二者均包含 `Retry-After: 1`。
 
-所有模式均读 Redis，月度缓存一般每 10 秒更新，历史数据通过周期修复和归档/迟到写入通知刷新。时间带 `+08:00`，有毫秒精度时保留小数；响应不包含用户名、事件来源、接收时间、计数或快照字段。
+所有模式的访客 `items` 均读 Redis，月度缓存一般每 10 秒更新，历史数据通过周期修复和归档/迟到写入通知刷新。时间带 `+08:00`，有毫秒精度时保留小数；访客记录不包含用户名、事件来源、接收时间、计数或快照字段。
+
+
+### 仅 cache=1 的红包字段
+
+`GET /gift/entry?cache=1` 在原有字段之外增加顶层 `red_pocket`，没有有效红包时返回空数组。`cache=2`、按房间/UID 查询（包括历史月份），以及其他所有接口均不提供该字段。
+
+```json
+{
+  "mode": "cache",
+  "cache": 1,
+  "items": [
+    {"room_id": 1820703922, "uid": 671538942, "event_time": "2026-11-15T23:47:24+08:00"}
+  ],
+  "red_pocket": [
+    {"room_id": 1820703922, "pocket_type": "guard", "guard_num": 5, "event_time": "2026-11-15T23:47:24+08:00"},
+    {"room_id": 1820703922, "pocket_type": "battery", "battery_num": 100, "event_time": "2026-11-15T23:41:35+08:00"},
+    {"room_id": 1820703922, "pocket_type": "gift", "gift_num": 20, "event_time": "2026-11-15T23:47:24+08:00"}
+  ]
+}
+```
+
+- 仅接收 `POPULARITY_RED_POCKET_V2_NEW`，按 `(room_id, lot_id)` 去重；发红包者不受访客名单限制，不要求房间正在直播。
+- `rp_type=2` 返回 `pocket_type="guard"`，`price` 为 `9805/19610/39220/98050` 时，`guard_num` 分别为 `5/10/20/50`。其他上舰价格暂不返回。
+- `rp_type=3` 返回 `pocket_type="battery"`、`battery_num=原始 price`；`rp_type=0` 返回 `pocket_type="gift"`、`gift_num=原始 price`。不额外做金额换算或乘以 `num`。
+- `event_time` 固定取原始秒级 `start_time`，转换为上海时区；每条有效期为 `start_time <= 当前时间 < start_time + 600 秒`，达到边界即移除，重复消息不续期。数组按事件时间降序返回。
+- 仅暂存当前采集进程内存，重启后清空；不写 MySQL、不进入 Redis 历史快照、不影响既有礼物和上舰统计。隐藏房间同样从红包数组过滤。
+- 访客数据所需的 Redis 快照必须可用；缓存故障、过期、限流等仍按原有 503/429 策略响应，不单独降级返回红包。
+
+## 11. GET /health/check
+
+公开健康检查，无需鉴权、请求头或参数。独立于十个业务接口的 Redis 缓存、可见性过滤和共享限流，返回 `Cache-Control: no-store`；Redis 或业务缓存不可用时仍可返回诊断信息。接口只读取后台采样结果，不会因访问次数增加而重复探测数据库、Redis 或 B 站。
+
+```bash
+curl -sS https://vup.qianqiuzy.cn/health/check
+```
+
+所有当前依赖、采集循环、连接池、配置房间及启用的 API 缓存健康时返回 **HTTP 200**，`ok=true`、`status="ok"`；存在异常、启动尚未完成或采样过期时返回 **HTTP 503**，`ok=false`，响应仍为下面的诊断结构。
+
+| 字段 | 说明 |
+| --- | --- |
+| `status` / `ok` | 总体状态：`ok`、`degraded`、`starting`、`unavailable`、`stale`；最近一小时发生过异常但已恢复，不会单独使总体状态降级 |
+| `checked_at` / `snapshot_age_seconds` | 后台采样完成时间（上海时区）及采样年龄；首次采样完成前没有依赖明细 |
+| `sample_interval_seconds` / `stale_after_seconds` | 每轮结束后等待 15 秒再采样；结果超过 45 秒未更新即标为 `stale` |
+| `sample_duration_ms` | 一轮采样耗时；依赖失败时采样间隔会加上探测耗时 |
+| `dependencies.database` | 独立短连接执行只读 `SELECT 1`，返回状态、耗时和脱敏异常类型；与业务数据库连接池是否耗尽分开判断 |
+| `dependencies.database_pool` | 业务 SQLAlchemy 连接池的 `size`、`checked_in`、`checked_out`、`overflow`、`max_overflow`、`capacity`、取连接超时和回收周期；满载为 `exhausted` |
+| `dependencies.redis` | `metrics`（配置的 Redis DB）、`whale_db1`、`api_db2` 三类用途分别执行 PING，返回状态、耗时和异常类型；不读写业务键，不证明历史数据完整性 |
+| `collector.loop_responsive` | 采集事件循环能否在两秒内返回状态快照；未启动、已停止或无响应均不健康 |
+| `collector.http_pool` | 共享 aiohttp 连接池的状态、`limit`（0 为不设总上限）、`limit_per_host`、`acquired`、`waiting`、`idle` |
+| `collector.rooms` | `configured`、`connected`、`not_connected` 及逐房间 `items`；状态包括 `not_started`、`connecting`、`authenticating`、`connected`、`stopped`，仅当前 WebSocket 打开且鉴权成功才计为 connected |
+| `collector.rooms.items[]` | 房间号、直播状态、客户端运行状态、鉴权状态、最近鉴权成功/断联/收到消息时间及当前断联持续秒数；从未连接时相应时间为空 |
+| `collector.queues` | 守护/粉丝、关注数及每日采集队列的当前长度 |
+| `api_cache` | API 缓存的启用/就绪状态、最近刷新年龄和快照实际年龄；缓存关闭时为 `disabled` |
+| `upstream_api` | 近一小时有观测的 B 站接口最近结果汇总及 `failing_endpoints`；最近结果仍为失败时总体状态降级，无观测为 `unknown`；不额外主动请求 B 站 |
+| `last_hour` | 下述一小时历史及覆盖范围 |
+
+`last_hour` 的统计口径：
+
+- `window_seconds=3600`、`resolution_seconds=1`，使用单调时钟按秒聚合滚动窗口。`observed_since`、`coverage_seconds`、`full_window` 明确标注覆盖范围；历史只驻留当前进程内存，重启后重新累计，不扫描旧日志补齐。
+- `totals.room_disconnect`：WebSocket 建立后发生的非主动断开次数。尚未建立连接的初始化失败不会算作一次断联，但会反映在当前房间状态及上游失败中。`room_planned_close` 单独统计调用 stop 的删除房间、主动重连等关闭。
+- `totals.upstream_api`：共享 B 站会话遇到的 HTTP 4xx/5xx、连接/连接池等待/读取响应体超时、JSON 解析失败和非零业务错误码。同一请求只计一次。请求取消不计为故障。接口分类包括直播状态、同接、守护、粉丝、房间信息、弹幕配置、WBI 和 ticket 等；无法直接归属单房间的批量请求，其 `room_id=null`。
+- `totals.local_api`：请求已到达本服务的十个业务 API 后产生的 5xx、未完成响应或异常中断；`totals.rate_limited` 单独统计 429。正常 4xx 参数/鉴权错误不算不可访问。健康接口本身不计入，避免自身 503 污染业务故障统计。
+- `groups` 按类别、接口、房间、原因、HTTP 状态和业务错误码汇总；`recent_events` 最多提供最近 200 条明细，包含发生时间、耗时和连接池排队耗时，明细上限不影响聚合计数。`upstream_endpoints` 给出近一小时有观测的接口最近成功/失败时间与最后结果。
+- 不返回数据库/Redis 地址、账号、密码、Cookie、请求参数、完整 URL、异常文本或上游响应体。公网 DNS、TLS、CDN、Nginx、主机断网以及进程完全停止等导致请求未到达应用的故障，需由外部监控探针判断；此接口无法在自身不可访问时报告该段历史。

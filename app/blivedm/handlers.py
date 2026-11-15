@@ -106,6 +106,14 @@ class BaseHandler(HandlerInterface):
         for message in messages:
             self._on_gift(client, message)
 
+    def __red_pocket_v2_new_callback(self, client, command):
+        try:
+            message = web_models.PopularityRedPocketV2NewMessage.from_command(command.get('data'))
+        except (TypeError, ValueError):
+            logger.warning('room=%s invalid POPULARITY_RED_POCKET_V2_NEW payload', client.room_id)
+            return
+        return self._on_red_pocket_v2_new(client, message)
+
     _CMD_CALLBACK_DICT: ClassVar[Dict[str, Optional[Callable[
         [BaseHandler, ws_base.WebSocketClientBase, dict], Any
     ]]]] = {
@@ -118,6 +126,7 @@ class BaseHandler(HandlerInterface):
         # 礼物
         'SEND_GIFT': _make_msg_callback('_on_gift', web_models.GiftMessage),
         'SEND_GIFT_V2': __send_gift_v2_callback,
+        'POPULARITY_RED_POCKET_V2_NEW': __red_pocket_v2_new_callback,
         # 上舰
         'GUARD_BUY': _make_msg_callback('_on_buy_guard', web_models.GuardBuyMessage),
         # 另一个上舰消息
@@ -188,6 +197,12 @@ class BaseHandler(HandlerInterface):
 
     def _on_gift(self, client: ws_base.WebSocketClientBase, message: web_models.GiftMessage):
         """礼物"""
+
+    def _on_red_pocket_v2_new(
+        self, client: ws_base.WebSocketClientBase,
+        message: web_models.PopularityRedPocketV2NewMessage,
+    ):
+        """红包创建通知；消息模型提供原始字段、红包类型及对应数量。"""
 
     def _on_buy_guard(self, client: ws_base.WebSocketClientBase, message: web_models.GuardBuyMessage):
         """上舰"""

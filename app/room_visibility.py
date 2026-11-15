@@ -85,6 +85,10 @@ def _filtered_response(path: str, start: dict, body: bytes, hidden: set[int]) ->
                 return _not_found()
         else:
             payload["items"] = [row for row in payload["items"] if row["room_id"] not in hidden]
+            if payload["mode"] == "cache" and payload["cache"] == 1:
+                payload["red_pocket"] = [
+                    row for row in payload["red_pocket"] if row["room_id"] not in hidden
+                ]
     elif payload["room_id"] in hidden:
         return _not_found()
     headers["cache-control"] = "no-store"

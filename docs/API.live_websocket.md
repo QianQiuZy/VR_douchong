@@ -82,6 +82,7 @@ wss://{host}:{wss_port}/sub
 | `COMBO_SEND` | 连击礼物。 |
 | `GIFT_STAR_PROCESS` | 礼物星球进度。 |
 | `POPULARITY_RED_POCKET_NEW` | 人气红包。 |
+| `POPULARITY_RED_POCKET_V2_NEW` | V2 红包创建；内置模型 `PopularityRedPocketV2NewMessage`，`rp_type=0/2/3` 分别为礼物/上舰/电池；回调 `_on_red_pocket_v2_new`。 |
 | `POPULARITY_RED_POCKET_START` | 红包开始。 |
 | `POPULARITY_RED_POCKET_WINNER_LIST` | 红包中奖名单。 |
 
