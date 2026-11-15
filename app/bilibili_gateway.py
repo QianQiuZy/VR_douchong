@@ -67,9 +67,13 @@ def init_session() -> None:
             continue
         cookies[key] = value
         cookies[key]["domain"] = "bilibili.com"
-    connector = aiohttp.TCPConnector(ssl=False)
+    # Room WebSockets occupy connector slots for their whole lifetime. A finite
+    # shared limit can starve HTTP, including after rooms are added at runtime.
+    # Room configuration and the existing job/request policies govern load.
+    connector = aiohttp.TCPConnector(ssl=False, limit=0)
     runtime_state.aiohttp_session = aiohttp.ClientSession(connector=connector)
     runtime_state.aiohttp_session.cookie_jar.update_cookies(cookies)
+    logger.info("[session] 共享连接池 limit=%s（0=不设总连接上限）", connector.limit)
     logger.info("[session] 已初始化基础 Cookies：%s", ",".join(cookies.keys()))
 
 
