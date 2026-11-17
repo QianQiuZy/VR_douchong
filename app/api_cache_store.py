@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 import uuid
@@ -255,6 +256,25 @@ class CacheStore:
     def year_exists(self, year: str) -> bool:
         generation = self.client.get(self.key(f"year:{year}"))
         return bool(generation and self.client.exists(generation))
+
+    def year_is_intact(self, year: str, values: dict[str, bytes]) -> bool:
+        """Check the historical year index, cached bodies and checksums."""
+        generation = self.client.get(self.key(f"year:{year}"))
+        if not generation:
+            return False
+        expected = {
+            **values,
+            **{f"_hash:{field}": hashlib.sha256(body).hexdigest().encode()
+               for field, body in values.items()},
+        }
+        with self.client.pipeline(transaction=True) as pipe:
+            pipe.sismember(self.key("years"), year)
+            pipe.hmget(generation, ["_snapshot", *expected])
+            known, (stamp, *actual) = pipe.execute()
+        try:
+            return bool(known) and math.isfinite(float(stamp)) and actual == list(expected.values())
+        except (TypeError, ValueError):
+            return False
 
     def expect_year(self, year: str) -> None:
         # A discovered but unwarmed year must not use an unknown-year empty template.

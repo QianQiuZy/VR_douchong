@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 import redis
@@ -319,14 +320,15 @@ def test_real_annual_cache_totals_and_history_changes_add_no_http_sql(services, 
 def crossmonth_sessions(services, monkeypatch):
     from conftest import _ORIG_INSPECT
     from app import archive_service
-    from app.repositories import live_session_snapshots, live_sessions, tables
+    from app.repositories import live_session_snapshots, live_sessions, session_15m, tables
 
     store, engine, Session, _start = services
-    for module in (archive_service, live_sessions, live_session_snapshots):
+    for module in (archive_service, live_sessions, live_session_snapshots, session_15m):
         monkeypatch.setattr(module, "Session", Session)
     for module in (archive_service, tables):
         monkeypatch.setattr(module, "engine", engine)
         monkeypatch.setattr(module, "inspect", _ORIG_INSPECT)
+    monkeypatch.setattr(session_15m, "inspect", _ORIG_INSPECT)
     monkeypatch.setattr(config, "API_CACHE_ENABLED", True)
     cache = ApiCache(store)
     monkeypatch.setattr(api_app.app.state, "api_cache", cache, raising=False)
@@ -388,6 +390,207 @@ def test_real_crossmonth_session_stays_cached_before_and_after_late_archive(cros
     assert payload() == before_archive
     assert cache.store.client.get(cache.store.key("month:200101")) != previous
     assert not cache.store.client.smembers(cache.store.key("dirty-months"))
+
+
+@pytest.mark.parametrize("archive_parent", [False, True])
+def test_real_late_danmaku_updates_archived_bucket_without_shadowing_totals(
+    crossmonth_sessions, archive_parent,
+):
+    from app import DanmakuBucketTarget, DanmakuCounts, archive_service
+
+    cache, engine, _session_factory = crossmonth_sessions
+    with engine.begin() as connection:
+        connection.execute(text(
+            "UPDATE live_session_15m_stats SET guard=3, payer_count=4, danmaku_count=100 "
+            "WHERE session_id=11 AND bucket_index=0"
+        ))
+    archive = archive_service.archive_live_session if archive_parent else archive_service.archive_live_session_15m_stats
+    assert archive("200101", session_ids=(11,)) == 1
+    cache.prewarm()
+    start = datetime.datetime(2001, 1, 31, 22)
+    target = DanmakuBucketTarget(
+        session_id=11, room_id=111111, month="200101", bucket_index=0,
+        start_time=start, end_time=start + datetime.timedelta(minutes=15),
+    )
+    assert LiveSession15mStats.add_danmaku_counts(target, DanmakuCounts(total=2, normal=2))
+    assert LiveSession15mStats.add_danmaku_counts(target, DanmakuCounts(total=3, normal=3))
+    # A full stats replay replaces metrics but must not reset archived danmaku.
+    assert LiveSession15mStats.upsert(
+        session_id=11, room_id=111111, month="200101", bucket_index=0,
+        start_time=start, end_time=target.end_time, gift=6, guard=3, super_chat=0,
+        blind_box_count=0, blind_box_profit=0, danmaku_count=0,
+        captain_danmaku_count=0, admiral_danmaku_count=0, governor_danmaku_count=0,
+        normal_danmaku_count=0, avg_concurrency=None, max_concurrency=None,
+        sample_count=0, payer_count=4,
+    )
+    if not archive_parent:
+        # The parent can finish archiving without recreating or losing its bucket.
+        assert archive_service.archive_live_session("200101", session_ids=(11,)) == 1
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT COUNT(*) FROM live_session_15m_stats WHERE session_id=11")) == 0
+        stored = connection.execute(text(
+            "SELECT gift, guard, payer_count, danmaku_count, normal_danmaku_count "
+            "FROM live_session_15m_stats_200101 WHERE session_id=11 AND bucket_index=0"
+        )).one()
+        assert tuple(stored) == (6, 3, 4, 105, 47)
+    cache.last_history_check -= 301
+    cache.cycle()
+    payload = json.loads(gzip.decompress(cache.store.read("200101", "/gift/live_sessions", 111111)))
+    bucket = next(row for row in payload["sessions"] if row["title"] == "archived")["stats_15m"][0]
+    assert (bucket["gift"], bucket["guard"], bucket["danmaku_count"], bucket["normal_danmaku_count"]) == (6, 3, 105, 47)
+
+
+def test_real_late_bucket_writer_serializes_with_archive_copy_delete(crossmonth_sessions):
+    from sqlalchemy import event
+
+    from app import DanmakuBucketTarget, DanmakuCounts, archive_service
+
+    _cache, engine, _session_factory = crossmonth_sessions
+    copying = threading.Event()
+    writing = threading.Event()
+    allow_delete = threading.Event()
+
+    def gate(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if statement.startswith("DELETE stats FROM `live_session_15m_stats`"):
+            copying.set()
+            assert allow_delete.wait(5)
+        elif statement.startswith("SELECT id FROM live_session WHERE id = "):
+            writing.set()
+
+    start = datetime.datetime(2001, 1, 31, 22)
+    target = DanmakuBucketTarget(
+        session_id=11, room_id=111111, month="200101", bucket_index=0,
+        start_time=start, end_time=start + datetime.timedelta(minutes=15),
+    )
+    event.listen(engine, "before_cursor_execute", gate)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            archive = pool.submit(archive_service.archive_live_session_15m_stats, "200101", session_ids=(11,))
+            try:
+                assert copying.wait(5)
+                writer = pool.submit(LiveSession15mStats.add_danmaku_counts, target, DanmakuCounts(total=9, normal=9))
+                assert writing.wait(5)
+                assert not writer.done()
+            finally:
+                allow_delete.set()
+            assert archive.result(timeout=5) == 1
+            assert writer.result(timeout=5)
+    finally:
+        event.remove(engine, "before_cursor_execute", gate)
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT COUNT(*) FROM live_session_15m_stats WHERE session_id=11")) == 0
+        assert connection.scalar(text(
+            "SELECT normal_danmaku_count FROM live_session_15m_stats_200101 WHERE session_id=11 AND bucket_index=0"
+        )) == 51
+
+
+@pytest.mark.parametrize("bucket_gift", [0, 1])
+def test_real_archive_keeps_parent_corrections_and_identical_duplicate_buckets(
+    crossmonth_sessions, bucket_gift,
+):
+    from app import archive_service
+
+    _cache, engine, _session_factory = crossmonth_sessions
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE live_session_15m_stats SET gift=:gift WHERE session_id=11"), {"gift": bucket_gift})
+        for prefix, identity in (("live_session", "id"), ("live_session_15m_stats", "session_id")):
+            archive = prefix + "_200101"
+            connection.execute(text(f"CREATE TABLE `{archive}` LIKE `{prefix}`"))
+            connection.execute(text(f"INSERT INTO `{archive}` SELECT * FROM `{prefix}` WHERE `{identity}`=11"))
+        connection.execute(text("UPDATE live_session SET gift=9 WHERE id=11"))
+    assert archive_service.archive_live_session("200101", session_ids=(11,)) == 1
+    with engine.connect() as connection:
+        for prefix, identity in (("live_session", "id"), ("live_session_15m_stats", "session_id")):
+            assert connection.scalar(text(f"SELECT COUNT(*) FROM `{prefix}` WHERE `{identity}`=11")) == 0
+            expected = 9 if prefix == "live_session" else bucket_gift
+            assert connection.scalar(text(f"SELECT gift FROM `{prefix}_200101` WHERE `{identity}`=11")) == expected
+
+
+@pytest.mark.parametrize("conflict", ["legacy_stub", "full_correction", "null_optional"])
+def test_real_archive_preserves_both_copies_of_ambiguous_existing_buckets(
+    crossmonth_sessions, monkeypatch, caplog, conflict,
+):
+    from app import DanmakuBucketTarget, DanmakuCounts, archive_service
+    from app.repositories import session_15m
+
+    _cache, engine, _session_factory = crossmonth_sessions
+    with engine.begin() as connection:
+        connection.execute(text(
+            "UPDATE live_session_15m_stats SET gift=100, guard=30, payer_count=4, "
+            "danmaku_count=100 WHERE session_id=11 AND bucket_index=0"
+        ))
+    assert archive_service.archive_live_session_15m_stats("200101", session_ids=(11,)) == 1
+    if conflict == "legacy_stub":
+        start = datetime.datetime(2001, 1, 31, 22)
+        target = DanmakuBucketTarget(11, 111111, "200101", 0, start, start + datetime.timedelta(minutes=15))
+        # Exercise the old writer's INSERT path: no lookup of an archived bucket.
+        with monkeypatch.context() as old_writer:
+            old_writer.setattr(session_15m, "_find_archived_bucket", lambda *_args: None)
+            assert LiveSession15mStats.add_danmaku_counts(target, DanmakuCounts(total=2, normal=2))
+    else:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO live_session_15m_stats SELECT * FROM live_session_15m_stats_200101"
+            ))
+            column, value = ("gift", 9) if conflict == "full_correction" else ("avg_concurrency", 0)
+            connection.execute(text(
+                f"UPDATE live_session_15m_stats SET `{column}`=:value WHERE session_id=11"
+            ), {"value": value})
+    # A conflict must also preserve other eligible rows in this month's batch.
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE live_session SET end_time='2001-01-31 23:00:00' WHERE id=12"))
+
+    def saved_rows():
+        with engine.connect() as connection:
+            return {
+                table: [dict(row) for row in connection.execute(text(
+                    f"SELECT * FROM `{table}` ORDER BY 1, 2"
+                )).mappings()]
+                for table in ("live_session", "live_session_15m_stats", "live_session_15m_stats_200101")
+            }
+
+    before = saved_rows()
+    for _ in range(2):
+        assert archive_service.archive_live_session("200101") == 0
+        assert saved_rows() == before
+    assert "保留两侧并暂缓本月归档" in caplog.text
+
+
+@pytest.mark.parametrize("archive_parent", [False, True])
+@pytest.mark.parametrize("legacy_columns", [False, True])
+def test_real_readonly_overlap_audit_includes_orphan_hot_buckets(
+    crossmonth_sessions, monkeypatch, archive_parent, legacy_columns,
+):
+    from app import DanmakuBucketTarget, DanmakuCounts, archive_service
+    from app.repositories import session_15m
+
+    _cache, engine, _session_factory = crossmonth_sessions
+    archive = archive_service.archive_live_session if archive_parent else archive_service.archive_live_session_15m_stats
+    assert archive("200101", session_ids=(11,)) == 1
+    if legacy_columns:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE live_session_15m_stats_200101 DROP COLUMN payer_count, DROP COLUMN danmaku_count"
+            ))
+    start = datetime.datetime(2001, 1, 31, 22)
+    target = DanmakuBucketTarget(11, 111111, "200101", 0, start, start + datetime.timedelta(minutes=15))
+    with monkeypatch.context() as old_writer:
+        old_writer.setattr(session_15m, "_find_archived_bucket", lambda *_args: None)
+        assert LiveSession15mStats.add_danmaku_counts(target, DanmakuCounts(total=2, normal=2))
+    generator = Path("scripts/audit_session_bucket_overlaps.sql").read_text(encoding="utf-8")
+    with engine.connect() as connection:
+        connection.exec_driver_sql("START TRANSACTION READ ONLY")
+        queries = list(connection.execute(text(generator)).scalars())
+        assert len(queries) == 1
+        rows = list(connection.execute(text(queries[0])).mappings())
+        assert len(rows) == 1
+        row = rows[0]
+        assert (row["session_id"], row["bucket_index"]) == (11, 0)
+        assert row["hot_gift"] == 0 and row["archived_gift"] == 1
+        assert (row["hot_parent_end_time"] is None) == archive_parent
+        assert (row["archived_payer_count"] is None) == legacy_columns
+        assert (row["archived_danmaku_count"] is None) == legacy_columns
+        connection.rollback()
 
 
 def test_real_session_merge_tolerates_legacy_columns_and_deduplicates_hot_corrections(crossmonth_sessions):

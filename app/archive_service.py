@@ -216,6 +216,11 @@ def archive_live_session(
         try:
             has_child_table = inspect(engine).has_table("live_session_15m_stats")
             with engine.begin() as conn:
+                parent_ids = conn.execute(
+                    text(f"SELECT id FROM `live_session` WHERE {predicate} FOR UPDATE"), params,
+                ).scalars().all()
+                if not parent_ids:
+                    continue
                 if has_child_table:
                     child_count = conn.execute(
                         text(
@@ -232,15 +237,7 @@ def archive_live_session(
                             child_count,
                         )
                         continue
-                count = conn.execute(
-                    text(
-                        "SELECT COUNT(1) FROM `live_session` "
-                        f"WHERE {predicate}"
-                    ),
-                    params,
-                ).scalar()
-                if not count:
-                    continue
+                count = len(parent_ids)
                 columns = _archive_columns(
                     table_name,
                     (
@@ -255,11 +252,12 @@ def archive_live_session(
                     ),
                 )
                 quoted_columns = ", ".join(f"`{name}`" for name in columns)
+                update_columns = ", ".join(f"`{name}`=VALUES(`{name}`)" for name in columns if name != "id")
                 conn.execute(
                     text(
-                        f"INSERT IGNORE INTO `{table_name}` ({quoted_columns}) "
+                        f"INSERT INTO `{table_name}` ({quoted_columns}) "
                         f"SELECT {quoted_columns} FROM `live_session` "
-                        f"WHERE {predicate}"
+                        f"WHERE {predicate} ON DUPLICATE KEY UPDATE {update_columns}"
                     ),
                     params,
                 )
@@ -340,6 +338,13 @@ def archive_live_session_15m_stats(
             params["session_ids"] = session_ids
         try:
             with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "SELECT parent.id FROM `live_session` AS parent WHERE parent.month = :month "
+                        f"AND parent.end_time IS NOT NULL{cutoff_filter} FOR UPDATE"
+                    ),
+                    params,
+                ).all()
                 predicate = (
                     "stats.month = :month AND parent.month = :month "
                     "AND parent.end_time IS NOT NULL"
@@ -365,14 +370,42 @@ def archive_live_session_15m_stats(
                         "max_concurrency", "sample_count", "payer_count",
                     ),
                 )
+                # Older writers could recreate a danmaku-only hot row after
+                # this bucket was archived. A differing hot row could also be
+                # a legitimate full correction; never guess which one it is.
+                # Lock both copies and preserve the entire month on conflict.
+                differences = " OR ".join(
+                    f"NOT (stats.`{name}` <=> archived.`{name}`)"
+                    for name in columns if name not in {"session_id", "bucket_index"}
+                )
+                conflicts = conn.execute(
+                    text(
+                        "SELECT stats.session_id, stats.bucket_index "
+                        "FROM `live_session_15m_stats` AS stats "
+                        "JOIN `live_session` AS parent ON parent.id = stats.session_id "
+                        f"JOIN `{table_name}` AS archived "
+                        "ON archived.session_id = stats.session_id "
+                        "AND archived.bucket_index = stats.bucket_index "
+                        f"WHERE {predicate} AND ({differences}) LIMIT 10 FOR UPDATE"
+                    ),
+                    params,
+                ).all()
+                if conflicts:
+                    logger.error(
+                        "[LiveSession15m] 主表与归档同键分桶内容不一致，保留两侧并暂缓本月归档 "
+                        "month=%s sample_keys=%s；请先只读核对来源",
+                        month_code,
+                        [tuple(row) for row in conflicts],
+                    )
+                    continue
                 quoted_columns = ", ".join(f"`{name}`" for name in columns)
                 selected_columns = ", ".join(f"stats.`{name}`" for name in columns)
                 conn.execute(
                     text(
-                        f"INSERT IGNORE INTO `{table_name}` ({quoted_columns}) "
+                        f"INSERT INTO `{table_name}` ({quoted_columns}) "
                         f"SELECT {selected_columns} FROM `live_session_15m_stats` AS stats "
                         "JOIN `live_session` AS parent ON parent.id = stats.session_id "
-                        f"WHERE {predicate}"
+                        f"WHERE {predicate} ON DUPLICATE KEY UPDATE session_id=VALUES(session_id)"
                     ),
                     params,
                 )

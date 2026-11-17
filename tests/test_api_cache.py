@@ -248,6 +248,37 @@ def test_annual_hot_updates_do_not_read_history_and_history_change_rebuilds_its_
     assert not store.client.smembers(store.key("dirty-months"))
 
 
+@pytest.mark.parametrize("damage", ["body", "checksum", "template", "stamp", "index"])
+def test_historical_year_integrity_is_repaired_by_history_poll(annual_cache, damage):
+    state = annual_cache
+    cache = state.cache
+    store = cache.store
+    original_year = store.client.get(store.key("year:2020"))
+    unchanged_year = store.client.get(store.key("year:2019"))
+    if damage == "body":
+        store.client.hset(original_year, "/gift/by_month", b"broken")
+    elif damage == "checksum":
+        store.client.hdel(original_year, "_hash:/gift/by_month")
+    elif damage == "template":
+        store.client.hdel(original_year, "_empty:/gift/by_month")
+    elif damage == "stamp":
+        store.client.hset(original_year, "_snapshot", "NaN")
+    else:
+        store.client.srem(store.key("years"), "2020")
+
+    state.clock[0] += config.API_CACHE_REFRESH_SECONDS + 1
+    cache.cycle()
+    assert store.client.get(store.key("year:2020")) == original_year
+
+    state.clock[0] += config.API_CACHE_HISTORY_SECONDS
+    cache.cycle()
+    assert store.client.get(store.key("year:2020")) != original_year
+    assert store.client.get(store.key("year:2019")) == unchanged_year
+    assert annual_room(store, "2020", state.rid)["gift"] == 30.3
+    assert store.year_is_intact("2020", cache.year_bodies["2020"])
+    assert cache.reader.reads == []
+
+
 def test_failed_annual_publication_keeps_month_pending_for_retry(annual_cache, monkeypatch):
     state = annual_cache
     store = state.cache.store
@@ -329,6 +360,67 @@ def test_year_rollover_keeps_last_december_in_the_completed_year(store, monkeypa
     new = next(row for row in json.loads(gzip.decompress(builder.year_values("2027", value.base)["/gift/by_month"])) if row["room_id"] == rid)
     assert (old["gift"], old["live_duration"], old["guard_1"]) == (5, "02:00:00", None)
     assert (new["gift"], new["live_duration"]) == (7, "03:00:00")
+
+
+@pytest.mark.parametrize("during_prewarm", [False, True])
+def test_rollover_reloads_closed_month_even_when_its_base_totals_did_not_change(
+    annual_cache, monkeypatch, during_prewarm
+):
+    from app import api_cache, api_cache_payloads
+    from app.repositories import tables
+
+    state = annual_cache
+    cache = state.cache
+    store = cache.store
+    old = month_str()
+    _, first_next_month = tables.month_range(old)
+    new = first_next_month.strftime("%Y%m")
+    state.daily[new] = []
+    current = [old]
+    for module in (api_cache, api_cache_payloads, tables):
+        monkeypatch.setattr(module, "month_str", lambda: current[0])
+    monkeypatch.setitem(globals(), "month_str", lambda: current[0])
+
+    def advance_month():
+        state.daily[old][0]["duration"] += 3600
+        current[0] = new
+
+    if during_prewarm:
+        # Advance at the beginning of the final hot refresh, after all startup
+        # historical reads have finished but before readiness is published.
+        current_snapshot = cache.reader.current
+        hot_calls = 0
+
+        def cross_boundary(**kwargs):
+            nonlocal hot_calls
+            hot_calls += 1
+            if hot_calls == 1:
+                # The future month should not be discovered in the old snapshot.
+                with monkeypatch.context() as patch:
+                    patch.setattr(cache.reader, "known_months", lambda: set(state.daily) - {new})
+                    return current_snapshot(**kwargs)
+            if hot_calls == 2:
+                advance_month()
+            return current_snapshot(**kwargs)
+
+        monkeypatch.setattr(cache.reader, "current", cross_boundary)
+        cache.prewarm()
+        assert cache.reader.reads.count(old) == 1
+    else:
+        advance_month()
+        state.clock[0] += config.API_CACHE_REFRESH_SECONDS + 1
+        cache.cycle()
+        assert cache.reader.reads == [old]
+    assert cache.history_due == {}
+    assert state.clock[0] < 1000 + config.API_CACHE_HISTORY_SECONDS
+    row = next(
+        row for row in json.loads(gzip.decompress(store.read(old, "/gift/by_month")))
+        if row["room_id"] == state.rid
+    )
+    assert row["live_duration"] == "03:00:00"
+    state.clock[0] += config.API_CACHE_REFRESH_SECONDS + 1
+    cache.cycle()
+    assert cache.reader.reads.count(old) == 1
 
 
 def test_annual_diagnostic_route_still_uses_cache_and_validates_year(annual_cache, monkeypatch):

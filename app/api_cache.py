@@ -76,7 +76,12 @@ class ApiCache:
     def refresh_hot(self, *, discover: bool = False) -> set[str]:
         started = time.monotonic()
         snapshot = self.reader.current(discover=discover)
+        previous_month = self.hot_snapshot.month if self.hot_snapshot else None
         self.store.publish(snapshot.month, self.builder.build(snapshot), snapshot.stamp)
+        if previous_month is not None and previous_month < snapshot.month:
+            # Updating the old month's summary below is not a full historical read.
+            # Refresh its closing rows and other payloads once, even without a dirty mark.
+            self.history_due.setdefault(previous_month, 0)
         monthly_rows: dict[str, list[dict]] = {}
         for table in ("room_stats_monthly", "room_blind_box_monthly"):
             for row in snapshot.base[table]:
@@ -144,6 +149,15 @@ class ApiCache:
                 self.store.publish_year(year, values, snapshot.stamp)
                 self.year_bodies[year] = values
 
+    def verify_historical_years(self) -> None:
+        """Repair damaged annual generations on the history poll, without SQL."""
+        if self.hot_snapshot is None:
+            return
+        current_year = month_str()[:4]
+        for year, values in self.year_bodies.items():
+            if year < current_year and not self.store.year_is_intact(year, values):
+                self.store.publish_year(year, values, self.hot_snapshot.stamp)
+
     def refresh_history(self, month: str) -> None:
         revision = self.store.history_revision(month)
         snapshot = self.reader.history(month)
@@ -170,17 +184,22 @@ class ApiCache:
             if normalize_month_code(value.decode())
         )
         pending = set(months) - {month_str()}
-        while pending and not self.stop.is_set():
-            month = min(pending)
-            self.refresh_history(month)
-            pending.remove(month)
-            if time.monotonic() - self.last_hot >= config.API_CACHE_REFRESH_SECONDS:
+        while not self.stop.is_set():
+            if pending:
+                month = min(pending)
+                self.refresh_history(month)
+                pending.remove(month)
+            if not pending or time.monotonic() - self.last_hot >= config.API_CACHE_REFRESH_SECONDS:
+                # Finish with a fresh hot generation; if it crossed a month boundary,
+                # drain the resulting historical work before marking the cache ready.
                 months = self.refresh_hot()
-                pending.update(months - set(self.history_summaries) - {month_str()})
+                pending.update(months - self.history_summaries.keys())
+                pending.update(self.history_due)
+                pending.discard(month_str())
+                if not pending:
+                    break
         if self.stop.is_set():
             raise CacheUnavailable("prewarm stopped")
-        # A fresh hot generation must exist when the entire known domain becomes ready.
-        self.refresh_hot()
         # Startup read every known month, so the legacy wildcard is also covered.
         self.store.acknowledge_history("*", wildcard_revision)
         self.last_history_check = time.monotonic()
@@ -212,6 +231,7 @@ class ApiCache:
                         self.store.acknowledge_history("*", revision)
                     elif normalize_month_code(month) and month != month_str():
                         self.history_due.setdefault(month, 0)
+            self.verify_historical_years()
             self.last_history_check = time.monotonic()
         due = [
             (stamp, month)

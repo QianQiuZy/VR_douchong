@@ -25,6 +25,8 @@ WBI_INIT_URL = UID_INIT_URL
 BUVID_INIT_URL = 'https://www.bilibili.com/'
 ROOM_INIT_URL = 'https://api.live.bilibili.com/room/v1/Room/get_info'
 DANMAKU_SERVER_CONF_URL = 'https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo'
+# Cap each request held behind shared admission without overriding stricter session limits.
+DANMAKU_REQUEST_DEADLINE = 10.0
 DEFAULT_DANMAKU_SERVER_LIST = [
     {'host': 'broadcastlv.chat.bilibili.com', 'port': 2243, 'wss_port': 443, 'ws_port': 2244}
 ]
@@ -119,7 +121,7 @@ class _WbiSigner:
 
     async def _get_wbi_key(self):
         try:
-            async with self._session.get(
+            async with asyncio.timeout(DANMAKU_REQUEST_DEADLINE), self._session.get(
                 WBI_INIT_URL,
                 headers={'User-Agent': utils.USER_AGENT},
             ) as res:
@@ -363,11 +365,14 @@ class BLiveClient(ws_base.WebSocketClientBase):
                     refreshed = self._wbi_signer.risk_refresh_used
                     try:
                         self._danmaku_policy.started()
-                        async with self._session.get(
-                            DANMAKU_SERVER_CONF_URL,
-                            headers={'User-Agent': utils.USER_AGENT},
-                            params=self._wbi_signer.add_wbi_sign({'id': self._room_id, 'type': 0}),
-                        ) as res:
+                        async with (
+                            asyncio.timeout(DANMAKU_REQUEST_DEADLINE),
+                            self._session.get(
+                                DANMAKU_SERVER_CONF_URL,
+                                headers={'User-Agent': utils.USER_AGENT},
+                                params=self._wbi_signer.add_wbi_sign({'id': self._room_id, 'type': 0}),
+                            ) as res,
+                        ):
                             if res.status != 200:
                                 _log_failure('getDanmuInfo', res, room_id=self._room_id)
                                 self._danmaku_policy.other_failure()

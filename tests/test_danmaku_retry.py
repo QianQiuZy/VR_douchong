@@ -158,3 +158,68 @@ def test_other_danmaku_error_keeps_existing_failure_behavior(monkeypatch):
                 assert calls == ["nav", "danmu"]
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("slow_endpoint", ["nav", "danmu"])
+def test_stalled_response_does_not_hold_admission_until_session_timeout(monkeypatch, slow_endpoint):
+    async def scenario():
+        stalled = asyncio.Event()
+        release = asyncio.Event()
+        healthy_admitted = asyncio.Event()
+
+        async def stall_body(request):
+            response = web.StreamResponse(headers={"Content-Type": "application/json"})
+            await response.prepare(request)
+            stalled.set()
+            await release.wait()
+            return response
+
+        async def nav(request):
+            if slow_endpoint == "nav" and request.headers.get("X-Test-Session") == "slow":
+                return await stall_body(request)
+            return web.json_response({"data": {"wbi_img": {
+                "img_url": "https://example.invalid/" + "a" * 32 + ".png",
+                "sub_url": "https://example.invalid/" + "b" * 32 + ".png",
+            }}})
+
+        async def danmu(request):
+            if slow_endpoint == "danmu" and request.query["id"] == "10":
+                return await stall_body(request)
+            healthy_admitted.set()
+            return web.json_response({"code": 0, "data": {
+                "host_list": [{"host": "chat.example.invalid", "wss_port": 443}],
+                "token": "synthetic-token",
+            }})
+
+        app = web.Application()
+        app.router.add_get("/nav", nav)
+        app.router.add_get("/danmu", danmu)
+        monkeypatch.setattr(live_web, "DANMAKU_REQUEST_DEADLINE", 0.25, raising=False)
+        async with TestServer(app) as server:
+            configure_urls(monkeypatch, server)
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with (
+                aiohttp.ClientSession(headers={"X-Test-Session": "slow"}, timeout=timeout) as first,
+                aiohttp.ClientSession(timeout=timeout) as second,
+            ):
+                slow = live_web.BLiveClient(10, uid=0, session=first)
+                healthy = live_web.BLiveClient(20, uid=0, session=second)
+                slow._room_id = 10
+                healthy._room_id = 20
+                policy = virtual_admission(slow)
+                assert healthy._danmaku_policy is policy
+                slow_task = asyncio.create_task(slow._init_host_server())
+                try:
+                    await asyncio.wait_for(stalled.wait(), timeout=3)
+                    assert not healthy_admitted.is_set()
+                    assert await asyncio.wait_for(healthy._init_host_server(), timeout=3)
+                    assert await slow_task is False
+                    assert healthy_admitted.is_set()
+                    assert healthy._host_server_token == "synthetic-token"
+                finally:
+                    release.set()
+                    if not slow_task.done():
+                        slow_task.cancel()
+                        await asyncio.gather(slow_task, return_exceptions=True)
+
+    asyncio.run(scenario())

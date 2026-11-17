@@ -5,13 +5,14 @@ from __future__ import annotations
 import datetime
 import logging
 
-from sqlalchemy import func
+from sqlalchemy import func, inspect, text
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
 from .. import DanmakuBucketTarget, DanmakuCounts
 from ..database import Session
 from .history import notify_history_change
+from .tables import month_str, normalize_month_code
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +73,22 @@ def upsert_stats(
             "sample_count": sample_count,
             "payer_count": payer_count,
         }
-        stmt = insert(model).values(**values).on_duplicate_key_update(**{
-            key: values[key]
-            for key in values
+        replace = {
+            key: value
+            for key, value in values.items()
             if key not in {"session_id", "bucket_index", *DANMAKU_COLUMNS}
-        })
-        _ = session.execute(stmt)
+        }
+        archived = _find_archived_bucket(session, month, session_id, bucket_index)
+        if archived is None:
+            session.execute(insert(model).values(**values).on_duplicate_key_update(**replace))
+        else:
+            archive, available = archived
+            replace = {key: value for key, value in replace.items() if key in available}
+            assignments = ", ".join(f"`{name}` = :{name}" for name in replace)
+            session.execute(text(
+                f"UPDATE `{archive}` SET {assignments} WHERE session_id = :session_id "
+                "AND bucket_index = :bucket_index"
+            ), {**replace, "session_id": session_id, "bucket_index": bucket_index})
         session.commit()
         notify_history_change(month)
         return True
@@ -89,6 +100,62 @@ def upsert_stats(
         session.close()
 
 
+def _find_archived_bucket(
+    session, month: str, session_id: int, bucket_index: int,
+) -> tuple[str, set[str]] | None:
+    if normalize_month_code(month) != month or month >= month_str():
+        return None
+    key = {"session_id": session_id, "bucket_index": bucket_index, "month": month}
+    # Serialize historical writes with the archive's copy/delete transaction.
+    # A locking read sees the current row even if the archive committed while waiting.
+    session.execute(text(
+        "SELECT id FROM live_session WHERE id = :session_id AND month = :month FOR UPDATE"
+    ), key).scalar()
+    hot = session.execute(text(
+        "SELECT session_id FROM live_session_15m_stats WHERE session_id = :session_id "
+        "AND bucket_index = :bucket_index FOR UPDATE"
+    ), key).scalar()
+    if hot is not None:
+        return None  # A full hot correction takes precedence over the archive.
+    conn = session.connection()
+    archive = f"live_session_15m_stats_{month}"
+    inspector = inspect(conn)
+    if not inspector.has_table(archive):
+        return None
+    found = session.execute(text(
+        f"SELECT session_id FROM `{archive}` WHERE session_id = :session_id "
+        "AND bucket_index = :bucket_index FOR UPDATE"
+    ), key).scalar()
+    if found is None:
+        return None
+    return archive, {column["name"] for column in inspector.get_columns(archive)}
+
+
+def _add_to_archived_bucket(session, target: DanmakuBucketTarget, counts: DanmakuCounts) -> bool:
+    archived = _find_archived_bucket(session, target.month, target.session_id, target.bucket_index)
+    if archived is None:
+        return False
+    archive, available = archived
+    # Legacy archives deliberately lack some subscriber breakdowns. Preserve
+    # their missing-column semantics while still updating the known totals.
+    increments = {
+        "danmaku_count": counts.total,
+        "captain_danmaku_count": counts.captain,
+        "admiral_danmaku_count": counts.admiral,
+        "governor_danmaku_count": counts.governor,
+        "normal_danmaku_count": counts.normal,
+    }
+    increments = {name: amount for name, amount in increments.items() if name in available}
+    if "danmaku_count" not in increments:
+        raise SQLAlchemyError("Archived bucket missing danmaku_count")
+    assignments = ", ".join(f"`{name}` = COALESCE(`{name}`, 0) + :{name}" for name in increments)
+    session.execute(text(
+        f"UPDATE `{archive}` SET {assignments} WHERE session_id = :session_id "
+        "AND bucket_index = :bucket_index"
+    ), {**increments, "session_id": target.session_id, "bucket_index": target.bucket_index})
+    return True
+
+
 def add_danmaku_counts(
     model,
     target: DanmakuBucketTarget,
@@ -96,6 +163,10 @@ def add_danmaku_counts(
 ) -> bool:
     session = Session()
     try:
+        if _add_to_archived_bucket(session, target, counts):
+            session.commit()
+            notify_history_change(target.month)
+            return True
         stmt = insert(model).values(
             session_id=target.session_id,
             room_id=target.room_id,

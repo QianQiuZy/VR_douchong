@@ -25,7 +25,7 @@ V2 优先取 `blind.blind_price * num`，缺失时告警并回退旧 `total_coin
 
 ## 源码职责与现有定制
 
-`1.0.4-VR_douchong` 新增 `POPULARITY_RED_POCKET_V2_NEW` 的 `PopularityRedPocketV2NewMessage` 模型和 `BaseHandler._on_red_pocket_v2_new` 回调。模型保留全部 20 个已知协议字段，提供 `pocket_type` 及 `guard_num`、`battery_num`、`gift_num` 属性：上舰价格 `9805/19610/39220/98050` 映射 `5/10/20/50`，电池和礼物保留原始价格；未知类型或未知上舰价格不猜测归一化值。核心字段无效时仅记录脱敏警告并跳过分发。库内不加入缓存、MySQL、Redis、FastAPI 或访客名单逻辑；十分钟有效期、去重和响应字段仍归业务层。同步相邻独立库的 `dev` 工作树，保留其已有未提交修改，不提交独立库。
+`1.0.4-VR_douchong` 新增 `POPULARITY_RED_POCKET_V2_NEW` 的 `PopularityRedPocketV2NewMessage` 模型和 `BaseHandler._on_red_pocket_v2_new` 回调。模型保留全部 20 个已知协议字段，提供 `pocket_type` 及 `guard_num`、`battery_num`、`gift_num` 属性：上舰价格 `9805/19610/39220/98050` 映射 `5/10/20/50`，电池和礼物保留原始价格；未知类型或未知上舰价格不猜测归一化值。核心字段无效时仅记录脱敏警告并跳过分发。库内不加入缓存、MySQL、Redis、FastAPI 或访客名单逻辑；十分钟有效期、去重和响应字段仍归业务层。 持有共享请求许可时，WBI 和弹幕服务器配置 HTTP 请求分别最多等待 10 秒（含读取响应体）；调用方更短的会话超时仍优先。限速和单请求恢复探测保持不变。同步相邻独立库的 `dev` 工作树，保留其已有未提交修改，不提交独立库。
 
 | 位置 | 职责与需要保留的接口 |
 | --- | --- |
