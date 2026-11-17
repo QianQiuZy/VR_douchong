@@ -51,10 +51,33 @@ def client_ip(request: Request) -> str:
     return peer
 
 
+def year_parameter(request: Request) -> str | JSONResponse | None:
+    if "year" not in request.query_params:
+        return None
+    if "month" in request.query_params:
+        return JSONResponse({"error": "year 与 month 不能同时传入"}, status_code=400)
+    year = request.query_params["year"]
+    if (
+        len(request.query_params.getlist("year")) != 1
+        or len(year) != 4
+        or not year.isascii()
+        or not year.isdecimal()
+        or not "0001" <= year <= month_str()[:4]
+    ):
+        return JSONResponse({"error": "year 参数无效，须为四位年份且不能晚于当前年"}, status_code=400)
+    return year
+
+
 def parameters(request: Request) -> tuple[str, int | None] | JSONResponse:
     path = request.url.path.rstrip("/")
     if path == "/gift":
         return month_str(), None
+    if path == "/gift/by_month":
+        year = year_parameter(request)
+        if isinstance(year, JSONResponse):
+            return year
+        if year is not None:
+            return year, None
     rid = None
     if path != "/gift/by_month":
         raw = request.query_params.get("room_id")
@@ -162,10 +185,13 @@ class CacheMiddleware:
                 if isinstance(parsed, JSONResponse):
                     response = parsed
                 else:
-                    month, rid = parsed
-                    body = await anyio.to_thread.run_sync(
-                        service.store.read, month, path, rid
-                    )
+                    period, rid = parsed
+                    if path == "/gift/by_month" and len(period) == 4:
+                        body = await anyio.to_thread.run_sync(service.store.read_year, period)
+                    else:
+                        body = await anyio.to_thread.run_sync(
+                            service.store.read, period, path, rid
+                        )
                     headers = {"Cache-Control": "no-store", "Vary": "Accept-Encoding"}
                     if accepts_gzip(request.headers.get("accept-encoding", "")):
                         headers["Content-Encoding"] = "gzip"

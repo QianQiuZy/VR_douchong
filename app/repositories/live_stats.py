@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as OrmSession
 
 from ..database import Session, engine
+from .history import notify_history_change
 from .tables import (
     ReportTableMetadata,
     ensure_room_live_stats_archive_table,
@@ -89,6 +90,7 @@ def add_duration(model, room_id: int, date_value: datetime.date, seconds: int) -
                 else:
                     session.add(model(room_id=room_id, date=date_value, duration=seconds))
                 session.commit()
+                notify_history_change(month_code)
                 return
             except SQLAlchemyError as exc:
                 session.rollback()
@@ -112,6 +114,7 @@ def add_duration(model, room_id: int, date_value: datetime.date, seconds: int) -
                     {"room_id": room_id, "date": date_value, "duration": seconds},
                 )
                 session.commit()
+                notify_history_change(month_code)
                 return
             except SQLAlchemyError as exc:
                 session.rollback()
@@ -176,6 +179,7 @@ def add_daily_metrics(
                 },
             )
         session.commit()
+        notify_history_change(month_code)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error("[RoomLiveStats] 日统计写入失败 room_id=%s date=%s: %s", room_id, date_value, exc)

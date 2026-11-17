@@ -129,6 +129,8 @@ class SnapshotReader:
         if prefix == "room_entry_log":
             start, end = month_range(month)
             return self.read_entries(start, end)
+        if prefix in {"live_session", "live_session_15m_stats"}:
+            return self.read_sessions(prefix, month)
         table = (
             f"{prefix}_{month}"
             if month != month_str() and f"{prefix}_{month}" in self.metadata
@@ -137,13 +139,44 @@ class SnapshotReader:
         if not TABLE_PATTERN.fullmatch(table):
             raise ValueError("invalid cache table")
         start, end = month_range(month)
-        if prefix in {"live_session", "live_session_15m_stats"}:
-            return self.query(f"SELECT * FROM `{table}` WHERE month=%s", (month,))
         name = "send_time" if prefix == "super_chat_log" else "date"
         return self.query(
             f"SELECT * FROM `{table}` WHERE `{name}` >= %s AND `{name}` < %s",
             (start, end),
         )
+
+    def read_sessions(self, prefix: str, month: str) -> list[dict]:
+        """Include unarchived cross-month sessions and late bucket writes."""
+        keys = {
+            "live_session": ("id",),
+            "live_session_15m_stats": ("session_id", "bucket_index"),
+        }
+        if prefix not in keys or normalize_month_code(month) != month:
+            raise ValueError("invalid cache session table")
+        hot = self.query(f"SELECT * FROM `{prefix}` WHERE month=%s", (month,))
+        if month == month_str():
+            return hot
+        archive = f"{prefix}_{month}"
+        # Read hot rows before discovering archives. If a copy/delete commits
+        # concurrently, this transaction retains its pre-copy rows in the hot
+        # snapshot. Fresh metadata also covers archives absent from discovery.
+        found = self.query(
+            "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s "
+            "AND TABLE_NAME=%s",
+            (config.DB_CONFIG["db"], archive),
+        )
+        if not any(row["TABLE_NAME"] == archive for row in found):
+            self.metadata.discard(archive)
+            return hot
+        self.metadata.add(archive)
+        archived = self.query(f"SELECT * FROM `{archive}` WHERE month=%s", (month,))
+        # Separate SELECTs tolerate different column sets in older archives.
+        # A hot replay/correction takes precedence over its archived copy.
+        merged = {tuple(row[key] for key in keys[prefix]): row for row in archived}
+        for row in hot:
+            identity = tuple(row[key] for key in keys[prefix])
+            merged[identity] = {**merged.get(identity, {}), **row}
+        return list(merged.values())
 
     def read_entries(self, start, end) -> list[dict]:
         """Merge hot and archived rows in the same read snapshot, including late writes."""
@@ -271,7 +304,16 @@ class SnapshotReader:
         return Snapshot(month, stamp, base, tables, self.known_months(), recent_entries)
 
     def history(self, month: str) -> Snapshot:
-        stamp = self.store.clock()
-        with self.transaction():
-            tables = {table: self.read_table(table, month) for table in MONTH_TABLES}
-        return Snapshot(month, stamp, self.base, tables, self.known_months())
+        for attempt in range(3):
+            stamp = self.store.clock()
+            try:
+                with self.transaction():
+                    tables = {table: self.read_table(table, month) for table in MONTH_TABLES}
+                return Snapshot(month, stamp, self.base, tables, self.known_months())
+            except pymysql.OperationalError as exc:
+                # MySQL 5.7 rejects an archive created after the read view (1412).
+                # transaction() closed the failed connection. Retry the WHOLE
+                # month in a new snapshot, never combine different read views.
+                if not exc.args or exc.args[0] != 1412 or attempt == 2:
+                    raise
+        raise AssertionError("unreachable history retry state")

@@ -55,7 +55,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as OrmSession
 
 from . import config, health_check, room_config, room_visibility, runtime_state
-from .api_cache_http import CacheMiddleware, accepts_gzip
+from .api_cache_http import CacheMiddleware, accepts_gzip, year_parameter
 from .api_cache_store import CacheUnavailable, encode
 from .config import API_SECRET, REPORT_ACQUIRE_TIMEOUT_SECONDS, REPORT_MAX_CONCURRENCY
 from .database import Session as _default_Session
@@ -1063,6 +1063,29 @@ def get_stats_by_month(request: Request, _: None = Depends(report_admission)):
     GET ?month=YYYYMM
     历史月不返回实时 live_time/title/status（置空/0）
     """
+    year = year_parameter(request)
+    if isinstance(year, JSONResponse):
+        return year
+    if year is not None:
+        # Annual queries keep the Redis-only contract even in legacy diagnostic mode.
+        service = getattr(request.app.state, "api_cache", None)
+        try:
+            if service is None:
+                raise CacheUnavailable("annual cache lifecycle not started")
+            body = service.store.read_year(year)
+            headers = {"Cache-Control": "no-store", "Vary": "Accept-Encoding"}
+            if accepts_gzip(request.headers.get("accept-encoding", "")):
+                headers["Content-Encoding"] = "gzip"
+            else:
+                body = gzip.decompress(body)
+            return Response(body, media_type="application/json", headers=headers)
+        except (redis.RedisError, CacheUnavailable, ValueError, OSError, EOFError, TypeError, KeyError) as exc:
+            if service is not None:
+                service.store.faults.record("request-cache", exc)
+            return JSONResponse(
+                {"error": "接口缓存暂不可用"}, status_code=503,
+                headers={"Retry-After": "1", "Cache-Control": "no-store"},
+            )
     month_param = request.query_params.get("month")
     if month_param:
         m = normalize_month_code(month_param)

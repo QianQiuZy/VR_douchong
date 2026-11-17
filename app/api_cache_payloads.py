@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from decimal import Decimal
 from types import SimpleNamespace
 
 from . import room_config, runtime_state
@@ -117,6 +118,94 @@ def summaries(
     return out
 
 
+def year_summaries(year: str, base: dict, inputs: dict, *, empty: bool = False) -> list[dict]:
+    """Roll up the existing monthly totals and cached daily aggregates, without SQL."""
+    from . import api_app
+
+    current_month = month_str()
+    current = year == current_month[:4] and not empty
+    cutoff = current_month if current else year + "12"
+
+    def selected(month):
+        return not empty and month[:4] == year and month <= cutoff
+
+    info = {int(row["room_id"]): row for row in base["room_info"]}
+    monthly = defaultdict(dict)
+    blind = defaultdict(list)
+    aggregates = defaultdict(lambda: [0, 0])
+    active = defaultdict(set)
+    rooms = set(room_config.get_room_ids())
+    for row in base["room_stats_monthly"]:
+        if selected(row["month"]):
+            rid = int(row["room_id"])
+            monthly[rid][row["month"]] = row
+            active[rid].add(row["month"])
+            rooms.add(rid)
+    for row in base["room_blind_box_monthly"]:
+        if selected(row["month"]):
+            rid = int(row["room_id"])
+            blind[rid].append(row)
+            active[rid].add(row["month"])
+            rooms.add(rid)
+    for month, (daily, session_rooms) in inputs.items():
+        if not selected(month):
+            continue
+        for rid, (seconds, days, _steel) in daily.items():
+            aggregates[rid][0] += seconds
+            aggregates[rid][1] += days
+        for rid in daily.keys() | session_rooms:
+            active[rid].add(month)
+            rooms.add(rid)
+    out = []
+    for rid in sorted(rooms):
+        rows = list(monthly[rid].values())
+        room = info.get(rid, {})
+        live = runtime_state.LIVE_INFO.get(rid, {}).copy() if current else {}
+        guards = (runtime_state.GUARD_COUNTS.get(rid, {}) or {}).copy() if current else {}
+        danmaku = {}
+        for name, column in (
+            ("total", "danmaku_count"), ("captain", "captain_danmaku_count"),
+            ("admiral", "admiral_danmaku_count"), ("governor", "governor_danmaku_count"),
+            ("normal", "normal_danmaku_count"),
+        ):
+            counts = [monthly[rid].get(month, {}).get(column) for month in active[rid]]
+            danmaku[name] = (
+                sum(int(value) for value in counts)
+                if counts and all(value is not None for value in counts) else None
+            )
+        seconds, days = aggregates[rid]
+        out.append({
+            "room_id": rid,
+            "anchor_name": room.get("anchor_name") or room_config.get_room_anchor_name(rid),
+            "attention": room.get("attention") or 0,
+            "status": runtime_state.LAST_STATUS.get(rid, 0) if current else 0,
+            **{
+                field: float(sum(Decimal(str(row.get(field) or 0)) for row in rows))
+                for field in ("gift", "guard", "super_chat")
+            },
+            "payer_count": None,
+            "steel_coin_count": None,
+            "blind_box_count": sum(int(row.get("blind_box_count") or 0) for row in blind[rid]),
+            "blind_box_profit": float(sum(
+                Decimal(str(api_app._profit_display(row.get("blind_box_profit"))))
+                for row in blind[rid]
+            )),
+            "live_duration": api_app._seconds_to_hms(seconds),
+            "effective_days": days,
+            "live_time": live.get("live_time", "0000-00-00 00:00:00"),
+            "title": live.get("title", ""),
+            "year": year,
+            **{
+                field: guards.get(field, 0) if current else None
+                for field in ("guard_1", "guard_2", "guard_3")
+            },
+            "fans_count": runtime_state.FANS_COUNT.get(rid, 0) if current else None,
+            "danmaku": danmaku,
+            "whale_dependency": None,
+        })
+    return out
+
+
 class PayloadBuilder:
     def __init__(self):
         self.previous_sc: dict[int, list[dict]] = {}
@@ -124,7 +213,13 @@ class PayloadBuilder:
         self.current_month: str | None = None
         self.previous_payloads: dict[str, dict] = {}
         self.payload_bodies: dict[str, bytes] = {}
-        self.history_summary_inputs: dict[str, tuple[dict, set[int]]] = {}
+        self.summary_inputs: dict[str, tuple[dict, set[int]]] = {}
+
+    def year_values(self, year: str, base: dict) -> dict[str, bytes]:
+        return {
+            "/gift/by_month": encode(year_summaries(year, base, self.summary_inputs)),
+            "_empty:/gift/by_month": encode(year_summaries(year, base, {}, empty=True)),
+        }
 
     def summary_values(
         self, month: str, base: dict, aggregates: dict, rooms: set[int]
@@ -167,8 +262,7 @@ class PayloadBuilder:
             values[api_app.RECENT_PATH] = encode(
                 {"items": api_app._serialize_entry_rows(snapshot.recent_entries)}
             )
-        if not current:
-            self.history_summary_inputs[month] = (aggregates, session_rooms)
+        self.summary_inputs[month] = (aggregates, session_rooms)
         if current and self.current_month != month:
             self.previous_sc.clear()
             self.sc_bodies.clear()

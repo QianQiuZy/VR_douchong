@@ -24,6 +24,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from .database import Session, engine
+from .repositories.history import notify_history_change
 from .repositories.tables import (
     ensure_attention_archive_table,
     ensure_live_session_15m_stats_archive_table,
@@ -132,6 +133,7 @@ def archive_super_chat_log(target_month: str | None = None) -> int:
                     {"start": start_dt, "end": end_dt},
                 )
                 moved_total += int(count or 0)
+            notify_history_change(month_code)
             logger.info(f"[SuperChatLog] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as e:
             logger.error(f"[SuperChatLog] 归档失败 {month_code}: {e}")
@@ -269,6 +271,7 @@ def archive_live_session(
                     params,
                 )
                 moved_total += int(count or 0)
+            notify_history_change(month_code)
             logger.info(f"[LiveSession] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as e:
             logger.error(f"[LiveSession] 归档失败 {month_code}: {e}")
@@ -382,6 +385,7 @@ def archive_live_session_15m_stats(
                     params,
                 )
                 moved_total += int(count or 0)
+            notify_history_change(month_code)
             logger.info(f"[LiveSession15m] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as exc:
             logger.error(f"[LiveSession15m] 归档失败 {month_code}: {exc}")
@@ -471,6 +475,7 @@ def archive_room_live_stats(target_month: str | None = None) -> int:
                     {"start": start_dt, "end": end_dt},
                 )
                 moved_total += int(count or 0)
+            notify_history_change(month_code)
             logger.info(f"[RoomLiveStats] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as e:
             logger.error(f"[RoomLiveStats] 归档失败 {month_code}: {e}")
@@ -576,6 +581,7 @@ def archive_attention(target_month: str | None = None) -> int:
                     {"start_date": start_date, "end_date": end_date},
                 )
                 moved_total += int(count or 0)
+            notify_history_change(month_code)
             logger.info(f"[Attention] 已归档 {month_code}，记录数 ~{count}")
         except SQLAlchemyError as e:
             logger.error(f"[Attention] 归档失败 {month_code}: {e}")

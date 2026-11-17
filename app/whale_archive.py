@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from .database import engine
+from .repositories.history import notify_history_change
 from .repositories.tables import month_str, normalize_month_code
 from .whale_metrics import (
     WHALE_TOTALS_PREFIX,
@@ -92,6 +93,8 @@ def _persist_metrics(room_id: int, month: str, metrics: WhaleMetrics) -> None:
                 "calculated_at": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
             },
         )
+
+    notify_history_change(month)
 
 
 def archive_whale_month(target_month: str | None = None) -> int:

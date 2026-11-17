@@ -5,6 +5,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..database import Session
+from .history import notify_history_change
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ def attention_upsert_daily(model, room_id: int, date_value: datetime.date, atten
         ).on_duplicate_key_update(attention=int(attention_value))
         session.execute(stmt)
         session.commit()
+        notify_history_change(date_value)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[Attention] upsert_daily 失败: {exc}")
@@ -65,6 +67,7 @@ def attention_upsert_daily_guards(
         )
         session.execute(stmt)
         session.commit()
+        notify_history_change(date_value)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[Attention] upsert_daily_guards 失败: {exc}")
@@ -82,6 +85,7 @@ def attention_upsert_daily_fans(model, room_id: int, date_value: datetime.date, 
         ).on_duplicate_key_update(fans_count=int(fans_count))
         session.execute(stmt)
         session.commit()
+        notify_history_change(date_value)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[Attention] upsert_daily_fans 失败: {exc}")

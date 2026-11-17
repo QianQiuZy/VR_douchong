@@ -9,6 +9,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..database import Session, engine
+from .history import notify_history_change
 from .tables import month_range, month_str, normalize_month_code
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ def archive_entries(target_month: str | None = None) -> int:
                             ]
                         },
                     )
+                notify_history_change(month)
                 moved += len(rows)
         return moved
     except SQLAlchemyError as exc:

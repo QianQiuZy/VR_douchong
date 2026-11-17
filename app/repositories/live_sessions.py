@@ -5,8 +5,9 @@ import logging
 from sqlalchemy import and_, case, update
 from sqlalchemy.exc import SQLAlchemyError
 
-from .. import runtime_state
+from .. import config, runtime_state
 from ..database import Session
+from .history import notify_history_change
 from .tables import month_str
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,9 @@ def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) 
             duration_ledger=json.dumps({"days": {}, "segment_days": {}, "segment_start": start_dt.isoformat()}),
         )
         session.add(row)
+        changed_month = getattr(row, "month", None)
         session.commit()
+        notify_history_change(changed_month)
         runtime_state.INVALID_DURATION_SESSIONS.pop(room_id, None)
         return row.id
     except SQLAlchemyError as exc:
@@ -108,7 +111,9 @@ def add_values_by_id(
             row.blind_box_count += int(blind_box_count)
         if blind_box_profit:
             row.blind_box_profit += int(blind_box_profit)
+        changed_month = getattr(row, "month", None)
         session.commit()
+        notify_history_change(changed_month)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[LiveSession] add_values_by_id 失败: {exc}")
@@ -142,7 +147,9 @@ def add_values_by_room_open(
             row.blind_box_count += int(blind_box_count)
         if blind_box_profit:
             row.blind_box_profit += int(blind_box_profit)
+        changed_month = getattr(row, "month", None)
         session.commit()
+        notify_history_change(changed_month)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[LiveSession] add_values_by_room_open 失败: {exc}")
@@ -158,7 +165,9 @@ def close_session_by_id(model, session_id: int | None, end_dt: datetime.datetime
         row = session.query(model).filter_by(id=session_id).first()
         if row and row.end_time is None:
             row.end_time = end_dt
+            changed_month = getattr(row, "month", None)
             session.commit()
+            notify_history_change(changed_month)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[LiveSession] close_session_by_id 失败: {exc}")
@@ -183,7 +192,9 @@ def update_concurrency_by_id(
             row.avg_concurrency = float(avg_concurrency)
         if max_concurrency is not None:
             row.max_concurrency = int(max_concurrency)
+        changed_month = getattr(row, "month", None)
         session.commit()
+        notify_history_change(changed_month)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[LiveSession] update_concurrency_by_id 失败: {exc}")
@@ -203,7 +214,15 @@ def set_payer_count(model, session_id: int | None, count: int) -> None:
             .values(payer_count=case((model.payer_count < int(count), int(count)), else_=model.payer_count))
         )
         session.execute(stmt)
+        changed_month = None
+        if config.API_CACHE_ENABLED:
+            from ..metrics_runtime import session_month
+
+            changed_month = session_month(session_id)
+            if changed_month is None:
+                changed_month = session.query(model.month).filter_by(id=session_id).scalar()
         session.commit()
+        notify_history_change(changed_month)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error("[LiveSession] payer_count写入失败 session_id=%s: %s", session_id, exc)

@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .. import DanmakuBucketTarget, DanmakuCounts
 from ..database import Session
+from .history import notify_history_change
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ def upsert_stats(
         })
         _ = session.execute(stmt)
         session.commit()
+        notify_history_change(month)
         return True
     except SQLAlchemyError as exc:
         session.rollback()
@@ -128,6 +130,7 @@ def add_danmaku_counts(
         )
         session.execute(stmt)
         session.commit()
+        notify_history_change(target.month)
         return True
     except SQLAlchemyError as exc:
         session.rollback()

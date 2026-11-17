@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .. import DanmakuCounts
 from ..database import Session
+from .history import notify_history_change
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ def add_room_stats_amounts(model, room_id: int, month: str, gift: float = 0.0, g
             )
             session.execute(stmt)
             session.commit()
+            notify_history_change(month)
             return
         except SQLAlchemyError as exc:
             session.rollback()
@@ -61,6 +63,7 @@ def set_room_payer_count(model, room_id: int, month: str, count: int) -> None:
         ).on_duplicate_key_update(payer_count=func.greatest(model.payer_count, int(count)))
         session.execute(stmt)
         session.commit()
+        notify_history_change(month)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error("[RoomStatsMonthly] payer_count写入失败 room_id=%s month=%s: %s", room_id, month, exc)
@@ -94,6 +97,7 @@ def add_danmaku_counts(model, room_id: int, month: str, counts: DanmakuCounts) -
         )
         session.execute(stmt)
         session.commit()
+        notify_history_change(month)
         return True
     except SQLAlchemyError as exc:
         session.rollback()
@@ -125,6 +129,7 @@ def add_blind_box_amounts(model, room_id: int, month: str, count: int = 0, profi
             )
             session.execute(stmt)
             session.commit()
+            notify_history_change(month)
             return
         except SQLAlchemyError as exc:
             session.rollback()

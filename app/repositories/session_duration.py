@@ -110,6 +110,7 @@ def account_duration(model, session_id: int, start: datetime.datetime | None = N
                         current = boundary
                 ledger["end"] = max(end, datetime.datetime.fromisoformat(ledger.get("end", end.isoformat()))).isoformat()
                 ledger["segment_end"] = end.isoformat()
+            changed_months.add(row.month)
             row.duration_ledger = json.dumps(ledger)
             session.commit()
             from ..api_cache import invalidate_history

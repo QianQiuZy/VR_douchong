@@ -5,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..database import Session
+from .history import notify_history_change
 from .tables import ensure_sc_archive_table, is_current_month, month_str
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ def log_super_chat(
                 },
             )
         session.commit()
+        notify_history_change(month_code)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[SuperChatLog] 写入失败: {exc}")

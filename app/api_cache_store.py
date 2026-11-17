@@ -19,6 +19,21 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
+HISTORY_MARK_SCRIPT = """
+local t = redis.call('TIME')
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
+redis.call('ZADD', KEYS[3], tonumber(t[1]) + tonumber(t[2]) / 1000000, ARGV[1])
+redis.call('SADD', KEYS[1], ARGV[1])
+return 1
+"""
+HISTORY_ACK_SCRIPT = """
+if (redis.call('HGET', KEYS[2], ARGV[1]) or '') ~= ARGV[2] then return 0 end
+redis.call('SREM', KEYS[1], ARGV[1])
+redis.call('HDEL', KEYS[2], ARGV[1])
+redis.call('ZREM', KEYS[3], ARGV[1])
+return 1
+"""
+
 # Integer microseconds, half-open rolling second; denied requests do not extend it.
 WINDOW_SCRIPT = """
 local t = redis.call('TIME')
@@ -50,7 +65,12 @@ return 1
 """
 BEGIN_SCRIPT = """
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-redis.call('DEL', KEYS[2], KEYS[3])
+redis.call('DEL', KEYS[2], KEYS[3], KEYS[4])
+return 1
+"""
+YEAR_PENDING_SCRIPT = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('SADD', KEYS[2], ARGV[2])
 return 1
 """
 READY_SCRIPT = """
@@ -172,6 +192,24 @@ class CacheStore:
     def lease_key(self) -> str:
         return self.key("leader")
 
+    def mark_history_changed(self, month: str) -> None:
+        self.client.eval(
+            HISTORY_MARK_SCRIPT, 3, self.key("dirty-months"),
+            self.key("history-revisions"), self.key("history-changed-at"),
+            month, uuid.uuid4().hex,
+        )
+
+    def history_revision(self, month: str) -> bytes:
+        return self.client.hget(self.key("history-revisions"), month) or b""
+
+    def acknowledge_history(self, month: str, revision: bytes) -> None:
+        # A concurrent write must survive an older snapshot's publication.
+        self.client.eval(
+            HISTORY_ACK_SCRIPT, 3, self.key("dirty-months"),
+            self.key("history-revisions"), self.key("history-changed-at"),
+            month, revision,
+        )
+
     def acquire(self) -> bool:
         return bool(self.client.set(self.lease_key, self.owner, nx=True, ex=60))
 
@@ -209,8 +247,25 @@ class CacheStore:
         raise CacheUnavailable("builder stopped")
 
     def publish(self, month: str, values: dict[str, bytes], stamp: float) -> None:
+        self._publish(month, values, stamp, "month")
+
+    def publish_year(self, year: str, values: dict[str, bytes], stamp: float) -> None:
+        self._publish(year, values, stamp, "year")
+
+    def year_exists(self, year: str) -> bool:
+        generation = self.client.get(self.key(f"year:{year}"))
+        return bool(generation and self.client.exists(generation))
+
+    def expect_year(self, year: str) -> None:
+        # A discovered but unwarmed year must not use an unknown-year empty template.
+        if not self.client.eval(
+            YEAR_PENDING_SCRIPT, 2, self.lease_key, self.key("years"), self.owner, year
+        ):
+            raise CacheUnavailable("annual prewarm lost its lease")
+
+    def _publish(self, period: str, values: dict[str, bytes], stamp: float, kind: str) -> None:
         self.renew()
-        generation = self.key(f"generation:{month}:{uuid.uuid4().hex}")
+        generation = self.key(f"generation:{kind}:{period}:{uuid.uuid4().hex}")
         self.account_memory()
         total = int(self.client.get(self.key("bytes")) or 0)
         hashes = {
@@ -233,10 +288,10 @@ class CacheStore:
             4,
             self.lease_key,
             generation,
-            self.key(f"month:{month}"),
-            self.key("months"),
+            self.key(f"{kind}:{period}"),
+            self.key(f"{kind}s"),
             self.owner,
-            month,
+            period,
         ):
             raise CacheUnavailable("generation publication failed")
 
@@ -259,10 +314,11 @@ class CacheStore:
     def begin_prewarm(self) -> None:
         if not self.client.eval(
             BEGIN_SCRIPT,
-            3,
+            4,
             self.lease_key,
             self.key("ready"),
             self.key("months"),
+            self.key("years"),
             self.owner,
         ):
             raise CacheUnavailable("prewarm lost its lease")
@@ -282,27 +338,33 @@ class CacheStore:
         )
 
     def read(self, month: str, path: str, room_id: int | None = None) -> bytes:
+        return self._read(month, path, room_id, "month")
+
+    def read_year(self, year: str) -> bytes:
+        return self._read(year, "/gift/by_month", None, "year")
+
+    def _read(self, period: str, path: str, room_id: int | None, kind: str) -> bytes:
         from .repositories.tables import month_str
 
-        current_month = month_str()
+        current = month_str() if kind == "month" else month_str()[:4]
         field = path if room_id is None else f"{path}:{room_id}"
         result = self.client.eval(
             READ_SCRIPT,
             4,
             self.key("ready"),
-            self.key(f"month:{month}"),
-            self.key("months"),
-            self.key(f"month:{current_month}"),
+            self.key(f"{kind}:{period}"),
+            self.key(f"{kind}s"),
+            self.key(f"{kind}:{current}"),
             field,
             "" if room_id is None else str(room_id),
-            month,
+            period,
             path,
         )
         if not result:
             raise CacheUnavailable("prewarm incomplete or month missing")
         stamp, body, seconds, micros, fallback, digest = result
         age = int(seconds) + int(micros) / 1_000_000 - float(stamp)
-        if month == current_month and not 0 <= age <= self.max_age:
+        if period == current and not 0 <= age <= self.max_age:
             raise CacheUnavailable("current snapshot stale")
         if not body:
             raise CacheUnavailable("known cache field missing")
@@ -312,8 +374,8 @@ class CacheStore:
             payload = json.loads(gzip.decompress(body))
             if isinstance(payload, list):
                 for row in payload:
-                    row["month"] = month
+                    row[kind] = period
             else:
-                payload.update(room_id=room_id, month=month)
+                payload.update(room_id=room_id, **{kind: period})
             return encode(payload)
         return body

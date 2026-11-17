@@ -91,9 +91,6 @@ async def _archive_month(target_month: str | None = None) -> None:
             exc_info=False,
         )
     log_pool_status("monthly_archive")
-    from .api_cache import invalidate_history
-
-    invalidate_history(target_month)
 
 
 async def _archive_closed_sessions(target_month: str | None = None) -> None:
@@ -126,9 +123,6 @@ async def _archive_closed_sessions(target_month: str | None = None) -> None:
         return
     try:
         await asyncio.to_thread(archive_service.archive_live_session, target_month, end_time_before=cutoff, session_ids=session_ids)
-        from .api_cache import invalidate_history
-
-        invalidate_history(target_month)
     except Exception as exc:
         logger.exception("[archive] 场次补归档失败 error_type=%s", type(exc).__name__, exc_info=False)
 
@@ -190,10 +184,7 @@ async def monthly_reset_scheduler() -> None:
         wake_at = min(target, now + datetime.timedelta(seconds=SESSION_ARCHIVE_INTERVAL_SECONDS))
         await _sleep_until(wake_at)
         if _now() < target:
-            if await asyncio.to_thread(archive_service.archive_room_entry_log):
-                from .api_cache import invalidate_history
-
-                invalidate_history()
+            await asyncio.to_thread(archive_service.archive_room_entry_log)
             await _archive_closed_sessions()
             continue
         previous_month = _month_str_now_at(target - datetime.timedelta(days=1))

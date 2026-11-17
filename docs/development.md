@@ -55,7 +55,7 @@
 
 修改依赖后执行 `uv lock` 并审查 `pyproject.toml` / `uv.lock` 差异。只有明确升级依赖时才使用 `uv lock --upgrade`；部署使用 `uv sync --locked --no-dev`，检查使用 `uv sync --locked --group dev`，防止运行时静默改变锁文件。旧 requirements 文件已移除，不再维护第二份依赖清单。
 
-项目当前正式版本为 `1.0.9`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
+项目当前正式版本为 `1.0.10`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
 
 安装依赖前确认实际解释器。安装、Git 等外网开发命令沿用会话代理配置；未配置时按工作区约定检查 `http://127.0.0.1:10808` 是否可达后，仅为该命令/会话配置。回环与专用本地测试服务直连，不把本机代理写入业务配置。
 
@@ -143,7 +143,7 @@ uv run --locked pytest -q tests/test_api_cache_integration.py
 
 `.github/workflows/ci.yml` 默认只有一个 Ubuntu 24.04 x86-64 任务，与当前 WSL 系统保持一致，统一运行 `scripts/check.sh`：锁文件安装、`uv pip check`、Ruff、Python 语法及业务 JSON 结构检查、完整离线 pytest。Python 固定为部署版本 3.13.11，本机与云端使用同一锁文件。CI 不额外启动 OpenCloudOS 容器，不声称 Ubuntu 检查等同于云端系统验证。
 
-为节省额度，集成任务仅在手动触发并勾选 `integration` 且默认检查通过后运行；它使用 GitHub 的临时 MySQL 5.7.44 / Redis 8.0.5 服务，运行七项集成测试。测试数据库和凭据均为测试专用，不配置生产 Secrets。工作流只有仓库只读权限，第三方 Actions 固定提交 SHA，启用依赖缓存并自动取消同一分支的旧运行。没有配置自动部署。
+为节省额度，集成任务仅在手动触发并勾选 `integration` 且默认检查通过后运行；它使用 GitHub 的临时 MySQL 5.7.44 / Redis 8.0.5 服务，运行隔离集成测试。测试数据库和凭据均为测试专用，不配置生产 Secrets。工作流只有仓库只读权限，第三方 Actions 固定提交 SHA，启用依赖缓存并自动取消同一分支的旧运行。没有配置自动部署。
 
 Ruff 明确启用 E4/E7/E9/F；内置 blivedm 仅为既有星号导入保留 F403/F405 的文件级兼容，其他规则照常检查。`gift.py` 的延后导入用于原有兼容接线，按行说明 E402 原因；不借配置迁移更改 V2 协议处理。
 

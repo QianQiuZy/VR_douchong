@@ -66,6 +66,13 @@ def start_session(session_id: int, room_id: int, start_time: datetime.datetime) 
         )
 
 
+def session_month(session_id: int) -> str | None:
+    """Reuse the known parent month when marking a payer-count write."""
+    with _lock:
+        bucket = _buckets.get(session_id)
+        return bucket.month if bucket is not None else None
+
+
 def current_bucket_index(
     session_id: int | None,
     event_time: datetime.datetime | None = None,

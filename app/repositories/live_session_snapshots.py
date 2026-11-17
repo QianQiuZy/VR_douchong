@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .. import DanmakuCounts
 from ..database import Session
+from .history import notify_history_change
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,9 @@ def update_start_counts(
             row.start_guard_3 = guard_3
         if fans_count is not None:
             row.start_fans_count = fans_count
+        changed_month = getattr(row, "month", None)
         session.commit()
+        notify_history_change(changed_month)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[LiveSession] update_start_counts 失败: {exc}")
@@ -63,7 +66,9 @@ def update_end_counts(
             row.end_guard_3 = guard_3
         if fans_count is not None:
             row.end_fans_count = fans_count
+        changed_month = getattr(row, "month", None)
         session.commit()
+        notify_history_change(changed_month)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[LiveSession] update_end_counts 失败: {exc}")
@@ -80,7 +85,9 @@ def update_start_attention(model, session_id: int, attention: int | None = None)
         if not row:
             return
         row.start_attention = int(attention)
+        changed_month = getattr(row, "month", None)
         session.commit()
+        notify_history_change(changed_month)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[LiveSession] update_start_attention 失败: {exc}")
@@ -97,7 +104,9 @@ def update_end_attention(model, session_id: int, attention: int | None = None) -
         if not row:
             return
         row.end_attention = int(attention)
+        changed_month = getattr(row, "month", None)
         session.commit()
+        notify_history_change(changed_month)
     except SQLAlchemyError as exc:
         session.rollback()
         logger.error(f"[LiveSession] update_end_attention 失败: {exc}")
@@ -122,7 +131,9 @@ def add_danmaku_by_id(model, session_id: int, counts: DanmakuCounts) -> bool:
         if not row:
             return False
         _add_danmaku_counts(row, counts)
+        changed_month = getattr(row, "month", None)
         session.commit()
+        notify_history_change(changed_month)
         return True
     except SQLAlchemyError as exc:
         session.rollback()
@@ -146,7 +157,9 @@ def add_danmaku_by_room_open(model, room_id: int, counts: DanmakuCounts) -> bool
         if not row:
             return False
         _add_danmaku_counts(row, counts)
+        changed_month = getattr(row, "month", None)
         session.commit()
+        notify_history_change(changed_month)
         return True
     except SQLAlchemyError as exc:
         session.rollback()

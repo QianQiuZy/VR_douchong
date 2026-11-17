@@ -253,6 +253,281 @@ def test_real_incremental_sc_catches_lower_id_late_commit_and_closed_bucket_upda
     reader.close()
 
 
+def test_real_annual_cache_totals_and_history_changes_add_no_http_sql(services, monkeypatch):
+    from app.repositories import monthly
+
+    store, _engine, Session, _start = services
+    monkeypatch.setattr(monthly, "Session", Session)
+    monkeypatch.setattr(config, "API_CACHE_ENABLED", True)
+    with Session.begin() as session:
+        session.add_all([
+            RoomStatsMonthly(room_id=111111, month="200101", gift=10.1, danmaku_count=10),
+            RoomStatsMonthly(room_id=111111, month="200102", gift=20.2, danmaku_count=20),
+            RoomLiveStats(room_id=111111, date=datetime.date(2001, 1, 1), duration=7200),
+            RoomLiveStats(room_id=111111, date=datetime.date(2001, 2, 1), duration=10800),
+        ])
+    statements = []
+    history_reads = []
+
+    class Connection(BudgetConnection):
+        def _execute_command(self, command, sql):
+            result = super()._execute_command(command, sql)
+            if command == 3:
+                statements.append(time.monotonic())
+            return result
+
+    class Reader(SnapshotReader):
+        def history(self, month):
+            history_reads.append(month)
+            return super().history(month)
+
+    cache = ApiCache(store, lambda target, stop: Reader(target, stop, Connection))
+    monkeypatch.setattr(api_app.app.state, "api_cache", cache, raising=False)
+    app = FastAPI()
+    app.router.routes.extend(api_app.app.router.routes)
+    app.state.api_cache = cache
+    app.add_middleware(CacheMiddleware, owner=app)
+    try:
+        cache.prewarm()
+        history_reads.clear()
+        before = len(statements)
+        monkeypatch.setattr(gift, "Session", lambda: pytest.fail("annual HTTP cannot read MySQL"))
+        with TestClient(app, client=("203.0.113.27", 123)) as client:
+            result = client.get("/gift/by_month?year=2001")
+            assert result.status_code == 200
+            row = next(row for row in result.json() if row["room_id"] == 111111)
+            assert row["gift"] == 30.3 and row["live_duration"] == "05:00:00"
+            assert row["effective_days"] == 2 and row["danmaku"]["total"] == 30
+            assert row["payer_count"] is row["whale_dependency"] is row["steel_coin_count"] is None
+            assert row["year"] == "2001" and "month" not in row
+            assert len(statements) == before
+            cache.refresh_hot()
+            assert history_reads == []
+            monthly.add_room_stats_amounts(RoomStatsMonthly, 111111, "200101", gift=5)
+            cache.last_history_check -= 301
+            cache.cycle()
+            assert history_reads == ["200101"]
+            before = len(statements)
+            row = next(row for row in client.get("/gift/by_month?year=2001").json() if row["room_id"] == 111111)
+            assert row["gift"] == 35.3 and len(statements) == before
+        assert max(sum(0 <= stamp - earlier < 1 for earlier in statements) for stamp in statements) <= 9
+    finally:
+        cache.reader.close()
+
+
+@pytest.fixture
+def crossmonth_sessions(services, monkeypatch):
+    from conftest import _ORIG_INSPECT
+    from app import archive_service
+    from app.repositories import live_session_snapshots, live_sessions, tables
+
+    store, engine, Session, _start = services
+    for module in (archive_service, live_sessions, live_session_snapshots):
+        monkeypatch.setattr(module, "Session", Session)
+    for module in (archive_service, tables):
+        monkeypatch.setattr(module, "engine", engine)
+        monkeypatch.setattr(module, "inspect", _ORIG_INSPECT)
+    monkeypatch.setattr(config, "API_CACHE_ENABLED", True)
+    cache = ApiCache(store)
+    monkeypatch.setattr(api_app.app.state, "api_cache", cache, raising=False)
+    with Session.begin() as session:
+        session.add(RoomStatsMonthly(room_id=111111, month="200101", gift=10))
+        for ident, title, end, gift_amount in (
+            (11, "archived", datetime.datetime(2001, 1, 31, 23, 0), 1),
+            (12, "cross-month", None, 9),
+        ):
+            start = datetime.datetime(2001, 1, 31, 22, 0 if ident == 11 else 30)
+            session.add(LiveSession(
+                id=ident, room_id=111111, month="200101", start_time=start,
+                end_time=end, title=title, gift=gift_amount, normal_danmaku_count=42,
+            ))
+            session.add(LiveSession15mStats(
+                session_id=ident, bucket_index=0, room_id=111111, month="200101",
+                start_time=start, end_time=start + datetime.timedelta(minutes=15),
+                gift=gift_amount, normal_danmaku_count=42,
+            ))
+    yield cache, engine, Session
+    cache.reader.close()
+    with engine.begin() as connection:
+        for prefix in ("live_session", "live_session_15m_stats"):
+            connection.execute(text(f"DROP TABLE IF EXISTS `{prefix}_200101`"))
+
+
+def test_real_crossmonth_session_stays_cached_before_and_after_late_archive(crossmonth_sessions):
+    from app import archive_service
+    from app.repositories import live_session_snapshots, live_sessions
+
+    cache, engine, _Session = crossmonth_sessions
+    # Another session is already archived while the cross-month stream stays hot.
+    assert archive_service.archive_live_session("200101", session_ids=(11,)) == 1
+    cache.prewarm()
+
+    def payload():
+        return json.loads(gzip.decompress(cache.store.read("200101", "/gift/live_sessions", 111111)))
+
+    rows = payload()["sessions"]
+    assert {row["title"] for row in rows} == {"archived", "cross-month"}
+    live = next(row for row in rows if row["title"] == "cross-month")
+    assert live["end_time"] is None and live["stats_15m"][0]["normal_danmaku_count"] == 42
+    end = datetime.datetime(2001, 2, 1, 0, 30)
+    live_sessions.close_session_by_id(LiveSession, 12, end)
+    live_session_snapshots.update_end_counts(LiveSession, 12, guard_1=7)
+    cache.last_history_check -= 301
+    cache.cycle()
+    before_archive = payload()
+    ended = next(row for row in before_archive["sessions"] if row["title"] == "cross-month")
+    assert ended["end_time"] == "2001-02-01 00:30:00" and ended["end_guard_1"] == 7
+    previous = cache.store.client.get(cache.store.key("month:200101"))
+    assert archive_service.archive_live_session("200101", session_ids=(12,)) == 1
+    assert cache.store.client.smembers(cache.store.key("dirty-months")) == {b"200101"}
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT COUNT(*) FROM live_session WHERE month='200101'")) == 0
+        assert connection.scalar(text("SELECT COUNT(*) FROM live_session_15m_stats WHERE month='200101'")) == 0
+    cache.last_history_check -= 301
+    cache.cycle()
+    assert payload() == before_archive
+    assert cache.store.client.get(cache.store.key("month:200101")) != previous
+    assert not cache.store.client.smembers(cache.store.key("dirty-months"))
+
+
+def test_real_session_merge_tolerates_legacy_columns_and_deduplicates_hot_corrections(crossmonth_sessions):
+    from conftest import _ORIG_INSPECT
+
+    cache, engine, _Session = crossmonth_sessions
+    # Populate discovery first, then create archives with older column sets.
+    cache.reader.current(discover=True)
+    with engine.begin() as connection:
+        for prefix, identity in (("live_session", "id"), ("live_session_15m_stats", "session_id")):
+            archive = prefix + "_200101"
+            connection.execute(text(f"CREATE TABLE `{archive}` LIKE `{prefix}`"))
+            connection.execute(text(f"INSERT INTO `{archive}` SELECT * FROM `{prefix}` WHERE month='200101'"))
+            connection.execute(text(f"DELETE FROM `{prefix}` WHERE `{identity}`=11"))
+            connection.execute(text(f"UPDATE `{archive}` SET gift=1 WHERE `{identity}`=12"))
+            connection.execute(text(f"ALTER TABLE `{archive}` DROP COLUMN normal_danmaku_count"))
+        archive = "live_session_15m_stats_200101"
+        columns = [column["name"] for column in _ORIG_INSPECT(engine).get_columns(archive)]
+        names = ", ".join(f"`{column}`" for column in columns)
+        expressions = ", ".join("1" if column == "bucket_index" else f"`{column}`" for column in columns)
+        connection.execute(text(
+            f"INSERT INTO `{archive}` ({names}) SELECT {expressions} FROM `{archive}` "
+            "WHERE session_id=12 AND bucket_index=0"
+        ))
+    cache.prewarm()
+    rows = json.loads(gzip.decompress(cache.store.read("200101", "/gift/live_sessions", 111111)))["sessions"]
+    assert len(rows) == 2
+    old = next(row for row in rows if row["title"] == "archived")
+    hot = next(row for row in rows if row["title"] == "cross-month")
+    assert old["normal_danmaku_count"] is None
+    assert old["stats_15m"][0]["normal_danmaku_count"] is None
+    assert hot["gift"] == 9 and hot["normal_danmaku_count"] == 42
+    assert [bucket["bucket_index"] for bucket in hot["stats_15m"]] == [0, 1]
+    assert hot["stats_15m"][0]["gift"] == 9
+    assert hot["stats_15m"][0]["normal_danmaku_count"] == 42
+
+
+@pytest.mark.parametrize("prefix", ["live_session", "live_session_15m_stats"])
+@pytest.mark.parametrize("create_during_read", [False, True])
+def test_real_session_copy_delete_committing_during_read_has_no_gap_or_duplicates(
+    crossmonth_sessions, monkeypatch, prefix, create_during_read
+):
+    cache, engine, _Session = crossmonth_sessions
+    reader = cache.reader
+    archive = prefix + "_200101"
+    if not create_during_read:
+        with engine.begin() as connection:
+            connection.execute(text(f"CREATE TABLE `{archive}` LIKE `{prefix}`"))
+    original = reader.query
+    moved = []
+
+    def query(sql, params=None):
+        rows = original(sql, params)
+        if sql == f"SELECT * FROM `{prefix}` WHERE month=%s" and not moved:
+            with engine.begin() as connection:
+                if create_during_read:
+                    connection.execute(text(f"CREATE TABLE `{archive}` LIKE `{prefix}`"))
+                connection.execute(text(f"INSERT INTO `{archive}` SELECT * FROM `{prefix}` WHERE month='200101'"))
+                connection.execute(text(f"DELETE FROM `{prefix}` WHERE month='200101'"))
+            moved.append(True)
+        return rows
+
+    monkeypatch.setattr(reader, "query", query)
+    rows = reader.history("200101").tables[prefix]
+    identity = "id" if prefix == "live_session" else "session_id"
+    assert len(rows) == 2 and {row[identity] for row in rows} == {11, 12}
+    assert moved == [True]
+    # The next snapshot sees the committed rows on the archive side as well.
+    rows = reader.history("200101").tables[prefix]
+    assert len(rows) == 2 and {row[identity] for row in rows} == {11, 12}
+
+
+def test_real_db2_history_changes_skip_unchanged_months_and_keep_concurrent_write(
+    services, monkeypatch
+):
+    from conftest import _ORIG_INSPECT
+    from app.repositories import super_chat, tables
+
+    store, engine, Session, _start = services
+    monkeypatch.setattr(super_chat, "Session", Session)
+    monkeypatch.setattr(tables, "engine", engine)
+    monkeypatch.setattr(tables, "inspect", _ORIG_INSPECT)
+    monkeypatch.setattr(config, "API_CACHE_ENABLED", True)
+    cache = ApiCache(store)
+    monkeypatch.setattr(api_app.app.state, "api_cache", cache, raising=False)
+    archive = "super_chat_log_200101"
+    with Session.begin() as session:
+        session.add_all([
+            RoomStatsMonthly(room_id=111111, month="200101", gift=0),
+            RoomStatsMonthly(room_id=111111, month="200102", gift=0),
+        ])
+    calls = []
+    original = cache.reader.history
+    concurrent = [False]
+
+    def write(message):
+        super_chat.log_super_chat(
+            SuperChatLog, 111111, "test", 123, 30, message,
+            datetime.datetime(2001, 1, 2),
+        )
+
+    def observed(month):
+        calls.append(month)
+        value = original(month)
+        if concurrent[0]:
+            concurrent[0] = False
+            write("concurrent")
+        return value
+
+    try:
+        cache.prewarm()
+        monkeypatch.setattr(cache.reader, "history", observed)
+        # An elapsed five-minute interval with no changes reads no history.
+        cache.last_history_check -= 301
+        cache.cycle()
+        assert calls == []
+        write("first")
+        assert store.client.smembers(store.key("dirty-months")) == {b"200101"}
+        assert store.client.zscore(store.key("history-changed-at"), "200101")
+        assert store.client.connection_pool.connection_kwargs["db"] == 2
+        concurrent[0] = True
+        cache.last_history_check -= 301
+        cache.cycle()
+        assert calls == ["200101"]
+        assert store.client.smembers(store.key("dirty-months")) == {b"200101"}
+        cache.last_history_check -= 301
+        cache.cycle()
+        assert calls == ["200101", "200101"]
+        assert not store.client.smembers(store.key("dirty-months"))
+        payload = json.loads(gzip.decompress(store.read("200101", "/gift/sc", 111111)))
+        assert {row["message"] for row in payload["list"]} == {"first", "concurrent"}
+        cache.last_history_check -= 301
+        cache.cycle()
+        assert calls == ["200101", "200101"]
+    finally:
+        cache.reader.close()
+        with engine.begin() as connection:
+            connection.execute(text(f"DROP TABLE IF EXISTS `{archive}`"))
+
+
 def test_real_entry_writes_archive_rollback_late_duplicates_and_cached_queries(services, monkeypatch):
     from sqlalchemy import event
     from sqlalchemy.exc import SQLAlchemyError

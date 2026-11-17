@@ -335,3 +335,16 @@ def test_chunked_compressed_response_is_filtered_before_any_body_is_sent(isolate
     )
     assert messages[0]["status"] == 200
     assert json.loads(gzip.decompress(messages[1]["body"])) == [{"room_id": OTHER}]
+
+
+def test_annual_summary_obeys_existing_room_visibility(published):
+    rows = [{"room_id": room, "year": "2020", "gift": 5} for room in (ROOM, OTHER)]
+    published.store.publish_year("2020", {
+        "/gift/by_month": encode(rows), "_empty:/gift/by_month": encode([]),
+    }, published.store.clock())
+    published.policy.set_hidden(ROOM, True)
+    result = published.http.get("/gift/by_month?year=2020")
+    assert result.status_code == 200
+    assert result.json() == [{"room_id": OTHER, "year": "2020", "gift": 5}]
+    published.policy.set_hidden(ROOM, False)
+    assert {row["room_id"] for row in published.http.get("/gift/by_month?year=2020").json()} == {ROOM, OTHER}
