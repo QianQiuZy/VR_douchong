@@ -153,6 +153,8 @@
 | whale_dependency | object | 当月付费集中度及其数据状态，字段结构见下。 |
 | danmaku | object | 当月弹幕统计二级菜单；历史数据无对应字段时各项为 `null`。 |
 
+`whale_dependency` 中的比例以 JSON 数字返回，舍入至最多 4 位小数，例如 `0.0759`。
+
 `whale_dependency` 字段：
 
 | 字段 | 类型 | 说明 |
@@ -201,7 +203,7 @@
 - 历史月份返回 `live_time` 为 `0000-00-00 00:00:00`，`title` 为空，`status` 为 `0`。
 - 历史月份的 `guard_1/guard_2/guard_3/fans_count` 返回 `null`。
 - 返回 `payer_count`，表示该房间该月的去重付费人数。
-- 返回 `whale_dependency`，结构与 `/gift` 相同。当前月及归档状态为脏的历史月优先读取 Redis；已归档历史月从 MySQL 返回，暂无数据时 `status` 为 `unavailable` 且比例字段为 `null`。
+- 返回 `whale_dependency`，结构和比例精度与 `/gift` 相同。当前月及归档状态为脏的历史月优先读取 Redis；已归档历史月从 MySQL 返回，暂无数据时 `status` 为 `unavailable` 且比例字段为 `null`。
 - 返回 `danmaku` 二级菜单，结构与 `/gift` 相同；旧月份无对应字段时各项为 `null`。
 - 不返回 `current_concurrency` 字段。
 
@@ -243,6 +245,7 @@
 | --- | --- | --- | --- |
 | room_id | int | 是 | 房间号，必须为正整数。 |
 | month | string | 否 | 月份，格式 `YYYYMM`，默认当前月。 |
+| stats_15m | string | 否 | 传 `1` 或 `true` 时返回 15 分钟统计。 |
 
 **响应字段**
 
@@ -285,7 +288,7 @@
 | avg_concurrency | float 或 null | 平均同接（若未采样则为 null）。 |
 | max_concurrency | int 或 null | 最大同接（若未采样则为 null）。 |
 | current_concurrency | int 或 null | 进行中直播的即时同接，历史场次为 null。 |
-| stats_15m | array | 以本场开播时间为起点的15分钟统计区间。 |
+| stats_15m | array | 仅在请求 `stats_15m=1` 或 `stats_15m=true` 时返回。区间以本场开播时间为起点，无统计时返回 `[]`。 |
 
 `stats_15m` 元素字段：
 

@@ -16,10 +16,13 @@ from . import config
 from .api_cache_store import ApiSqlScope, CacheUnavailable, api_sql_scope
 from .repositories.tables import month_str, normalize_month_code
 
+LIVE_SESSIONS_PATH = "/gift/live_sessions"
+LIVE_SESSIONS_WITH_STATS_CACHE_PATH = f"{LIVE_SESSIONS_PATH}?stats_15m=1"
+
 GET_PATHS = {
     "/gift",
     "/gift/by_month",
-    "/gift/live_sessions",
+    LIVE_SESSIONS_PATH,
     "/gift/attention",
     "/gift/sc",
     "/gift/entry",
@@ -106,6 +109,10 @@ def parameters(request: Request) -> tuple[str, int | None] | JSONResponse:
     return month, rid
 
 
+def includes_stats_15m(request: Request) -> bool:
+    return request.query_params.get("stats_15m") in ("1", "true")
+
+
 def accepts_gzip(header: str) -> bool:
     quality: dict[str, float] = {}
     for token in header.lower().split(","):
@@ -189,8 +196,13 @@ class CacheMiddleware:
                     if path == "/gift/by_month" and len(period) == 4:
                         body = await anyio.to_thread.run_sync(service.store.read_year, period)
                     else:
+                        cache_path = (
+                            LIVE_SESSIONS_WITH_STATS_CACHE_PATH
+                            if path == LIVE_SESSIONS_PATH and includes_stats_15m(request)
+                            else path
+                        )
                         body = await anyio.to_thread.run_sync(
-                            service.store.read, period, path, rid
+                            service.store.read, period, cache_path, rid
                         )
                     headers = {"Cache-Control": "no-store", "Vary": "Accept-Encoding"}
                     if accepts_gzip(request.headers.get("accept-encoding", "")):

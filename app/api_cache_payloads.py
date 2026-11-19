@@ -7,6 +7,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from . import room_config, runtime_state
+from .api_cache_http import LIVE_SESSIONS_PATH, LIVE_SESSIONS_WITH_STATS_CACHE_PATH
 from .api_cache_source import Snapshot
 from .api_cache_store import encode
 from .repositories.tables import month_str
@@ -341,6 +342,7 @@ class PayloadBuilder:
                     self.sc_bodies[rid] = body
             values[f"/gift/sc:{rid}"] = body
             sessions = []
+            sessions_with_stats = []
             for row in sorted(
                 groups["live_session"].get(rid, []),
                 key=lambda row: (row["start_time"], row["id"]),
@@ -393,25 +395,32 @@ class PayloadBuilder:
                         row.get("blind_box_profit")
                     ),
                     current_concurrency=concurrency,
-                    stats_15m=[
+                )
+                sessions.append(value)
+                sessions_with_stats.append({
+                    **value,
+                    "stats_15m": [
                         api_app._format_15m_stats(bucket)
                         for bucket in sorted(
                             buckets.get(int(row["id"]), []),
                             key=lambda b: b["bucket_index"],
                         )
                     ],
+                })
+            for path, rows in (
+                (LIVE_SESSIONS_PATH, sessions),
+                (LIVE_SESSIONS_WITH_STATS_CACHE_PATH, sessions_with_stats),
+            ):
+                field = f"{path}:{rid}"
+                values[field] = self.body(
+                    field, {"room_id": rid, "month": month, "sessions": rows}, current
                 )
-                sessions.append(value)
-            values[f"/gift/live_sessions:{rid}"] = self.body(
-                f"/gift/live_sessions:{rid}",
-                {"room_id": rid, "month": month, "sessions": sessions},
-                current,
-            )
         values["_empty:/gift/by_month"] = encode(
             summaries(month, snapshot.base, {}, set(), empty=True)
         )
         for path, name in (
-            ("/gift/live_sessions", "sessions"),
+            (LIVE_SESSIONS_PATH, "sessions"),
+            (LIVE_SESSIONS_WITH_STATS_CACHE_PATH, "sessions"),
             ("/gift/attention", "attention"),
             ("/gift/sc", "list"),
         ):

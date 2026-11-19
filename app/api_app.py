@@ -16,9 +16,7 @@ Redis-only reads, and minimal response presentation.
 Temporary deletion/restoration POSTs live here as well; the outer
 ``RoomVisibilityMiddleware`` enforces their Redis publication policy on all GETs.
 
-Route paths, response keys, status codes, and current-versus-history
-branching are preserved verbatim.  ``/gift`` still emits
-``current_concurrency``; ``/gift/by_month`` still omits it.
+``/gift`` emits ``current_concurrency`` and ``/gift/by_month`` omits it.
 
 The routes resolve the mutable, monkey-patchable dependencies
 (``Session``, ``_room_ids_for_month``, ``sc_log_table_exists``,
@@ -55,7 +53,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as OrmSession
 
 from . import config, health_check, room_config, room_visibility, runtime_state
-from .api_cache_http import CacheMiddleware, accepts_gzip, year_parameter
+from .api_cache_http import (
+    LIVE_SESSIONS_PATH,
+    CacheMiddleware,
+    accepts_gzip,
+    includes_stats_15m,
+    year_parameter,
+)
 from .api_cache_store import CacheUnavailable, encode
 from .config import API_SECRET, REPORT_ACQUIRE_TIMEOUT_SECONDS, REPORT_MAX_CONCURRENCY
 from .database import Session as _default_Session
@@ -90,6 +94,7 @@ from .whale_metrics import (
     get_live_whale_metrics,
     get_whale_state,
     whale_dependency_payload,
+    whale_ratio_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -470,10 +475,6 @@ def _format_optional_timestamp(value: datetime.datetime | Column[datetime.dateti
             assert_never(unreachable)
 
 
-def _ratio_value(value: Any) -> float | None:
-    return None if value is None else float(value)
-
-
 def _monthly_danmaku_payload(rsm: Any) -> MonthlyDanmakuPayload:
     def optional_int(name: str) -> int | None:
         value = getattr(rsm, name, None) if rsm is not None else None
@@ -509,10 +510,10 @@ def _whale_dependency_for_room(rsm: Any, room_id: int, month: str) -> WhaleDepen
         return {
             "status": archived_status,
             "source": "mysql",
-            "top1": _ratio_value(getattr(rsm, "whale_top1_ratio", None)),
-            "top5": _ratio_value(getattr(rsm, "whale_top5_ratio", None)),
-            "top10": _ratio_value(getattr(rsm, "whale_top10_ratio", None)),
-            "top1_percent": _ratio_value(getattr(rsm, "whale_top1pct_ratio", None)),
+            "top1": whale_ratio_value(getattr(rsm, "whale_top1_ratio", None)),
+            "top5": whale_ratio_value(getattr(rsm, "whale_top5_ratio", None)),
+            "top10": whale_ratio_value(getattr(rsm, "whale_top10_ratio", None)),
+            "top1_percent": whale_ratio_value(getattr(rsm, "whale_top1pct_ratio", None)),
         }
     metrics = get_live_whale_metrics(room_id, month)
     return whale_dependency_payload(metrics, "live" if metrics is not None else "unavailable", "redis")
@@ -1191,7 +1192,7 @@ def get_stats_by_month(request: Request, _: None = Depends(report_admission)):
         session.close()
 
 
-@app.get("/gift/live_sessions")
+@app.get(LIVE_SESSIONS_PATH)
 def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_admission)):
     """
     指定房间 + 月份的单场直播清单：
@@ -1214,6 +1215,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
     session_factory = _resolved_session_factory()
     session = session_factory()
     is_current = is_current_month(m)
+    include_stats_15m = includes_stats_15m(request)
     metadata = _report_table_metadata(session)
     try:
         out = []
@@ -1268,9 +1270,10 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                         "avg_concurrency": avg_concurrency,
                         "max_concurrency": max_concurrency,
                         "current_concurrency": current_concurrency,
-                        "stats_15m": _session_15m_stats(session, r.id, m, metadata),
                     }
                 )
+                if include_stats_15m:
+                    out[-1]["stats_15m"] = _session_15m_stats(session, r.id, m, metadata)
         else:
             table_name = live_session_table_name(m)
             if metadata.has_table(table_name):
@@ -1329,9 +1332,10 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                             "avg_concurrency": row[24],
                             "max_concurrency": row[25],
                             "current_concurrency": None,
-                            "stats_15m": _session_15m_stats(session, row[0], m, metadata),
                         }
                     )
+                    if include_stats_15m:
+                        out[-1]["stats_15m"] = _session_15m_stats(session, row[0], m, metadata)
             else:
                 rows = (
                     session.query(LiveSession)
@@ -1369,9 +1373,10 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                             "avg_concurrency": r.avg_concurrency,
                             "max_concurrency": r.max_concurrency,
                             "current_concurrency": None,
-                            "stats_15m": _session_15m_stats(session, r.id, m, metadata),
                         }
                     )
+                    if include_stats_15m:
+                        out[-1]["stats_15m"] = _session_15m_stats(session, r.id, m, metadata)
         payload = {"room_id": room_id, "month": m, "sessions": out}
         return JSONResponse(content=jsonable_encoder(payload))
     except SQLAlchemyError as e:

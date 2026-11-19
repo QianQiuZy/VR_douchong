@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import api_app, config, gift, runtime_state, whale_metrics
 from app.api_cache import ApiCache
-from app.api_cache_http import CacheMiddleware
+from app.api_cache_http import LIVE_SESSIONS_WITH_STATS_CACHE_PATH, CacheMiddleware
 from app.api_cache_source import BudgetConnection, SnapshotReader
 from app.api_cache_store import CacheStore, CacheUnavailable
 from app.database import Base
@@ -365,7 +365,8 @@ def test_real_crossmonth_session_stays_cached_before_and_after_late_archive(cros
     cache.prewarm()
 
     def payload():
-        return json.loads(gzip.decompress(cache.store.read("200101", "/gift/live_sessions", 111111)))
+        body = cache.store.read("200101", LIVE_SESSIONS_WITH_STATS_CACHE_PATH, 111111)
+        return json.loads(gzip.decompress(body))
 
     rows = payload()["sessions"]
     assert {row["title"] for row in rows} == {"archived", "cross-month"}
@@ -435,7 +436,8 @@ def test_real_late_danmaku_updates_archived_bucket_without_shadowing_totals(
         assert tuple(stored) == (6, 3, 4, 105, 47)
     cache.last_history_check -= 301
     cache.cycle()
-    payload = json.loads(gzip.decompress(cache.store.read("200101", "/gift/live_sessions", 111111)))
+    body = cache.store.read("200101", LIVE_SESSIONS_WITH_STATS_CACHE_PATH, 111111)
+    payload = json.loads(gzip.decompress(body))
     bucket = next(row for row in payload["sessions"] if row["title"] == "archived")["stats_15m"][0]
     assert (bucket["gift"], bucket["guard"], bucket["danmaku_count"], bucket["normal_danmaku_count"]) == (6, 3, 105, 47)
 
@@ -616,7 +618,8 @@ def test_real_session_merge_tolerates_legacy_columns_and_deduplicates_hot_correc
             "WHERE session_id=12 AND bucket_index=0"
         ))
     cache.prewarm()
-    rows = json.loads(gzip.decompress(cache.store.read("200101", "/gift/live_sessions", 111111)))["sessions"]
+    body = cache.store.read("200101", LIVE_SESSIONS_WITH_STATS_CACHE_PATH, 111111)
+    rows = json.loads(gzip.decompress(body))["sessions"]
     assert len(rows) == 2
     old = next(row for row in rows if row["title"] == "archived")
     hot = next(row for row in rows if row["title"] == "cross-month")

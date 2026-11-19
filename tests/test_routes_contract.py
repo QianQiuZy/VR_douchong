@@ -430,8 +430,9 @@ class TestGiftByMonthRoute:
 
 
 class TestGiftLiveSessionsRoute:
-    def test_current_session_returns_guard_level_danmaku_counts(
-        self, client, gift_module, monkeypatch
+    @pytest.mark.parametrize("month", [None, "200101"])
+    def test_session_returns_guard_level_counts_and_optional_15m_stats(
+        self, client, gift_module, monkeypatch, month
     ):
         from app import api_app
 
@@ -489,7 +490,13 @@ class TestGiftLiveSessionsRoute:
                 return None
 
         monkeypatch.setattr(gift_module, "Session", lambda: _Session())
-        monkeypatch.setattr(api_app, "_session_15m_stats", lambda *_args: [])
+        stats_calls = []
+
+        def session_stats(_session, session_id, *_args):
+            stats_calls.append(session_id)
+            return [{"bucket_index": 0}]
+
+        monkeypatch.setattr(api_app, "_session_15m_stats", session_stats)
         monkeypatch.setattr(
             api_app,
             "inspect",
@@ -499,17 +506,22 @@ class TestGiftLiveSessionsRoute:
             ),
         )
 
-        response = client.get(
-            "/gift/live_sessions",
-            params={"room_id": 111111, "month": gift_module.month_str()},
-        )
-
+        params = {"room_id": 111111, "month": month or gift_module.month_str()}
+        response = client.get("/gift/live_sessions", params=params)
+        assert response.status_code == 200
         session = response.json()["sessions"][0]
         assert session["danmaku_count"] == 10
         assert session["captain_danmaku_count"] == 1
         assert session["admiral_danmaku_count"] == 2
         assert session["governor_danmaku_count"] == 3
         assert session["normal_danmaku_count"] == 4
+        assert "stats_15m" not in session
+        assert stats_calls == []
+
+        response = client.get("/gift/live_sessions", params={**params, "stats_15m": "true"})
+        assert response.status_code == 200
+        assert response.json()["sessions"] == [{**session, "stats_15m": [{"bucket_index": 0}]}]
+        assert stats_calls == [44]
 
     def test_historical_15m_stats_query_uses_concrete_archive_table(
         self, gift_module, monkeypatch

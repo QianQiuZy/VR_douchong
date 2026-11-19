@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from decimal import Decimal
 from types import SimpleNamespace
 
 from sqlalchemy.orm import Session
@@ -163,7 +164,7 @@ def test_redis_month_cache_deduplicates_events_and_keeps_unknown_revenue(monkeyp
 
 def test_current_route_exposes_live_whale_dependency(monkeypatch, gift_module) -> None:
     # Given: a current room whose Redis calculation is available.
-    metrics = whale_metrics.calculate_whale_metrics({7: 7500, 8: 2500}, 10000, 0)
+    metrics = whale_metrics.calculate_whale_metrics({7: 7565, 8: 2435}, 10001, 1)
 
     def fixed_live_whale_metrics(_room_id: int, _month: str) -> WhaleMetrics:
         return metrics
@@ -201,10 +202,10 @@ def test_current_route_exposes_live_whale_dependency(monkeypatch, gift_module) -
     assert response.json()[0]["whale_dependency"] == {
         "status": "live",
         "source": "redis",
-        "top1": 0.75,
-        "top5": 1.0,
-        "top10": 1.0,
-        "top1_percent": 0.75,
+        "top1": 0.7564,
+        "top5": 0.9999,
+        "top10": 0.9999,
+        "top1_percent": 0.7564,
     }
 
 
@@ -212,10 +213,10 @@ def test_historical_route_helper_prefers_archived_mysql_values(monkeypatch) -> N
     # Given: an archived MySQL row and no usable live Redis calculation.
     row = SimpleNamespace(
         whale_status="archived",
-        whale_top1_ratio=0.75,
-        whale_top5_ratio=1.0,
-        whale_top10_ratio=1.0,
-        whale_top1pct_ratio=0.75,
+        whale_top1_ratio=Decimal("0.07588971"),
+        whale_top5_ratio=Decimal("0.18264111"),
+        whale_top10_ratio=Decimal("0.23748688"),
+        whale_top1pct_ratio=None,
     )
     monkeypatch.setattr(api_app, "get_live_whale_metrics", lambda _room_id, _month: None)
     monkeypatch.setattr(api_app, "get_whale_state", lambda _room_id, _month: "archived")
@@ -227,10 +228,10 @@ def test_historical_route_helper_prefers_archived_mysql_values(monkeypatch) -> N
     assert payload == {
         "status": "archived",
         "source": "mysql",
-        "top1": 0.75,
-        "top5": 1.0,
-        "top10": 1.0,
-        "top1_percent": 0.75,
+        "top1": 0.0759,
+        "top5": 0.1826,
+        "top10": 0.2375,
+        "top1_percent": None,
     }
 
 

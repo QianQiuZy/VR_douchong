@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from pymysql.constants import COMMAND
 from starlette.requests import Request
 
-from app import api_app, config, gift, room_config, runtime_state
+from app import api_app, config, gift, room_config, runtime_state, whale_metrics
 from app.api_cache import ApiCache, invalidate_history
 from app.api_cache_http import CacheMiddleware, accepts_gzip, client_ip
 from app.api_cache_payloads import PayloadBuilder, year_summaries
@@ -44,18 +44,8 @@ from app.repositories.tables import month_str
 
 @pytest.fixture(autouse=True)
 def isolate_whale_metrics(monkeypatch):
-    monkeypatch.setattr(
-        api_app,
-        "_whale_dependency_for_room",
-        lambda *_: {
-            "status": "unavailable",
-            "source": "redis",
-            "top1": None,
-            "top5": None,
-            "top10": None,
-            "top1_percent": None,
-        },
-    )
+    monkeypatch.setattr(api_app, "get_live_whale_metrics", lambda *_: None)
+    monkeypatch.setattr(api_app, "get_whale_state", lambda *_: None)
 
 
 @pytest.fixture
@@ -494,6 +484,58 @@ def test_get_cache_never_uses_sql_or_report_gate(store, monkeypatch):
     gate.release()
 
 
+def test_cached_summaries_round_whale_ratios(store, monkeypatch):
+    metrics = whale_metrics.calculate_whale_metrics({7: 7594}, 100000, 92406)
+    monkeypatch.setattr(api_app, "get_live_whale_metrics", lambda *_: metrics)
+    prepare(store)
+
+    with app_client(store, monkeypatch) as client:
+        for path in ("/gift", "/gift/by_month"):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert response.json()[0]["whale_dependency"] == {
+                "status": "live",
+                "source": "redis",
+                "top1": 0.0759,
+                "top5": 0.0759,
+                "top10": 0.0759,
+                "top1_percent": 0.0759,
+            }
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_cached_live_sessions_include_15m_stats_only_when_requested(store, monkeypatch, historical):
+    value = snapshot(store, "190001" if historical else None)
+    rid = room_config.get_room_ids()[0]
+    value.tables["live_session"] = [
+        {"id": 1, "room_id": rid, "start_time": datetime.datetime(1900, 1, 1), "end_time": None},
+    ]
+    value.tables["live_session_15m_stats"] = [
+        {"session_id": 1, "room_id": rid, "bucket_index": 0, "danmaku_count": 42},
+    ]
+    prepare(store, value)
+    params = {"room_id": rid, "month": value.month}
+
+    with app_client(store, monkeypatch) as client:
+        default = client.get("/gift/live_sessions", params=params)
+        assert default.status_code == 200
+        rows = default.json()["sessions"]
+        assert len(rows) == 1 and "stats_15m" not in rows[0]
+
+        for option in ("0", "false", "yes"):
+            response = client.get("/gift/live_sessions", params={**params, "stats_15m": option})
+            assert response.status_code == 200
+            assert response.json() == default.json()
+
+        for option in ("1", "true"):
+            response = client.get("/gift/live_sessions", params={**params, "stats_15m": option})
+            assert response.status_code == 200
+            session = response.json()["sessions"][0]
+            buckets = session.pop("stats_15m")
+            assert session == rows[0]
+            assert len(buckets) == 1 and buckets[0]["danmaku_count"] == 42
+
+
 def test_per_ip_limit_is_shared_across_routes_and_clients(store, monkeypatch):
     prepare(store)
     with (
@@ -655,6 +697,12 @@ def test_unknown_valid_domains_use_templates_without_creating_keys(store, monkey
             }
             response = client.get(path, params={"room_id": "987654321"})
             assert response.json()[field] == []
+        for month in ("180001", month_str()):
+            response = client.get(
+                "/gift/live_sessions", params={"month": month, "room_id": 987654321, "stats_15m": 1}
+            )
+            assert response.status_code == 200
+            assert response.json() == {"room_id": 987654321, "month": month, "sessions": []}
     assert set(store.client.scan_iter(match=store.key("generation:*"))) == before
 
 

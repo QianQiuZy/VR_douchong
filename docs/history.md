@@ -15,6 +15,10 @@
 | HTTP 查询直接回源放大数据库负载 | 默认 GET 仅读 Redis DB2，缺失、超龄或故障返回 503；与 IP 429 限流区分 | `app/api_cache*.py`、[API 文档](./api.md) |
 | 访客进房只需名单 UID 且应排除主播本人 | 老/V2 事件共用名单过滤与有界写入队列；房主未知也跳过；不回补断线或部署前事件 | `app/event_ingestion.py`、`app/repositories/entries.py` |
 
+## 汇总比例精度与场次统计按需返回（2026-11-19，1.0.11）
+
+`GET /gift` 和 `GET /gift/by_month` 的 `whale_dependency` 比例舍入至最多 4 位小数。`GET /gift/live_sessions` 默认省略 `stats_15m`，传入 `stats_15m=1` 或 `stats_15m=true` 时返回。Redis 预生成两种场次响应，升级重启时重新预热。请求参数与字段见 [API 文档](./api.md#5-get-giftlive_sessions)。
+
 ## 切月刷新与旧版重复分桶升级保护（2026-11-17，1.0.10 补充）
 
 补充切月完整补读、历史年度缓存完整性自检、归档后迟到分桶写入和弹幕配置请求超时，版本保持 1.0.10。切月补读只针对刚结束的月份，年度自检只读取 Redis，不恢复每 10 秒读取历史月份。

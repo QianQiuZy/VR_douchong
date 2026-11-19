@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Final, Literal, TypedDict
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -261,6 +262,10 @@ def finish_whale_archive(room_id: int, month: str) -> bool:
     return bool(int(result or 0))
 
 
+def whale_ratio_value(value: Decimal | float | None) -> float | None:
+    return None if value is None else round(float(value), 4)
+
+
 def whale_dependency_payload(
     metrics: WhaleMetrics | None,
     status: str,
@@ -279,8 +284,8 @@ def whale_dependency_payload(
     return {
         "status": status,
         "source": source,
-        "top1": metrics.top1_ratio,
-        "top5": metrics.top5_ratio,
-        "top10": metrics.top10_ratio,
-        "top1_percent": metrics.top1pct_ratio,
+        "top1": whale_ratio_value(metrics.top1_ratio),
+        "top5": whale_ratio_value(metrics.top5_ratio),
+        "top10": whale_ratio_value(metrics.top10_ratio),
+        "top1_percent": whale_ratio_value(metrics.top1pct_ratio),
     }
