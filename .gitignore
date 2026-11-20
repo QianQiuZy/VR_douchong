@@ -216,6 +216,10 @@ __marimo__/
 .vscode/
 .idea/
 
+# Room UID cache
+*.uids.json
+.*.uids.json.*.tmp
+
 # Local environment overrides
 .env.*
 

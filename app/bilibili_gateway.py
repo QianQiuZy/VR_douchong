@@ -12,7 +12,7 @@ from collections.abc import Callable
 import aiohttp
 from aiohttp import ContentTypeError
 
-from . import health_events, runtime_state
+from . import health_events, room_uid_cache, runtime_state
 from .models import RoomInfo
 
 logger = logging.getLogger(__name__)
@@ -157,24 +157,29 @@ async def fetch_room_attention(room_id: int) -> int | None:
 
 
 async def fetch_room_info_and_update(room_id: int, update_uid: bool) -> bool:
-    """Fetch room info and persist attention, optionally refreshing its UID."""
+    """Persist attention after startup connections, and confirm a UID when requested."""
+    refresh_attention = not runtime_state.ROOMS_CONNECTING
+    if not refresh_attention and not update_uid:
+        return False
     data = await _fetch_room_info(room_id)
     if data is None:
         return False
-    try:
-        attention = int(data.get("attention", 0))
-    except (TypeError, ValueError):
-        attention = 0
-    RoomInfo.upsert(room_id, attention=attention)
+    if refresh_attention:
+        try:
+            attention = int(data.get("attention", 0))
+        except (TypeError, ValueError):
+            attention = 0
+        RoomInfo.upsert(room_id, attention=attention)
     if update_uid:
         uid_raw = data.get("uid")
         try:
             uid = int(str(uid_raw))
         except (TypeError, ValueError):
             uid = 0
-        if uid:
+        if uid > 0:
             runtime_state.ROOM_UIDS[room_id] = uid
-            logger.info("[RoomInfo] room_id=%s uid=%s attention=%s", room_id, uid, attention)
+            room_uid_cache.remember(room_id, uid)
+            logger.info("[RoomInfo] room_id=%s uid=%s", room_id, uid)
         else:
             logger.warning("[RoomInfo] room_id=%s uid 获取失败，原始值=%r", room_id, uid_raw)
     else:

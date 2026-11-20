@@ -18,6 +18,7 @@ from . import (
     event_ingestion,
     room_config,
     room_lock_events,
+    room_uid_cache,
     runtime_state,
 )
 from .blivedm.clients.ws_base import InitError
@@ -86,6 +87,22 @@ async def reconnect_one(room_id: int) -> None:
     logger.info("[reconnect] 房间 %s 重连完成", room_id)
 
 
+async def _wait_for_first_connection(room_id: int) -> None:
+    while room_id in room_config.get_room_ids():
+        client = runtime_state.ROOM_CLIENTS.get(room_id)
+        if client is None:
+            return
+        try:
+            await client.wait_connected()
+            logger.info("[connect] 房间鉴权成功 room_id=%s", room_id)
+            return
+        except InitError:
+            logger.warning("[connect] 房间初始化失败，重试 room_id=%s", room_id)
+            await asyncio.sleep(3)
+            if room_id in room_config.get_room_ids() and runtime_state.ROOM_CLIENTS.get(room_id) is client:
+                await start_client(room_id)
+
+
 async def run_clients_loop() -> None:
     while True:
         try:
@@ -102,26 +119,15 @@ async def run_clients_loop() -> None:
             await start_client(room_id)
             await asyncio.sleep(3)
     for room_id in room_ids:
-        if room_id not in live_rooms:
-            continue
-        while room_id in room_config.get_room_ids():
-            client = runtime_state.ROOM_CLIENTS.get(room_id)
-            if client is None:
-                break
-            try:
-                await client.wait_connected()
-                logger.info("[connect] 在播房间鉴权成功 room_id=%s", room_id)
-                break
-            except InitError:
-                logger.warning("[connect] 在播房间初始化失败，重试 room_id=%s", room_id)
-                await asyncio.sleep(3)
-                await start_client(room_id)
-    logger.info("[connect] 在播房间连接完成，开始连接其余房间")
-    for room_id in room_config.get_room_ids():
         if room_id in live_rooms:
-            continue
+            await _wait_for_first_connection(room_id)
+    logger.info("[connect] 在播房间连接完成，开始连接其余房间")
+    other_rooms = [room_id for room_id in room_config.get_room_ids() if room_id not in live_rooms]
+    for room_id in other_rooms:
         await start_client(room_id)
         await asyncio.sleep(3)
+    for room_id in other_rooms:
+        await _wait_for_first_connection(room_id)
 
 
 def init_concurrency_cache(
@@ -178,13 +184,13 @@ def flush_pending_danmaku_for_room(
     logger.debug("[Danmaku] room_id=%s 下播/停用即时落库 +%s", room_id, total)
 
 
-def _read_room_attention(room_id: int) -> int:
+def _read_room_attention(room_id: int) -> int | None:
     session = Session()
     try:
-        return int(session.query(RoomInfo.attention).filter_by(room_id=room_id).scalar() or 0)
+        return session.query(RoomInfo.attention).filter_by(room_id=room_id).scalar()
     except SQLAlchemyError as exc:
         logger.error("[Attention] 读取 room_id=%s 当前粉丝数失败: %s", room_id, exc)
-        return 0
+        return None
     finally:
         session.close()
 
@@ -202,7 +208,11 @@ async def capture_end_snapshot(snapshot: runtime_state.SessionEndSnapshot) -> No
         except Exception as exc:
             logger.error("[EndSnapshot] room_id=%s field=%s 采集失败 error_type=%s", snapshot.room_id, field, type(exc).__name__)
 
-    reads = [capture("attention", bilibili_gateway.fetch_room_attention, snapshot.room_id)]
+    reads = []
+    if runtime_state.ROOMS_CONNECTING:
+        snapshot.attention = _read_room_attention(snapshot.room_id)
+    else:
+        reads.append(capture("attention", bilibili_gateway.fetch_room_attention, snapshot.room_id))
     if uid is not None:
         reads.extend((
             capture("guard_counts", bilibili_gateway.fetch_guard_counts, uid, snapshot.room_id),
@@ -218,7 +228,7 @@ async def attention_worker() -> None:
         room_id, session_id, phase, target_date = await runtime_state.ATTENTION_QUEUE.get()
         try:
             await bilibili_gateway.fetch_room_info_and_update(room_id, update_uid=False)
-            attention = _read_room_attention(room_id)
+            attention = _read_room_attention(room_id) or 0
             if phase == "start" and session_id:
                 LiveSession.update_start_attention(session_id, attention)
             elif phase == "end" and session_id:
@@ -236,7 +246,7 @@ async def daily_attention_worker() -> None:
         room_id, target_date = await runtime_state.DAILY_ATTENTION_QUEUE.get()
         try:
             await bilibili_gateway.fetch_room_info_and_update(room_id, update_uid=False)
-            Attention.upsert_daily(room_id, target_date, _read_room_attention(room_id))
+            Attention.upsert_daily(room_id, target_date, _read_room_attention(room_id) or 0)
         finally:
             runtime_state.DAILY_ATTENTION_QUEUE.task_done()
 
@@ -315,12 +325,12 @@ async def danmaku_flush_scheduler() -> None:
 
 async def refresh_attention_scheduler() -> None:
     while True:
-        await asyncio.sleep(3 * 3600)
-        logger.info("[RoomInfo] 开始 3 小时粉丝数刷新任务")
+        logger.info("[RoomInfo] 开始粉丝数刷新任务")
         for room_id in room_config.get_room_ids():
             await bilibili_gateway.fetch_room_info_and_update(room_id, update_uid=False)
             await asyncio.sleep(0.3)
         logger.info("[RoomInfo] 本轮粉丝数刷新任务完成")
+        await asyncio.sleep(3 * 3600)
 
 
 async def _daily_queue_scheduler(hour: int, minute: int, queue: asyncio.Queue[tuple[int, datetime.date]]) -> None:
@@ -376,6 +386,14 @@ async def concurrency_poll_scheduler() -> None:
         await asyncio.sleep(15)
 
 
+def load_cached_room_uids() -> None:
+    cached_uids = room_uid_cache.load()
+    cached_rooms = [room_id for room_id in room_config.get_room_ids() if room_id in cached_uids]
+    for room_id in cached_rooms:
+        runtime_state.ROOM_UIDS.setdefault(room_id, cached_uids[room_id])
+    logger.info("[RoomUID] 已从本地缓存读取 %s 个房间的 UID", len(cached_rooms))
+
+
 async def init_uids_and_attention_once(max_rounds: int = 5) -> None:
     for _ in range(max_rounds):
         missing = [room_id for room_id in room_config.get_room_ids() if room_id not in runtime_state.ROOM_UIDS]
@@ -387,6 +405,13 @@ async def init_uids_and_attention_once(max_rounds: int = 5) -> None:
 
 
 async def init_uid_and_attention_for_room(room_id: int, max_rounds: int = 3) -> None:
+    if room_id in runtime_state.ROOM_UIDS:
+        return
+    cached_uid = room_uid_cache.load().get(room_id)
+    if cached_uid is not None:
+        runtime_state.ROOM_UIDS[room_id] = cached_uid
+        await bilibili_gateway.fetch_room_info_and_update(room_id, update_uid=False)
+        return
     for _ in range(max_rounds):
         if room_id in runtime_state.ROOM_UIDS:
             return

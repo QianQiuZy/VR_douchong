@@ -230,28 +230,33 @@ async def pool_status_scheduler() -> None:
 
 
 # ------------------ main coroutine ------------------ #
+async def _run_clients_and_attention() -> None:
+    await monitoring_jobs.run_clients_loop()
+    runtime_state.ROOMS_CONNECTING = False
+    await monitoring_jobs.refresh_attention_scheduler()
+
+
 async def main() -> None:
     """Top-level runtime coroutine.
 
-    Assigns ``runtime_state.MAIN_LOOP`` (source of truth for the FastAPI
-    thread bridge) and starts every worker gather.  The gather block is
-    preserved verbatim from the pre-extraction launcher.
+    Assigns ``runtime_state.MAIN_LOOP`` for the FastAPI thread bridge and
+    starts the collector workers.
     """
     runtime_state.MAIN_LOOP = asyncio.get_running_loop()
+    runtime_state.ROOMS_CONNECTING = True
     init_room_info()
     init_session()
-    # 先初始化 UID + 粉丝数，完成后再开启状态轮询
+    monitoring_jobs.load_cached_room_uids()
     await monitoring_jobs.init_uids_and_attention_once()
     await asyncio.to_thread(event_ingestion.entry_monitor.reload)
     entry_worker = asyncio.create_task(event_ingestion.entry_monitor.worker(), name="entry-writer")
 
     try:
         await asyncio.gather(
-            monitoring_jobs.run_clients_loop(),
+            _run_clients_and_attention(),
             monitoring_jobs.monitor_all_rooms_status(),  # 按 UID 批量轮询直播状态
             monthly_reset_scheduler(),
             monitoring_jobs.reconnect_scheduler(),  # 每日 6:00 全量重连
-            monitoring_jobs.refresh_attention_scheduler(),  # 每 3 小时刷新关注数（attention）
             monitoring_jobs.attention_worker(),  # 粉丝数任务 worker（开播/下播+每日快照）
             monitoring_jobs.daily_attention_worker(),
             monitoring_jobs.attention_daily_scheduler(),
@@ -283,6 +288,7 @@ async def main() -> None:
         _flush_active_metrics(_now())
         if runtime_state.aiohttp_session:
             await runtime_state.aiohttp_session.close()
+        runtime_state.ROOMS_CONNECTING = False
 
 
 # ------------------ API server thread ------------------ #

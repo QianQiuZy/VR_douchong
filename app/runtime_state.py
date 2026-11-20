@@ -19,6 +19,7 @@ ROOM_CONFIG_LOCK = threading.Lock()
 ROOM_IDS: list[int] = []
 ROOM_ANCHORS: dict[int, str] = {}
 ROOM_UIDS: dict[int, int] = {}
+ROOMS_CONNECTING = False
 
 aiohttp_session: aiohttp.ClientSession | None = None
 CURRENT_SESSIONS: dict[int, int] = {}

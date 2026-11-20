@@ -15,6 +15,12 @@
 | HTTP 查询直接回源放大数据库负载 | 默认 GET 仅读 Redis DB2，缺失、超龄或故障返回 503；与 IP 429 限流区分 | `app/api_cache*.py`、[API 文档](./api.md) |
 | 访客进房只需名单 UID 且应排除主播本人 | 老/V2 事件共用名单过滤与有界写入队列；房主未知也跳过；不回补断线或部署前事件 | `app/event_ingestion.py`、`app/repositories/entries.py` |
 
+## 房间 UID 缓存与关注数启动顺序（2026-11-20，1.0.12）
+
+采集器在房间配置旁保存房间号到主播 UID 的映射。启动时直接读取已有映射，并向 B 站查询缺失项。全部 UID 确认后按在播优先连接弹幕。
+
+等待所有配置房间首次鉴权期间，关注数沿用 MySQL 记录。全部鉴权成功后开始首轮外部刷新，之后每 3 小时刷新一次。弹幕客户端仍通过 `get_info` 初始化规范房间号和主播 UID。缓存文件位置与启动细节见[运行约定](./runtime.md#启动归档与数据库升级)。
+
 ## 汇总比例精度与场次统计按需返回（2026-11-19，1.0.11）
 
 `GET /gift` 和 `GET /gift/by_month` 的 `whale_dependency` 比例舍入至最多 4 位小数。`GET /gift/live_sessions` 默认省略 `stats_15m`，传入 `stats_15m=1` 或 `stats_15m=true` 时返回。Redis 预生成两种场次响应，升级重启时重新预热。请求参数与字段见 [API 文档](./api.md#5-get-giftlive_sessions)。
