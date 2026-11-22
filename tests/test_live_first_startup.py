@@ -1,3 +1,4 @@
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -5,6 +6,7 @@ import anyio
 import pytest
 
 from app import bilibili_gateway, bootstrap, monitoring_jobs, runtime_state
+from app.blivedm.clients.ws_base import InitError
 
 
 @pytest.mark.parametrize("offline_status", [0, 2])
@@ -112,7 +114,7 @@ def test_startup_waits_for_uid_and_all_auth_replies_before_refreshing_attention(
     cache = tmp_path / "psp_rooms.uids.json"
     cache.write_text('{"10": 100, "20": false, "99": 990}', encoding="utf-8")
     monkeypatch.setattr(runtime_state, "ROOMS_JSON_PATH", str(tmp_path / "psp_rooms.json"))
-    monkeypatch.setattr(runtime_state, "ROOMS_CONNECTING", True)
+    monkeypatch.setattr(runtime_state, "STARTUP_ATTENTION_READY", asyncio.Event())
     monkeypatch.setattr(runtime_state, "ROOM_UIDS", {})
     monkeypatch.setattr(runtime_state, "ROOM_CLIENTS", {})
     monkeypatch.setattr(monitoring_jobs.room_config, "get_room_ids", lambda: [10, 20])
@@ -160,7 +162,6 @@ def test_startup_waits_for_uid_and_all_auth_replies_before_refreshing_attention(
         monkeypatch.setattr(bilibili_gateway.RoomInfo, "upsert", save)
         monkeypatch.setattr(bilibili_gateway, "fetch_guard_counts", AsyncMock(return_value=None))
         monkeypatch.setattr(bilibili_gateway, "fetch_fans_count", AsyncMock(return_value=None))
-        monkeypatch.setattr(monitoring_jobs, "_read_room_attention", lambda _room_id: 123)
         monkeypatch.setattr(monitoring_jobs, "fetch_live_room_ids", status)
         monkeypatch.setattr(monitoring_jobs, "start_client", start)
         monkeypatch.setattr(monitoring_jobs.asyncio, "sleep", sleep)
@@ -172,7 +173,7 @@ def test_startup_waits_for_uid_and_all_auth_replies_before_refreshing_attention(
 
         with anyio.fail_after(2):
             async with anyio.create_task_group() as tasks:
-                tasks.start_soon(bootstrap._run_clients_and_attention)
+                tasks.start_soon(bootstrap._run_clients_and_attention, runtime_state.STARTUP_ATTENTION_READY)
                 await offline_waiting.wait()
                 assert started == [10, 20]
                 assert requested == [20, 20]
@@ -182,7 +183,7 @@ def test_startup_waits_for_uid_and_all_auth_replies_before_refreshing_attention(
                 assert not await bilibili_gateway.fetch_room_info_and_update(10, update_uid=False)
                 snapshot = runtime_state.SessionEndSnapshot(10, 1, monitoring_jobs._now())
                 await monitoring_jobs.capture_end_snapshot(snapshot)
-                assert snapshot.attention == 123
+                assert snapshot.attention is None
                 assert requested == [20, 20]
 
                 offline_authenticated.set()
@@ -198,7 +199,7 @@ def test_startup_waits_for_uid_and_all_auth_replies_before_refreshing_attention(
 def test_first_uid_lookup_creates_cache_and_next_startup_reuses_it(monkeypatch, tmp_path):
     cache = tmp_path / "rooms.uids.json"
     monkeypatch.setattr(runtime_state, "ROOMS_JSON_PATH", str(tmp_path / "rooms.json"))
-    monkeypatch.setattr(runtime_state, "ROOMS_CONNECTING", True)
+    monkeypatch.setattr(runtime_state, "STARTUP_ATTENTION_READY", asyncio.Event())
     monkeypatch.setattr(runtime_state, "ROOM_UIDS", {})
     monkeypatch.setattr(monitoring_jobs.room_config, "get_room_ids", lambda: [10])
     fetch = AsyncMock(side_effect=[{"uid": -1}, {"uid": "100"}])
@@ -214,5 +215,95 @@ def test_first_uid_lookup_creates_cache_and_next_startup_reuses_it(monkeypatch, 
         await monitoring_jobs.init_uids_and_attention_once()
         assert runtime_state.ROOM_UIDS == {10: 100}
         assert fetch.await_count == 2
+
+    anyio.run(scenario)
+
+
+def test_startup_timeout_releases_healthy_rooms_and_keeps_retrying(monkeypatch):
+    async def scenario():
+        ready = asyncio.Event()
+        fail_first_attempt = asyncio.Event()
+        retry_started = asyncio.Event()
+        retry_authenticated = asyncio.Event()
+        started = []
+        requested = []
+        start_snapshots = []
+        daily_snapshots = []
+        attention_queue = asyncio.Queue()
+        daily_queue = asyncio.Queue()
+        today = monitoring_jobs._now().date()
+        for room_id in (10, 20, 30, 40):
+            attention_queue.put_nowait((room_id, room_id, "start", today))
+            daily_queue.put_nowait((room_id, today))
+
+        class Client:
+            def __init__(self, room_id, first_attempt):
+                self.room_id = room_id
+                self.first_attempt = first_attempt
+
+            async def wait_connected(self):
+                if self.room_id == 10 and self.first_attempt:
+                    await fail_first_attempt.wait()
+                    raise InitError("synthetic initialization failure")
+                if self.room_id == 10:
+                    retry_started.set()
+                    await retry_authenticated.wait()
+
+        async def start(room_id):
+            runtime_state.ROOM_CLIENTS[room_id] = Client(room_id, room_id not in started)
+            started.append(room_id)
+
+        async def fetch(room_id):
+            requested.append(room_id)
+            return {10: {"attention": 17}, 20: {"attention": 123}, 30: {"attention": 0}, 40: {}}[room_id]
+
+        async def stagger(_seconds):
+            await anyio.lowlevel.checkpoint()
+
+        async def refresh():
+            for room_id in (10, 20):
+                await bilibili_gateway.fetch_room_info_and_update(room_id, update_uid=False)
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(runtime_state, "ROOMS_AWAITING_FIRST_AUTH", set())
+        monkeypatch.setattr(runtime_state, "STARTUP_ATTENTION_READY", ready)
+        monkeypatch.setattr(runtime_state, "ROOM_UIDS", {rid: rid for rid in (10, 20, 30, 40)})
+        monkeypatch.setattr(runtime_state, "CURRENT_SESSIONS", {rid: rid for rid in (10, 20, 30, 40)})
+        monkeypatch.setattr(runtime_state, "ROOM_CLIENTS", {})
+        monkeypatch.setattr(runtime_state, "ATTENTION_QUEUE", attention_queue)
+        monkeypatch.setattr(runtime_state, "DAILY_ATTENTION_QUEUE", daily_queue)
+        monkeypatch.setattr(monitoring_jobs.room_config, "get_room_ids", lambda: [10, 20, 30, 40])
+        monkeypatch.setattr(monitoring_jobs, "fetch_live_room_ids", AsyncMock(return_value={10, 20}))
+        monkeypatch.setattr(monitoring_jobs, "STARTUP_AUTH_WAIT_SECONDS", 0.05)
+        monkeypatch.setattr(monitoring_jobs, "start_client", start)
+        monkeypatch.setattr(monitoring_jobs.asyncio, "sleep", stagger)
+        monkeypatch.setattr(monitoring_jobs, "refresh_attention_scheduler", refresh)
+        monkeypatch.setattr(bilibili_gateway, "_fetch_room_info", fetch)
+        monkeypatch.setattr(bilibili_gateway.RoomInfo, "upsert", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(monitoring_jobs.LiveSession, "update_start_attention", lambda *args: start_snapshots.append(args))
+        monkeypatch.setattr(monitoring_jobs.Attention, "upsert_daily", lambda *args: daily_snapshots.append(args))
+
+        with anyio.fail_after(2):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(bootstrap._run_clients_and_attention, ready)
+                await anyio.lowlevel.checkpoint()
+                assert not ready.is_set()
+                assert requested == []
+
+                await attention_queue.join()
+                await daily_queue.join()
+                assert started == [10, 20, 30, 40]
+                assert start_snapshots == [(20, 123), (30, 0)]
+                assert daily_snapshots == [(20, today, 123), (30, today, 0)]
+                assert 10 not in requested
+
+                fail_first_attempt.set()
+                await retry_started.wait()
+                assert started == [10, 20, 30, 40, 10]
+                assert await bilibili_gateway.fetch_room_attention(10) is None
+                retry_authenticated.set()
+                await anyio.lowlevel.checkpoint()
+                assert await bilibili_gateway.fetch_room_attention(10) == 17
+                tasks.cancel_scope.cancel()
 
     anyio.run(scenario)

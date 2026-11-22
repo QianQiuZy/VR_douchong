@@ -230,10 +230,13 @@ async def pool_status_scheduler() -> None:
 
 
 # ------------------ main coroutine ------------------ #
-async def _run_clients_and_attention() -> None:
-    await monitoring_jobs.run_clients_loop()
-    runtime_state.ROOMS_CONNECTING = False
-    await monitoring_jobs.refresh_attention_scheduler()
+async def _run_clients_and_attention(ready: asyncio.Event) -> None:
+    async with asyncio.TaskGroup() as tasks:
+        tasks.create_task(monitoring_jobs.run_clients_loop())
+        await ready.wait()
+        tasks.create_task(monitoring_jobs.attention_worker())
+        tasks.create_task(monitoring_jobs.daily_attention_worker())
+        await monitoring_jobs.refresh_attention_scheduler()
 
 
 async def main() -> None:
@@ -243,22 +246,22 @@ async def main() -> None:
     starts the collector workers.
     """
     runtime_state.MAIN_LOOP = asyncio.get_running_loop()
-    runtime_state.ROOMS_CONNECTING = True
+    attention_ready = asyncio.Event()
+    runtime_state.STARTUP_ATTENTION_READY = attention_ready
     init_room_info()
     init_session()
     monitoring_jobs.load_cached_room_uids()
     await monitoring_jobs.init_uids_and_attention_once()
     await asyncio.to_thread(event_ingestion.entry_monitor.reload)
     entry_worker = asyncio.create_task(event_ingestion.entry_monitor.worker(), name="entry-writer")
+    connections = asyncio.create_task(_run_clients_and_attention(attention_ready), name="startup-connections")
 
     try:
         await asyncio.gather(
-            _run_clients_and_attention(),
+            connections,
             monitoring_jobs.monitor_all_rooms_status(),  # 按 UID 批量轮询直播状态
             monthly_reset_scheduler(),
             monitoring_jobs.reconnect_scheduler(),  # 每日 6:00 全量重连
-            monitoring_jobs.attention_worker(),  # 粉丝数任务 worker（开播/下播+每日快照）
-            monitoring_jobs.daily_attention_worker(),
             monitoring_jobs.attention_daily_scheduler(),
             monitoring_jobs.guard_daily_scheduler(),
             monitoring_jobs.fans_daily_scheduler(),
@@ -277,7 +280,8 @@ async def main() -> None:
         # gather does not cancel siblings when one job raises. Stop the writer
         # before the final drain so the same mutable batch cannot be saved twice.
         entry_worker.cancel()
-        await asyncio.gather(entry_worker, return_exceptions=True)
+        connections.cancel()
+        await asyncio.gather(entry_worker, connections, return_exceptions=True)
         await event_ingestion.entry_monitor.flush()
         snapshot_tasks = [snapshot.task for snapshot in runtime_state.SESSION_END_SNAPSHOTS.values()
                           if snapshot.task is not None]
@@ -288,7 +292,7 @@ async def main() -> None:
         _flush_active_metrics(_now())
         if runtime_state.aiohttp_session:
             await runtime_state.aiohttp_session.close()
-        runtime_state.ROOMS_CONNECTING = False
+        runtime_state.STARTUP_ATTENTION_READY = None
 
 
 # ------------------ API server thread ------------------ #

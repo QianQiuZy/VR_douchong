@@ -142,48 +142,59 @@ async def _fetch_room_info(room_id: int) -> dict | None:
     except Exception as exc:
         logger.exception("[RoomInfo] 房间 %s 请求异常: %s", room_id, type(exc).__name__, exc_info=False)
         return None
-    if payload.get("code", 0) != 0:
+    if not isinstance(payload, dict) or payload.get("code", 0) != 0:
         return None
-    return payload.get("data") or {}
+    data = payload.get("data")
+    return data if isinstance(data, dict) else None
+
+
+def _parse_attention(data: dict | None) -> int | None:
+    if data is None:
+        return None
+    try:
+        attention = int(str(data["attention"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return attention if attention >= 0 else None
 
 
 async def fetch_room_attention(room_id: int) -> int | None:
-    """Read attention for an in-memory end snapshot; failure is not a zero."""
-    data = await _fetch_room_info(room_id)
-    try:
-        return int(data["attention"]) if data is not None else None
-    except (KeyError, TypeError, ValueError):
+    """Read a fresh attention value when the room is eligible for HTTP sampling."""
+    if not runtime_state.can_refresh_attention(room_id):
         return None
+    return _parse_attention(await _fetch_room_info(room_id))
+
+
+async def refresh_room_attention(room_id: int) -> int | None:
+    attention = await fetch_room_attention(room_id)
+    if attention is not None:
+        RoomInfo.upsert(room_id, attention=attention)
+    return attention
 
 
 async def fetch_room_info_and_update(room_id: int, update_uid: bool) -> bool:
     """Persist attention after startup connections, and confirm a UID when requested."""
-    refresh_attention = not runtime_state.ROOMS_CONNECTING
-    if not refresh_attention and not update_uid:
-        return False
+    if not update_uid:
+        return await refresh_room_attention(room_id) is not None
+    refresh_attention = runtime_state.can_refresh_attention(room_id)
     data = await _fetch_room_info(room_id)
     if data is None:
         return False
     if refresh_attention:
-        try:
-            attention = int(data.get("attention", 0))
-        except (TypeError, ValueError):
-            attention = 0
-        RoomInfo.upsert(room_id, attention=attention)
-    if update_uid:
-        uid_raw = data.get("uid")
-        try:
-            uid = int(str(uid_raw))
-        except (TypeError, ValueError):
-            uid = 0
-        if uid > 0:
-            runtime_state.ROOM_UIDS[room_id] = uid
-            room_uid_cache.remember(room_id, uid)
-            logger.info("[RoomInfo] room_id=%s uid=%s", room_id, uid)
-        else:
-            logger.warning("[RoomInfo] room_id=%s uid 获取失败，原始值=%r", room_id, uid_raw)
+        attention = _parse_attention(data)
+        if attention is not None:
+            RoomInfo.upsert(room_id, attention=attention)
+    uid_raw = data.get("uid")
+    try:
+        uid = int(str(uid_raw))
+    except (TypeError, ValueError):
+        uid = 0
+    if uid > 0:
+        runtime_state.ROOM_UIDS[room_id] = uid
+        room_uid_cache.remember(room_id, uid)
+        logger.info("[RoomInfo] room_id=%s uid=%s", room_id, uid)
     else:
-        logger.debug("[RoomInfo] room_id=%s 刷新 attention=%s（不更新 uid）", room_id, attention)
+        logger.warning("[RoomInfo] room_id=%s uid 获取失败，原始值=%r", room_id, uid_raw)
     return True
 
 

@@ -160,7 +160,10 @@ class TestSchemaTablesAndColumns:
         }
         assert columns["room_id"]["type"] == Integer.__name__
         assert columns["date"]["type"] == Date.__name__
-        for metric in ("attention", "guard_1", "guard_2", "guard_3", "fans_count"):
+        assert columns["attention"]["type"] == Integer.__name__
+        assert columns["attention"]["default"] is None
+        assert columns["attention"]["nullable"] is True
+        for metric in ("guard_1", "guard_2", "guard_3", "fans_count"):
             assert columns[metric]["type"] == Integer.__name__
             assert columns[metric]["default"] == 0
             assert columns[metric]["nullable"] is False

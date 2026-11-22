@@ -30,7 +30,7 @@ class Attention(Base):
     __tablename__ = "attention"
     room_id = Column(Integer, nullable=False)
     date = Column(Date, nullable=False)
-    attention = Column(Integer, default=0, nullable=False)
+    attention = Column(Integer, nullable=True)
     guard_1 = Column(Integer, default=0, nullable=False)
     guard_2 = Column(Integer, default=0, nullable=False)
     guard_3 = Column(Integer, default=0, nullable=False)

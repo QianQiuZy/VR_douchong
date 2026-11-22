@@ -316,6 +316,50 @@ def test_real_annual_cache_totals_and_history_changes_add_no_http_sql(services, 
         cache.reader.close()
 
 
+def test_daily_attention_keeps_missing_value_and_archives_true_zero(services, monkeypatch):
+    from conftest import _ORIG_INSPECT
+    from app import archive_service, database
+    from app.repositories import info, tables
+
+    _store, engine, session_factory, _start = services
+    for module in (archive_service, database, tables):
+        monkeypatch.setattr(module, "engine", engine)
+        monkeypatch.setattr(module, "inspect", _ORIG_INSPECT)
+    monkeypatch.setattr(info, "Session", session_factory)
+    day = datetime.date(2001, 3, 1)
+    archive = "attention_200103"
+
+    with engine.begin() as connection:
+        connection.execute(text(f"DROP TABLE IF EXISTS `{archive}`"))
+        connection.execute(text("ALTER TABLE attention MODIFY COLUMN attention INT NOT NULL DEFAULT 0"))
+        connection.execute(text(f"CREATE TABLE `{archive}` LIKE attention"))
+        connection.execute(text(
+            f"INSERT INTO `{archive}` (room_id, date, attention, guard_1, guard_2, guard_3, fans_count) "
+            "VALUES (30, :day, 456, 0, 0, 0, 0)"
+        ), {"day": day})
+    try:
+        database.ensure_runtime_schema()
+        for room_id in (10, 20, 30):
+            Attention.upsert_daily_guards(room_id, day, (1, 2, 3))
+        Attention.upsert_daily_fans(10, day, 17)
+        Attention.upsert_daily(20, day, 0)
+        Attention.upsert_daily_fans(20, day, 18)
+        with engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT room_id, attention, fans_count FROM attention WHERE date=:day ORDER BY room_id"
+            ), {"day": day}).all() == [(10, None, 17), (20, 0, 18), (30, None, 0)]
+
+        assert archive_service.archive_attention("200103") == 3
+        with engine.connect() as connection:
+            assert connection.execute(text(
+                f"SELECT room_id, attention, fans_count FROM `{archive}` ORDER BY room_id"
+            )).all() == [(10, None, 17), (20, 0, 18), (30, 456, 0)]
+            assert connection.scalar(text("SELECT COUNT(*) FROM attention WHERE date=:day"), {"day": day}) == 0
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f"DROP TABLE IF EXISTS `{archive}`"))
+
+
 @pytest.fixture
 def crossmonth_sessions(services, monkeypatch):
     from conftest import _ORIG_INSPECT

@@ -23,7 +23,7 @@ import logging
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from .database import Session, engine
+from .database import Session, engine, ensure_nullable_daily_attention
 from .repositories.history import notify_history_change
 from .repositories.tables import (
     ensure_attention_archive_table,
@@ -564,9 +564,9 @@ def archive_attention(target_month: str | None = None) -> int:
             source_columns = {
                 col.get("name") for col in inspect(engine).get_columns("attention")
             }
-            archive_columns = {
-                col.get("name") for col in inspect(engine).get_columns(table_name)
-            }
+            archive_details = inspect(engine).get_columns(table_name)
+            ensure_nullable_daily_attention(table_name, archive_details)
+            archive_columns = {col.get("name") for col in archive_details}
             copy_columns = [
                 name
                 for name in (
@@ -582,7 +582,8 @@ def archive_attention(target_month: str | None = None) -> int:
             ]
             quoted_columns = ", ".join(f"`{name}`" for name in copy_columns)
             update_clause = ", ".join(
-                f"`{name}` = VALUES(`{name}`)"
+                f"`{name}` = COALESCE(VALUES(`{name}`), `{table_name}`.`{name}`)"
+                if name == "attention" else f"`{name}` = VALUES(`{name}`)"
                 for name in copy_columns
                 if name not in ("room_id", "date")
             )

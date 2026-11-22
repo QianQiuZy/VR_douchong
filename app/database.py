@@ -71,8 +71,15 @@ def create_schema() -> None:
     Base.metadata.create_all(engine)
 
 
+def ensure_nullable_daily_attention(table_name: str, columns: list[dict]) -> None:
+    if any(col["name"] == "attention" and col.get("nullable") is False for col in columns):
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE `{table_name}` MODIFY COLUMN `attention` INT NULL DEFAULT NULL"))
+        logger.info("[schema] 允许 %s.attention 保留缺失值", table_name)
+
+
 def ensure_runtime_schema() -> None:
-    """Compatibly add current metrics columns to hot and old archive tables."""
+    """Prepare metrics columns for current and old tables."""
     required_columns = {
         "live_session": {
             "duration_valid": "INT NOT NULL DEFAULT 1",
@@ -142,6 +149,11 @@ def ensure_runtime_schema() -> None:
     except SQLAlchemyError as exc:
         logger.error(f"[schema] 读取表结构失败: {exc}")
         return
+    if "attention" in table_names:
+        try:
+            ensure_nullable_daily_attention("attention", inspector.get_columns("attention"))
+        except SQLAlchemyError as exc:
+            logger.error("[schema] 设置每日关注数列可空失败: %s", exc)
     targets = dict(required_columns)
     for table_name in table_names:
         if table_name.startswith("live_session_") and table_name[len("live_session_"):].isdigit():

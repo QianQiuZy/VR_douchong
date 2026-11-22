@@ -19,7 +19,14 @@ ROOM_CONFIG_LOCK = threading.Lock()
 ROOM_IDS: list[int] = []
 ROOM_ANCHORS: dict[int, str] = {}
 ROOM_UIDS: dict[int, int] = {}
-ROOMS_CONNECTING = False
+STARTUP_ATTENTION_READY: asyncio.Event | None = None
+ROOMS_AWAITING_FIRST_AUTH: set[int] = set()
+
+
+def can_refresh_attention(room_id: int) -> bool:
+    return (STARTUP_ATTENTION_READY is None or STARTUP_ATTENTION_READY.is_set()) and (
+        room_id not in ROOMS_AWAITING_FIRST_AUTH
+    )
 
 aiohttp_session: aiohttp.ClientSession | None = None
 CURRENT_SESSIONS: dict[int, int] = {}
