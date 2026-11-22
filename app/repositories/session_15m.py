@@ -5,12 +5,14 @@ from __future__ import annotations
 import datetime
 import logging
 
-from sqlalchemy import func, inspect, text
+from sqlalchemy import inspect, text
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
 from .. import DanmakuBucketTarget, DanmakuCounts
+from .. import danmaku_metrics, rounded_concurrency
 from ..database import Session
+from .danmaku import increments, upsert_fields
 from .history import notify_history_change
 from .tables import month_str, normalize_month_code
 
@@ -68,7 +70,8 @@ def upsert_stats(
             "admiral_danmaku_count": admiral_danmaku_count,
             "governor_danmaku_count": governor_danmaku_count,
             "normal_danmaku_count": normal_danmaku_count,
-            "avg_concurrency": avg_concurrency,
+            "danmaku_user_count": 0 if danmaku_metrics.covered(start_time) else None,
+            "avg_concurrency": rounded_concurrency(avg_concurrency),
             "max_concurrency": max_concurrency,
             "sample_count": sample_count,
             "payer_count": payer_count,
@@ -76,7 +79,7 @@ def upsert_stats(
         replace = {
             key: value
             for key, value in values.items()
-            if key not in {"session_id", "bucket_index", *DANMAKU_COLUMNS}
+            if key not in {"session_id", "bucket_index", "danmaku_user_count", *DANMAKU_COLUMNS}
         }
         archived = _find_archived_bucket(session, month, session_id, bucket_index)
         if archived is None:
@@ -138,21 +141,18 @@ def _add_to_archived_bucket(session, target: DanmakuBucketTarget, counts: Danmak
     archive, available = archived
     # Legacy archives deliberately lack some subscriber breakdowns. Preserve
     # their missing-column semantics while still updating the known totals.
-    increments = {
-        "danmaku_count": counts.total,
-        "captain_danmaku_count": counts.captain,
-        "admiral_danmaku_count": counts.admiral,
-        "governor_danmaku_count": counts.governor,
-        "normal_danmaku_count": counts.normal,
-    }
-    increments = {name: amount for name, amount in increments.items() if name in available}
-    if "danmaku_count" not in increments:
+    deltas = {name: amount for name, amount in increments(counts).items() if name in available}
+    if "danmaku_count" not in deltas:
         raise SQLAlchemyError("Archived bucket missing danmaku_count")
-    assignments = ", ".join(f"`{name}` = COALESCE(`{name}`, 0) + :{name}" for name in increments)
+    assignments = ", ".join(f"`{name}` = COALESCE(`{name}`, 0) + :{name}" for name in deltas)
+    if counts.audience is not None and "danmaku_user_count" in available:
+        # The total assignment above has already applied this delta.
+        assignments += ", danmaku_user_count = CASE WHEN danmaku_count = :covered_total THEN :senders END"
+        deltas.update(covered_total=counts.audience.total, senders=counts.audience.count)
     session.execute(text(
         f"UPDATE `{archive}` SET {assignments} WHERE session_id = :session_id "
         "AND bucket_index = :bucket_index"
-    ), {**increments, "session_id": target.session_id, "bucket_index": target.bucket_index})
+    ), {**deltas, "session_id": target.session_id, "bucket_index": target.bucket_index})
     return True
 
 
@@ -167,7 +167,9 @@ def add_danmaku_counts(
             session.commit()
             notify_history_change(target.month)
             return True
+        values, updates = upsert_fields(model, counts)
         stmt = insert(model).values(
+            **values,
             session_id=target.session_id,
             room_id=target.room_id,
             month=target.month,
@@ -179,26 +181,11 @@ def add_danmaku_counts(
             super_chat=0.0,
             blind_box_count=0,
             blind_box_profit=0,
-            danmaku_count=counts.total,
-            captain_danmaku_count=counts.captain,
-            admiral_danmaku_count=counts.admiral,
-            governor_danmaku_count=counts.governor,
-            normal_danmaku_count=counts.normal,
             avg_concurrency=None,
             max_concurrency=None,
             sample_count=0,
             payer_count=0,
-        ).on_duplicate_key_update(
-            danmaku_count=func.coalesce(model.danmaku_count, 0) + counts.total,
-            captain_danmaku_count=func.coalesce(model.captain_danmaku_count, 0)
-            + counts.captain,
-            admiral_danmaku_count=func.coalesce(model.admiral_danmaku_count, 0)
-            + counts.admiral,
-            governor_danmaku_count=func.coalesce(model.governor_danmaku_count, 0)
-            + counts.governor,
-            normal_danmaku_count=func.coalesce(model.normal_danmaku_count, 0)
-            + counts.normal,
-        )
+        ).on_duplicate_key_update(updates)
         session.execute(stmt)
         session.commit()
         notify_history_change(target.month)

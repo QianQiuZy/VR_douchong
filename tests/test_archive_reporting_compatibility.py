@@ -26,6 +26,7 @@ def test_archive_scheduler_current_dispatch_order(monkeypatch) -> None:
         "archive_attention",
         "archive_room_entry_log",
         "archive_whale_month",
+        "archive_danmaku_metrics",
         "archive_live_session",
     ]
 

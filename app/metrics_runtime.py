@@ -7,7 +7,7 @@ import logging
 import threading
 from dataclasses import dataclass
 
-from . import DanmakuBucketTarget, DanmakuCounts
+from . import DanmakuBucketTarget, DanmakuCounts, rounded_concurrency
 from .models import LiveSession15mStats
 from .redis_metrics import delete_session_keys
 
@@ -104,7 +104,7 @@ def _flush(bucket: _Bucket, end_time: datetime.datetime) -> None:
     if not bucket.has_data():
         return
     average = (
-        bucket.concurrency_total / bucket.sample_count
+        rounded_concurrency(bucket.concurrency_total / bucket.sample_count)
         if bucket.sample_count
         else None
     )

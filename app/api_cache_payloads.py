@@ -6,7 +6,7 @@ from collections import defaultdict
 from decimal import Decimal
 from types import SimpleNamespace
 
-from . import room_config, runtime_state
+from . import danmaku_metrics, room_config, rounded_concurrency, runtime_state
 from .api_cache_http import LIVE_SESSIONS_PATH, LIVE_SESSIONS_WITH_STATS_CACHE_PATH
 from .api_cache_source import Snapshot
 from .api_cache_store import encode
@@ -98,6 +98,7 @@ def summaries(
             "danmaku": api_app._monthly_danmaku_payload(
                 SimpleNamespace(**row) if row else None
             ),
+            **danmaku_metrics.monthly_report(SimpleNamespace(**row), rid, month, current=current, empty=empty),
             "whale_dependency": (
                 {
                     "status": "unavailable",
@@ -203,6 +204,8 @@ def year_summaries(year: str, base: dict, inputs: dict, *, empty: bool = False) 
             "fans_count": runtime_state.FANS_COUNT.get(rid, 0) if current else None,
             "danmaku": danmaku,
             "whale_dependency": None,
+            "danmaku_user_count": None,
+            "danmaku_dependency": None,
         })
     return out
 
@@ -394,7 +397,10 @@ class PayloadBuilder:
                     blind_box_profit=api_app._profit_display(
                         row.get("blind_box_profit")
                     ),
+                    avg_concurrency=rounded_concurrency(value["avg_concurrency"]),
                     current_concurrency=concurrency,
+                    **danmaku_metrics.report(SimpleNamespace(**row), f"session:{row['id']}",
+                                             live=row["end_time"] is None or row.get("danmaku_status") == "pending"),
                 )
                 sessions.append(value)
                 sessions_with_stats.append({

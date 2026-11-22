@@ -97,6 +97,7 @@ class TestSchemaTablesAndColumns:
         assert all("admiral_danmaku_count" not in sql for sql in archive_changes)
         assert all("governor_danmaku_count" not in sql for sql in archive_changes)
         assert all("normal_danmaku_count" not in sql for sql in archive_changes)
+        assert all("danmaku_user_count" not in sql for sql in archive_changes)
 
     def test_metadata_contains_existing_tables_and_entry_log(self, gift_module):
         assert sorted(gift_module.Base.metadata.tables.keys()) == [
@@ -180,6 +181,12 @@ class TestSchemaTablesAndColumns:
             "guard",
             "super_chat",
             "payer_count",
+            "danmaku_user_count",
+            "danmaku_status",
+            "danmaku_top1_ratio",
+            "danmaku_top5_ratio",
+            "danmaku_top10_ratio",
+            "danmaku_top1pct_ratio",
             "danmaku_count",
             "captain_danmaku_count",
             "admiral_danmaku_count",
@@ -304,6 +311,12 @@ class TestSchemaTablesAndColumns:
             "month",
             "blind_box_count",
             "blind_box_profit",
+            "danmaku_user_count",
+            "danmaku_status",
+            "danmaku_top1_ratio",
+            "danmaku_top5_ratio",
+            "danmaku_top10_ratio",
+            "danmaku_top1pct_ratio",
             "danmaku_count",
             "captain_danmaku_count",
             "admiral_danmaku_count",
@@ -357,7 +370,8 @@ class TestSchemaTablesAndColumns:
         ):
             assert columns[name]["type"] == Integer.__name__
             assert columns[name]["nullable"] is True
-        assert columns["avg_concurrency"]["type"] == Float.__name__
+        assert columns["avg_concurrency"]["type"] == Numeric.__name__
+        assert table.c.avg_concurrency.type.scale == 2
         assert columns["avg_concurrency"]["nullable"] is True
         assert columns["max_concurrency"]["type"] == Integer.__name__
         assert columns["max_concurrency"]["nullable"] is True
@@ -384,6 +398,7 @@ class TestSchemaTablesAndColumns:
             "super_chat",
             "blind_box_count",
             "blind_box_profit",
+            "danmaku_user_count",
             "danmaku_count",
             "captain_danmaku_count",
             "admiral_danmaku_count",
@@ -418,6 +433,7 @@ class TestSchemaTablesAndColumns:
             "normal_danmaku_count",
         ):
             assert columns[name]["nullable"] is True
+        assert table.c.avg_concurrency.type.scale == 2
         assert columns["avg_concurrency"]["nullable"] is True
         assert columns["max_concurrency"]["nullable"] is True
         assert sorted(idx.name for idx in table.indexes) == [

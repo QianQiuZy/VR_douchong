@@ -23,6 +23,7 @@ import logging
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from .danmaku_metrics import COLUMNS
 from .database import Session, engine, ensure_nullable_daily_attention
 from .repositories.history import notify_history_change
 from .repositories.tables import (
@@ -51,6 +52,14 @@ def _archive_columns(table_name: str, candidates: tuple[str, ...]) -> list[str]:
     except SQLAlchemyError:
         return list(candidates)
     return [name for name in candidates if name in available]
+
+
+def _session_archive_projection(columns: list[str], prefix: str = "") -> str:
+    return ", ".join(
+        f"ROUND(CAST({prefix}`avg_concurrency` AS DECIMAL(24,10)), 2)"
+        if name == "avg_concurrency" else f"{prefix}`{name}`"
+        for name in columns
+    )
 
 
 def archive_super_chat_log(target_month: str | None = None) -> int:
@@ -203,7 +212,7 @@ def archive_live_session(
     for month_code in sorted(set(months)):
         table_name = ensure_live_session_archive_table(month_code)
         params: dict[str, str | datetime.datetime | tuple[int, ...]] = {"month": month_code}
-        predicate = "month = :month AND end_time IS NOT NULL"
+        predicate = "month = :month AND end_time IS NOT NULL AND COALESCE(danmaku_status, '') <> 'pending'"
         child_predicate = "stats.month = :month AND parent.month = :month AND parent.end_time IS NOT NULL"
         if end_time_before is not None:
             params["cutoff"] = end_time_before
@@ -216,6 +225,25 @@ def archive_live_session(
         try:
             has_child_table = inspect(engine).has_table("live_session_15m_stats")
             with engine.begin() as conn:
+                columns = _archive_columns(
+                    table_name,
+                    (
+                        "id", "room_id", "start_time", "end_time", "title", "gift", "guard",
+                        "super_chat", "month", "blind_box_count", "blind_box_profit", "danmaku_count",
+                        "captain_danmaku_count", "admiral_danmaku_count",
+                        "governor_danmaku_count", "normal_danmaku_count",
+                        "payer_count", "start_guard_1", "start_guard_2", "start_guard_3",
+                        "start_fans_count", "start_attention", "end_guard_1", "end_guard_2",
+                        "end_guard_3", "end_fans_count", "end_attention", "avg_concurrency",
+                        "max_concurrency", "duration_valid", "duration_ledger", *COLUMNS,
+                    ),
+                )
+                # A pre-upgrade archive cannot carry newly collected metrics.
+                # Keep those rows readable in the hot table without changing archive DDL.
+                for name in COLUMNS:
+                    if name not in columns:
+                        predicate += f" AND `{name}` IS NULL"
+                        child_predicate += f" AND parent.`{name}` IS NULL"
                 parent_ids = conn.execute(
                     text(f"SELECT id FROM `live_session` WHERE {predicate} FOR UPDATE"), params,
                 ).scalars().all()
@@ -238,25 +266,12 @@ def archive_live_session(
                         )
                         continue
                 count = len(parent_ids)
-                columns = _archive_columns(
-                    table_name,
-                    (
-                        "id", "room_id", "start_time", "end_time", "title", "gift", "guard",
-                        "super_chat", "month", "blind_box_count", "blind_box_profit", "danmaku_count",
-                        "captain_danmaku_count", "admiral_danmaku_count",
-                        "governor_danmaku_count", "normal_danmaku_count",
-                        "payer_count", "start_guard_1", "start_guard_2", "start_guard_3",
-                        "start_fans_count", "start_attention", "end_guard_1", "end_guard_2",
-                        "end_guard_3", "end_fans_count", "end_attention", "avg_concurrency",
-                        "max_concurrency", "duration_valid", "duration_ledger",
-                    ),
-                )
                 quoted_columns = ", ".join(f"`{name}`" for name in columns)
                 update_columns = ", ".join(f"`{name}`=VALUES(`{name}`)" for name in columns if name != "id")
                 conn.execute(
                     text(
                         f"INSERT INTO `{table_name}` ({quoted_columns}) "
-                        f"SELECT {quoted_columns} FROM `live_session` "
+                        f"SELECT {_session_archive_projection(columns)} FROM `live_session` "
                         f"WHERE {predicate} ON DUPLICATE KEY UPDATE {update_columns}"
                     ),
                     params,
@@ -286,7 +301,9 @@ def archive_live_session_15m_stats(
     if session_ids is not None and not session_ids:
         return 0
     current_month = month_str()
-    cutoff_filter = " AND parent.end_time < :cutoff" if end_time_before is not None else ""
+    cutoff_filter = " AND COALESCE(parent.danmaku_status, '') <> 'pending'"
+    if end_time_before is not None:
+        cutoff_filter += " AND parent.end_time < :cutoff"
     month_params: dict[str, str | datetime.datetime | tuple[int, ...]] = {"current_month": current_month}
     if end_time_before is not None:
         month_params["cutoff"] = end_time_before
@@ -350,6 +367,18 @@ def archive_live_session_15m_stats(
                     "AND parent.end_time IS NOT NULL"
                     f"{cutoff_filter}"
                 )
+                columns = _archive_columns(
+                    table_name,
+                    (
+                        "session_id", "bucket_index", "room_id", "month", "start_time", "end_time",
+                        "gift", "guard", "super_chat", "blind_box_count", "blind_box_profit",
+                        "danmaku_count", "captain_danmaku_count", "admiral_danmaku_count",
+                        "governor_danmaku_count", "normal_danmaku_count", "avg_concurrency",
+                        "max_concurrency", "sample_count", "payer_count", "danmaku_user_count",
+                    ),
+                )
+                if "danmaku_user_count" not in columns:
+                    predicate += " AND stats.danmaku_user_count IS NULL"
                 count = conn.execute(
                     text(
                         "SELECT COUNT(1) FROM `live_session_15m_stats` AS stats "
@@ -360,16 +389,6 @@ def archive_live_session_15m_stats(
                 ).scalar()
                 if not count:
                     continue
-                columns = _archive_columns(
-                    table_name,
-                    (
-                        "session_id", "bucket_index", "room_id", "month", "start_time", "end_time",
-                        "gift", "guard", "super_chat", "blind_box_count", "blind_box_profit",
-                        "danmaku_count", "captain_danmaku_count", "admiral_danmaku_count",
-                        "governor_danmaku_count", "normal_danmaku_count", "avg_concurrency",
-                        "max_concurrency", "sample_count", "payer_count",
-                    ),
-                )
                 # Older writers could recreate a danmaku-only hot row after
                 # this bucket was archived. A differing hot row could also be
                 # a legitimate full correction; never guess which one it is.
@@ -399,7 +418,7 @@ def archive_live_session_15m_stats(
                     )
                     continue
                 quoted_columns = ", ".join(f"`{name}`" for name in columns)
-                selected_columns = ", ".join(f"stats.`{name}`" for name in columns)
+                selected_columns = _session_archive_projection(columns, "stats.")
                 conn.execute(
                     text(
                         f"INSERT INTO `{table_name}` ({quoted_columns}) "

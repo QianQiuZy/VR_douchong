@@ -955,3 +955,140 @@ def test_real_room_visibility_keeps_mysql_writes_and_complete_snapshots(services
             assert len(client.get("/gift/entry?room_id=111111").json()["items"]) == 2
     finally:
         cache.reader.close()
+
+
+def test_danmaku_senders_from_web_event_to_redis_archive_and_api(services, monkeypatch):
+    from conftest import _ORIG_INSPECT
+    from types import SimpleNamespace
+    from app import archive_service, danmaku_archive, danmaku_metrics as dm, event_ingestion
+    from app import metrics_runtime, monitoring_jobs
+    from app.repositories import live_sessions, live_session_snapshots, monthly, session_15m, tables
+
+    store, engine, factory, _ = services
+    port = int(os.environ["VR_CACHE_TEST_REDIS_PORT"])
+    for name, db in (("users", 3), ("ranks", 4)):
+        monkeypatch.setattr(dm, name, redis.Redis(host="127.0.0.1", port=port, db=db, decode_responses=True))
+    monkeypatch.setattr(dm, "PREFIX", store.key("danmaku"))
+    start = datetime.datetime(2003, 1, 31, 23, 50)
+    monkeypatch.setattr(dm, "_started", datetime.datetime(2002, 1, 1))
+    for module in (danmaku_archive, monthly, live_sessions, live_session_snapshots, session_15m, archive_service):
+        monkeypatch.setattr(module, "Session", factory)
+    for module in (tables, archive_service):
+        monkeypatch.setattr(module, "engine", engine)
+        monkeypatch.setattr(module, "inspect", _ORIG_INSPECT)
+    monkeypatch.setattr(session_15m, "inspect", _ORIG_INSPECT)
+    monkeypatch.setattr(config, "API_CACHE_ENABLED", False)
+    rid = 333333
+    sid = LiveSession.start_session(rid, start, "QA")
+    assert sid
+    monkeypatch.setattr(runtime_state, "DANMAKU_PENDING", {})
+    monkeypatch.setattr(metrics_runtime, "_buckets", {})
+    monkeypatch.setitem(runtime_state.CURRENT_SESSIONS, rid, sid)
+    monkeypatch.setitem(runtime_state.LAST_STATUS, rid, 1)
+    metrics_runtime.start_session(sid, rid, start)
+    handler = event_ingestion.MyHandler()
+    for minute, uid in [(0, 99), (1, 99), (2, 42), (3, "unknown"), (15, 42), (16, 50)]:
+        handler._on_danmaku(SimpleNamespace(room_id=rid), SimpleNamespace(
+            uid=uid, timestamp=int((start + datetime.timedelta(minutes=minute)).timestamp()),
+        ))
+        if minute in (2, 16):
+            monitoring_jobs.flush_pending_danmaku_for_room(rid, sid)
+
+    assert rid not in runtime_state.DANMAKU_PENDING
+    assert dm.users.scard(f"{dm.PREFIX}:users:session:{sid}") == 3
+    assert dm.ranks.zscore(f"{dm.PREFIX}:rank:session:{sid}", "99") == 2
+    assert float(dm.snapshot(f"session:{sid}")["top1"]) == pytest.approx(2 / 6)
+    with factory() as sql:
+        row = sql.get(LiveSession, sid)
+        assert row.danmaku_count == 6 and row.danmaku_user_count == 3
+        assert row.danmaku_top1_ratio is None
+        assert dm.report(row, f"session:{sid}", live=True)["danmaku_dependency"]["top1"] == 0.3333
+        assert [sql.get(RoomStatsMonthly, (rid, m)).danmaku_user_count for m in ("200301", "200302")] == [2, 2]
+        assert [sql.get(LiveSession15mStats, (sid, b)).danmaku_user_count for b in (0, 1)] == [2, 2]
+
+    LiveSession.close_session_by_id(sid, start + datetime.timedelta(minutes=20))
+    LiveSession.update_concurrency_by_id(sid, avg_concurrency=12.34567)
+    danmaku_archive.register_month("200301")
+    danmaku_archive.archive_danmaku_metrics("200301")
+    assert dm.snapshot(f"session:{sid}")["state"] == "archived"
+    assert dm.snapshot(f"month:200301:{rid}")["state"] == "archived"
+    with factory() as sql:
+        month = sql.get(RoomStatsMonthly, (rid, "200301"))
+        assert month.danmaku_status == "archived" and float(month.danmaku_top1_ratio) == 0.5
+        silent = sql.get(RoomStatsMonthly, (222222, "200301"))
+        assert silent.danmaku_user_count == 0 and silent.danmaku_status == "archived"
+        assert silent.danmaku_top1_ratio is None
+        assert sql.get(LiveSession, sid).avg_concurrency == pytest.approx(12.35)
+    try:
+        assert archive_service.archive_live_session("200301") == 1
+        path = f"/gift/live_sessions?room_id={rid}&month=200301"
+        with TestClient(api_app.app) as client:
+            monthly_api = client.get("/gift/by_month?month=200301").json()
+            monthly_room = next(item for item in monthly_api if item["room_id"] == rid)
+            assert monthly_room["danmaku_user_count"] == 2
+            assert monthly_room["danmaku_dependency"]["top1"] == 0.5
+            result = client.get(path + "&stats_15m=1").json()["sessions"][0]
+            assert result["danmaku_user_count"] == 3
+            assert result["danmaku_dependency"]["status"] == "archived"
+            assert result["danmaku_dependency"]["top1"] == 0.3333
+            assert result["avg_concurrency"] == 12.35
+            assert [b["danmaku_user_count"] for b in result["stats_15m"]] == [2, 2]
+            assert "stats_15m" not in client.get(path).json()["sessions"][0]
+        reader = SnapshotReader(store, threading.Event())
+        try:
+            reader.current(discover=True)
+            from app.api_cache_payloads import PayloadBuilder
+            body = PayloadBuilder().build(reader.history("200301"))
+            cached = json.loads(gzip.decompress(body[f"{LIVE_SESSIONS_WITH_STATS_CACHE_PATH}:{rid}"]))
+            assert cached["sessions"] == [result]
+            month_rows = json.loads(gzip.decompress(body["/gift/by_month"]))
+            assert next(item for item in month_rows if item["room_id"] == rid) == monthly_room
+        finally:
+            reader.close()
+    finally:
+        with engine.begin() as conn:
+            for table in ("live_session_200301", "live_session_15m_stats_200301"):
+                conn.execute(text(f"DROP TABLE IF EXISTS `{table}`"))
+
+
+def test_old_archive_without_sender_columns_keeps_new_rows_readable(crossmonth_sessions, monkeypatch):
+    from app import archive_service, danmaku_metrics as dm, database
+    from conftest import _ORIG_INSPECT
+
+    cache, engine, factory = crossmonth_sessions
+    assert archive_service.archive_live_session("200101", session_ids=(11,)) == 1
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE live_session_200101 MODIFY avg_concurrency FLOAT, " + ", ".join(f"DROP COLUMN {name}" for name in dm.COLUMNS)))
+        conn.execute(text("ALTER TABLE live_session_15m_stats_200101 MODIFY avg_concurrency FLOAT, DROP COLUMN danmaku_user_count"))
+        conn.execute(text("UPDATE live_session_200101 SET avg_concurrency=7.3456"))
+        conn.execute(text("UPDATE live_session_15m_stats_200101 SET avg_concurrency=8.7654"))
+        conn.execute(text("ALTER TABLE live_session MODIFY avg_concurrency FLOAT, DROP COLUMN danmaku_status"))
+        conn.execute(text("ALTER TABLE live_session_15m_stats MODIFY avg_concurrency FLOAT, DROP COLUMN danmaku_user_count"))
+    monkeypatch.setattr(database, "engine", engine)
+    monkeypatch.setattr(database, "inspect", _ORIG_INSPECT)
+    database.ensure_runtime_schema()
+    schema = _ORIG_INSPECT(engine)
+    for table in ("live_session", "live_session_15m_stats"):
+        hot = {col["name"]: col for col in schema.get_columns(table)}
+        archive = {col["name"]: col for col in schema.get_columns(table + "_200101")}
+        assert hot["avg_concurrency"]["type"].scale == 2
+        assert type(archive["avg_concurrency"]["type"]).__name__ == "FLOAT"
+        assert "danmaku_user_count" in hot and "danmaku_user_count" not in archive
+    with factory.begin() as sql:
+        row = sql.get(LiveSession, 12)
+        row.end_time = datetime.datetime(2001, 2, 1)
+        row.danmaku_status, row.danmaku_user_count, row.danmaku_top1_ratio = "archived", 4, 0.5
+        sql.get(LiveSession15mStats, (12, 0)).danmaku_user_count = 3
+    assert archive_service.archive_live_session("200101", session_ids=(12,)) == 0
+    cache.prewarm()
+    cached = json.loads(gzip.decompress(cache.store.read("200101", LIVE_SESSIONS_WITH_STATS_CACHE_PATH, 111111)))
+    monkeypatch.setattr(config, "API_CACHE_ENABLED", False)
+    with TestClient(api_app.app) as client:
+        direct = client.get("/gift/live_sessions?room_id=111111&month=200101&stats_15m=1").json()
+    assert direct == cached
+    old, new = direct["sessions"]
+    assert old["danmaku_user_count"] is None and old["danmaku_dependency"]["status"] == "unavailable"
+    assert old["stats_15m"][0]["danmaku_user_count"] is None
+    assert (old["avg_concurrency"], old["stats_15m"][0]["avg_concurrency"]) == (7.35, 8.77)
+    assert new["danmaku_user_count"] == 4 and new["danmaku_dependency"]["top1"] == 0.5
+    assert new["stats_15m"][0]["danmaku_user_count"] == 3

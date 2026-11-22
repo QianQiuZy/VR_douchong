@@ -5,7 +5,7 @@ import logging
 from sqlalchemy import and_, case, update
 from sqlalchemy.exc import SQLAlchemyError
 
-from .. import config, runtime_state
+from .. import config, danmaku_metrics, rounded_concurrency, runtime_state
 from ..database import Session
 from .history import notify_history_change
 from .tables import month_str
@@ -50,6 +50,8 @@ def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) 
             room_id=room_id,
             start_time=start_dt,
             end_time=None,
+            danmaku_user_count=0 if danmaku_metrics.covered(start_dt) else None,
+            danmaku_status="collecting",
             title=title or "",
             month=month_str(start_dt),
             duration_ledger=json.dumps({"days": {}, "segment_days": {}, "segment_start": start_dt.isoformat()}),
@@ -162,11 +164,18 @@ def close_session_by_id(model, session_id: int | None, end_dt: datetime.datetime
         return
     session = Session()
     try:
-        row = session.query(model).filter_by(id=session_id).first()
+        row = session.query(model).filter_by(id=session_id).with_for_update().first()
         if row and row.end_time is None:
             row.end_time = end_dt
+            row.danmaku_status = "pending"
+            pending = runtime_state.DANMAKU_PENDING.get(row.room_id)
+            settlement = None
+            if not pending or session_id not in pending.sessions:
+                settlement = danmaku_metrics.settle(row, f"session:{session_id}", row.start_time)
             changed_month = getattr(row, "month", None)
             session.commit()
+            if settlement:
+                settlement.committed()
             notify_history_change(changed_month)
     except SQLAlchemyError as exc:
         session.rollback()
@@ -189,7 +198,7 @@ def update_concurrency_by_id(
         if not row:
             return
         if avg_concurrency is not None:
-            row.avg_concurrency = float(avg_concurrency)
+            row.avg_concurrency = rounded_concurrency(avg_concurrency)
         if max_concurrency is not None:
             row.max_concurrency = int(max_concurrency)
         changed_month = getattr(row, "month", None)

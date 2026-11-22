@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import BigInteger, Column, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import BigInteger, Column, DateTime, Float, Index, Integer, Numeric, String, Text
 
 from .. import DanmakuBucketTarget, DanmakuCounts
 from ..database import Base
@@ -43,6 +43,12 @@ class LiveSession(Base):
     blind_box_count = Column(Integer, default=0, nullable=False)
     blind_box_profit = Column(Integer, default=0, nullable=False)
     danmaku_count = Column(Integer, default=0, nullable=False)
+    danmaku_user_count = Column(Integer, nullable=True)
+    danmaku_status = Column(String(16), nullable=True)
+    danmaku_top1_ratio = Column(Numeric(12, 8), nullable=True)
+    danmaku_top5_ratio = Column(Numeric(12, 8), nullable=True)
+    danmaku_top10_ratio = Column(Numeric(12, 8), nullable=True)
+    danmaku_top1pct_ratio = Column(Numeric(12, 8), nullable=True)
     captain_danmaku_count = Column(Integer, default=0, nullable=True)
     admiral_danmaku_count = Column(Integer, default=0, nullable=True)
     governor_danmaku_count = Column(Integer, default=0, nullable=True)
@@ -64,7 +70,7 @@ class LiveSession(Base):
     end_guard_3 = Column(Integer, nullable=True)
     end_fans_count = Column(Integer, nullable=True)
     end_attention = Column(Integer, nullable=True)
-    avg_concurrency = Column(Float, nullable=True)
+    avg_concurrency = Column(Numeric(20, 2, asdecimal=False), nullable=True)
     max_concurrency = Column(Integer, nullable=True)
 
     @classmethod
@@ -186,11 +192,12 @@ class LiveSession15mStats(Base):
     blind_box_count = Column(Integer, default=0, nullable=False)
     blind_box_profit = Column(Integer, default=0, nullable=False)
     danmaku_count = Column(Integer, default=0, nullable=False)
+    danmaku_user_count = Column(Integer, nullable=True)
     captain_danmaku_count = Column(Integer, default=0, nullable=True)
     admiral_danmaku_count = Column(Integer, default=0, nullable=True)
     governor_danmaku_count = Column(Integer, default=0, nullable=True)
     normal_danmaku_count = Column(Integer, default=0, nullable=True)
-    avg_concurrency = Column(Float, nullable=True)
+    avg_concurrency = Column(Numeric(20, 2, asdecimal=False), nullable=True)
     max_concurrency = Column(Integer, nullable=True)
     sample_count = Column(Integer, default=0, nullable=False)
     payer_count = Column(Integer, default=0, nullable=False)

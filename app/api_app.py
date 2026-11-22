@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+from types import SimpleNamespace
 import gzip
 import json
 import logging
@@ -52,7 +53,7 @@ from sqlalchemy import Column, and_, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as OrmSession
 
-from . import config, health_check, room_config, room_visibility, runtime_state
+from . import config, danmaku_metrics, health_check, room_config, room_visibility, rounded_concurrency, runtime_state
 from .api_cache_http import (
     LIVE_SESSIONS_PATH,
     CacheMiddleware,
@@ -742,29 +743,20 @@ def _daily_metrics_for_room(
     }
 
 
+_BUCKET_FIELDS = (
+    "bucket_index", "start_time", "end_time", "gift", "guard", "super_chat",
+    "blind_box_count", "blind_box_profit", "danmaku_count", "captain_danmaku_count",
+    "admiral_danmaku_count", "governor_danmaku_count", "normal_danmaku_count",
+    "avg_concurrency", "max_concurrency", "sample_count", "payer_count", "danmaku_user_count",
+)
+
+
+def _archive_projection(fields, available) -> str:
+    return ", ".join(f"`{name}`" if name in available else f"NULL AS {name}" for name in fields)
+
+
 def _format_15m_stats(row: Any) -> dict[str, Any]:
-    if isinstance(row, dict):
-        values = row
-    else:
-        values = {
-            "bucket_index": row[0],
-            "start_time": row[1],
-            "end_time": row[2],
-            "gift": row[3],
-            "guard": row[4],
-            "super_chat": row[5],
-            "blind_box_count": row[6],
-            "blind_box_profit": row[7],
-            "danmaku_count": row[8],
-            "captain_danmaku_count": row[9],
-            "admiral_danmaku_count": row[10],
-            "governor_danmaku_count": row[11],
-            "normal_danmaku_count": row[12],
-            "avg_concurrency": row[13],
-            "max_concurrency": row[14],
-            "sample_count": row[15],
-            "payer_count": row[16],
-        }
+    values = row if isinstance(row, dict) else dict(zip(_BUCKET_FIELDS, row))
     return {
         "bucket_index": int(values.get("bucket_index") or 0),
         "start_time": _format_optional_timestamp(values.get("start_time")),
@@ -779,7 +771,8 @@ def _format_15m_stats(row: Any) -> dict[str, Any]:
         "admiral_danmaku_count": values.get("admiral_danmaku_count"),
         "governor_danmaku_count": values.get("governor_danmaku_count"),
         "normal_danmaku_count": values.get("normal_danmaku_count"),
-        "avg_concurrency": values.get("avg_concurrency"),
+        "danmaku_user_count": values.get("danmaku_user_count"),
+        "avg_concurrency": rounded_concurrency(values.get("avg_concurrency")),
         "max_concurrency": values.get("max_concurrency"),
         "sample_count": int(values.get("sample_count") or 0),
         "payer_count": int(values.get("payer_count") or 0),
@@ -792,82 +785,33 @@ def _session_15m_stats(
     month: str,
     metadata: ReportTableMetadata | None = None,
 ) -> list[dict[str, Any]]:
-    if is_current_month(month):
-        rows = (
-            session.query(LiveSession15mStats)
-            .filter_by(session_id=session_id)
-            .order_by(LiveSession15mStats.bucket_index.asc())
-            .all()
-        )
-        return [_format_15m_stats({
-            "bucket_index": row.bucket_index,
-            "start_time": row.start_time,
-            "end_time": row.end_time,
-            "gift": row.gift,
-            "guard": row.guard,
-            "super_chat": row.super_chat,
-            "blind_box_count": row.blind_box_count,
-            "blind_box_profit": row.blind_box_profit,
-            "danmaku_count": row.danmaku_count,
-            "captain_danmaku_count": row.captain_danmaku_count,
-            "admiral_danmaku_count": row.admiral_danmaku_count,
-            "governor_danmaku_count": row.governor_danmaku_count,
-            "normal_danmaku_count": row.normal_danmaku_count,
-            "avg_concurrency": row.avg_concurrency,
-            "max_concurrency": row.max_concurrency,
-            "sample_count": row.sample_count,
-            "payer_count": row.payer_count,
-        }) for row in rows]
     table_name = live_session_15m_stats_table_name(month)
-    table_exists = metadata.has_table(table_name) if metadata else _resolved_sc_log_table_exists()(table_name)
-    if not table_exists:
+    archived = not is_current_month(month) and (
+        metadata.has_table(table_name) if metadata else _resolved_sc_log_table_exists()(table_name)
+    )
+    if not archived:
         rows = (
             session.query(LiveSession15mStats)
             .filter_by(session_id=session_id)
             .order_by(LiveSession15mStats.bucket_index.asc())
             .all()
         )
-        return [_format_15m_stats({
-            "bucket_index": row.bucket_index,
-            "start_time": row.start_time,
-            "end_time": row.end_time,
-            "gift": row.gift,
-            "guard": row.guard,
-            "super_chat": row.super_chat,
-            "blind_box_count": row.blind_box_count,
-            "blind_box_profit": row.blind_box_profit,
-            "danmaku_count": row.danmaku_count,
-            "captain_danmaku_count": row.captain_danmaku_count,
-            "admiral_danmaku_count": row.admiral_danmaku_count,
-            "governor_danmaku_count": row.governor_danmaku_count,
-            "normal_danmaku_count": row.normal_danmaku_count,
-            "avg_concurrency": row.avg_concurrency,
-            "max_concurrency": row.max_concurrency,
-            "sample_count": row.sample_count,
-            "payer_count": row.payer_count,
-        }) for row in rows]
-    archive_columns = metadata.column_names(table_name) if metadata else frozenset(
-        str(column["name"])
-        for column in inspect(engine).get_columns(table_name)
-    )
-    category_select = ", ".join(
-        f"`{name}`" if name in archive_columns else f"NULL AS {name}"
-        for name in (
-            "captain_danmaku_count",
-            "admiral_danmaku_count",
-            "governor_danmaku_count",
-            "normal_danmaku_count",
-        )
-    )
-    rows = session.execute(
-        text(
-            "SELECT bucket_index, start_time, end_time, gift, guard, super_chat, "
-            f"blind_box_count, blind_box_profit, danmaku_count, {category_select}, avg_concurrency, "
-            f"max_concurrency, sample_count, payer_count FROM `{table_name}` "
-            "WHERE session_id = :session_id ORDER BY bucket_index ASC"
-        ),
-        {"session_id": session_id},
-    ).fetchall()
+        return [
+            _format_15m_stats({field: getattr(row, field, None) for field in _BUCKET_FIELDS})
+            for row in rows
+        ]
+    archive_columns = metadata.column_names(table_name) if metadata else {
+        str(column["name"]) for column in inspect(engine).get_columns(table_name)
+    }
+    archive_fields = _archive_projection(_BUCKET_FIELDS, archive_columns)
+    hot_fields = ", ".join(_BUCKET_FIELDS)
+    rows = session.execute(text(
+        f"SELECT {archive_fields} FROM `{table_name}` a WHERE session_id = :session_id "
+        "AND NOT EXISTS (SELECT 1 FROM live_session_15m_stats h WHERE h.session_id = a.session_id "
+        "AND h.bucket_index = a.bucket_index) UNION ALL "
+        f"SELECT {hot_fields} FROM live_session_15m_stats WHERE session_id = :session_id "
+        "ORDER BY bucket_index ASC"
+    ), {"session_id": session_id}).fetchall()
     return [_format_15m_stats(row) for row in rows]
 
 
@@ -1030,6 +974,7 @@ def get_stats_current_month(_: None = Depends(report_admission)):
                     "guard": gd,
                     "super_chat": sc,
                     "payer_count": payer_count,
+                    **danmaku_metrics.monthly_report(rsm, room_id, m, current=is_current_month(m)),
                     "steel_coin_count": steel_coin_count,
                     "blind_box_count": bb_count,
                     "blind_box_profit": bb_profit,
@@ -1166,6 +1111,7 @@ def get_stats_by_month(request: Request, _: None = Depends(report_admission)):
                     "guard": gd,
                     "super_chat": sc,
                     "payer_count": payer_count,
+                    **danmaku_metrics.monthly_report(rsm, room_id, m, current=is_current_month(m)),
                     "steel_coin_count": steel_coin_count,
                     "blind_box_count": bb_count,
                     "blind_box_profit": bb_profit,
@@ -1248,6 +1194,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                         "guard": r.guard,
                         "super_chat": r.super_chat,
                         "payer_count": getattr(r, "payer_count", 0) or 0,
+                        **danmaku_metrics.report(r, f"session:{r.id}", live=r.end_time is None or getattr(r, "danmaku_status", None) == "pending"),
                         "blind_box_count": r.blind_box_count,
                         "blind_box_profit": _profit_display(r.blind_box_profit),
                         "danmaku_count": r.danmaku_count or 0,
@@ -1267,7 +1214,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                         "end_guard_3": r.end_guard_3,
                         "end_fans_count": r.end_fans_count,
                         "end_attention": r.end_attention,
-                        "avg_concurrency": avg_concurrency,
+                        "avg_concurrency": rounded_concurrency(avg_concurrency),
                         "max_concurrency": max_concurrency,
                         "current_concurrency": current_concurrency,
                     }
@@ -1278,31 +1225,26 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
             table_name = live_session_table_name(m)
             if metadata.has_table(table_name):
                 archive_columns = metadata.column_names(table_name)
-                payer_select = "`payer_count`" if "payer_count" in archive_columns else "0 AS payer_count"
-                category_select = ", ".join(
-                    f"`{name}`" if name in archive_columns else f"NULL AS {name}"
-                    for name in (
-                        "captain_danmaku_count",
-                        "admiral_danmaku_count",
-                        "governor_danmaku_count",
-                        "normal_danmaku_count",
-                    )
+                fields = (
+                    "id", "start_time", "end_time", "title", "gift", "guard", "super_chat",
+                    "blind_box_count", "blind_box_profit", "danmaku_count",
+                    "captain_danmaku_count", "admiral_danmaku_count", "governor_danmaku_count",
+                    "normal_danmaku_count", "start_guard_1", "start_guard_2", "start_guard_3",
+                    "start_fans_count", "start_attention", "end_guard_1", "end_guard_2",
+                    "end_guard_3", "end_fans_count", "end_attention", "avg_concurrency",
+                    "max_concurrency", "payer_count", *danmaku_metrics.COLUMNS,
                 )
-                rows = session.execute(
-                    text(
-                        f"SELECT id, start_time, end_time, title, gift, guard, super_chat, "
-                        f"blind_box_count, blind_box_profit, danmaku_count, {category_select}, "
-                        "start_guard_1, start_guard_2, start_guard_3, start_fans_count, "
-                        "start_attention, end_guard_1, end_guard_2, end_guard_3, end_fans_count, "
-                        "end_attention, "
-                        f"avg_concurrency, max_concurrency, {payer_select} "
-                        f"FROM `{table_name}` "
-                        "WHERE room_id = :room_id AND month = :month "
-                        "ORDER BY start_time ASC"
-                    ),
-                    {"room_id": room_id, "month": m},
-                ).fetchall()
+                archive_fields = _archive_projection(fields, archive_columns)
+                hot_fields = ", ".join(f"`{name}`" for name in fields)
+                rows = session.execute(text(
+                    f"SELECT {archive_fields} FROM `{table_name}` a "
+                    "WHERE room_id = :room_id AND month = :month "
+                    "AND NOT EXISTS (SELECT 1 FROM live_session h WHERE h.id = a.id) UNION ALL "
+                    f"SELECT {hot_fields} FROM live_session WHERE room_id = :room_id AND month = :month "
+                    "ORDER BY start_time ASC"
+                ), {"room_id": room_id, "month": m}).fetchall()
                 for row in rows:
+                    audience_row = SimpleNamespace(danmaku_count=row[9], **dict(zip(danmaku_metrics.COLUMNS, row[27:])))
                     out.append(
                         {
                             "start_time": row[1].strftime("%Y-%m-%d %H:%M:%S"),
@@ -1312,6 +1254,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                             "guard": row[5],
                             "super_chat": row[6],
                             "payer_count": row[26] or 0,
+                            **danmaku_metrics.report(audience_row, f"session:{row[0]}", live=row[2] is None or getattr(audience_row, "danmaku_status", None) == "pending"),
                             "blind_box_count": row[7],
                             "blind_box_profit": _profit_display(row[8]),
                             "danmaku_count": row[9] or 0,
@@ -1329,7 +1272,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                             "end_guard_3": row[21],
                             "end_fans_count": row[22],
                             "end_attention": row[23],
-                            "avg_concurrency": row[24],
+                            "avg_concurrency": rounded_concurrency(row[24]),
                             "max_concurrency": row[25],
                             "current_concurrency": None,
                         }
@@ -1353,6 +1296,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                             "guard": r.guard,
                             "super_chat": r.super_chat,
                             "payer_count": getattr(r, "payer_count", 0) or 0,
+                            **danmaku_metrics.report(r, f"session:{r.id}", live=r.end_time is None or getattr(r, "danmaku_status", None) == "pending"),
                             "blind_box_count": r.blind_box_count,
                             "blind_box_profit": _profit_display(r.blind_box_profit),
                             "danmaku_count": r.danmaku_count or 0,
@@ -1370,7 +1314,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                             "end_guard_3": r.end_guard_3,
                             "end_fans_count": r.end_fans_count,
                             "end_attention": r.end_attention,
-                            "avg_concurrency": r.avg_concurrency,
+                            "avg_concurrency": rounded_concurrency(r.avg_concurrency),
                             "max_concurrency": r.max_concurrency,
                             "current_concurrency": None,
                         }

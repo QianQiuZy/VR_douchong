@@ -137,6 +137,8 @@
 | guard | float | 守护收入累计。 |
 | super_chat | float | SC 收入累计。 |
 | payer_count | int | 当月去重付费人数。 |
+| danmaku_user_count | int 或 null | 房间当月去重发言人数。完整覆盖且无人发言时为 0，旧数据或部分覆盖为 null。 |
+| danmaku_dependency | object | 房间当月弹幕前排占比，字段与精度见下。 |
 | steel_coin_count | int | 当月房间钢镚计数。 |
 | blind_box_count | int | 盲盒数量累计。 |
 | blind_box_profit | float | 盲盒盈亏累计（正负均可能，最小单位 0.1）。 |
@@ -165,6 +167,8 @@
 | top5 | float 或 null | 付费金额最高的 5 名用户合计占总收入的比例，范围为 `0` 到 `1`；无可用数据或总收入为 0 时为 `null`。 |
 | top10 | float 或 null | 付费金额最高的 10 名用户合计占总收入的比例，范围为 `0` 到 `1`；无可用数据或总收入为 0 时为 `null`。 |
 | top1_percent | float 或 null | 付费金额最高的前 1% 用户合计占总收入的比例，范围为 `0` 到 `1`；无可用数据或总收入为 0 时为 `null`。 |
+
+`danmaku_dependency` 与 `whale_dependency` 都返回 `status`、`source`、`top1`、`top5`、`top10`、`top1_percent`。弹幕按有效 UID 发言条数排序，分母为该范围内全部已采集弹幕，包含无有效 UID 的条数。前 1% 按有效发言人数向上取整。比例返回 JSON 数字，最多四位小数，分母为零时返回 `null`。当前统计从 Redis 取值，结算后从 MySQL 取值。中途启用时返回 `partial`，比例仅覆盖已采集部分。历史记录缺字段时返回 `unavailable` 和四个 `null`。
 
 `danmaku` 字段：
 
@@ -202,6 +206,7 @@
 
 - 历史月份返回 `live_time` 为 `0000-00-00 00:00:00`，`title` 为空，`status` 为 `0`。
 - 历史月份的 `guard_1/guard_2/guard_3/fans_count` 返回 `null`。
+- 月度返回顶层 `danmaku_user_count` 和 `danmaku_dependency`，字段与 `/gift` 相同。
 - 返回 `payer_count`，表示该房间该月的去重付费人数。
 - 返回 `whale_dependency`，结构和比例精度与 `/gift` 相同。当前月及归档状态为脏的历史月优先读取 Redis；已归档历史月从 MySQL 返回，暂无数据时 `status` 为 `unavailable` 且比例字段为 `null`。
 - 返回 `danmaku` 二级菜单，结构与 `/gift` 相同；旧月份无对应字段时各项为 `null`。
@@ -218,7 +223,7 @@
 | `attention` / `anchor_name` | 最新基础资料。 |
 | `status` / `live_time` / `title` | 当年使用当前状态；历史年份分别为 `0`、`0000-00-00 00:00:00`、空字符串。 |
 | `guard_1` / `guard_2` / `guard_3` / `fans_count` | 当年使用当前快照，历史年份为 `null`，不跨月累加。 |
-| `payer_count` / `steel_coin_count` / `whale_dependency` | 固定为 `null`。 |
+| `payer_count` / `steel_coin_count` / `whale_dependency` / `danmaku_user_count` / `danmaku_dependency` | 固定为 `null`。 |
 | `danmaku` | 各分类按月累加；该房间有统计活动的月份中，任一月份对应分项缺失时该分项为 `null`；没有统计活动也返回 `null`。 |
 
 不额外返回 `total` 或时薪，客户端可用年度收入合计除以年度时长计算时薪。年份非法、晚于当前年、重复传入 `year`，或同时传入 `month` / `year` 时返回 `400`，不回退当前月。
@@ -268,6 +273,8 @@
 | guard | float | 单场守护收入。 |
 | super_chat | float | 单场 SC 收入。 |
 | payer_count | int | 单场去重付费人数。 |
+| danmaku_user_count | int 或 null | 整场去重发言人数，跨区间的同一 UID 计一次。 |
+| danmaku_dependency | object | 整场发言条数的前排占比，结构与月度相同。 |
 | blind_box_count | int | 单场盲盒数量。 |
 | blind_box_profit | float | 单场盲盒盈亏（正负均可能，最小单位 0.1）。 |
 | danmaku_count | int | 弹幕数量。 |
@@ -285,7 +292,7 @@
 | end_guard_3 | int 或 null | 下播时总督数量。 |
 | end_fans_count | int 或 null | 下播时粉丝团数量。 |
 | end_attention | int 或 null | 下播时粉丝数（attention）。 |
-| avg_concurrency | float 或 null | 平均同接（若未采样则为 null）。 |
+| avg_concurrency | float 或 null | 平均同接，四舍五入至两位小数，未采样为 null。 |
 | max_concurrency | int 或 null | 最大同接（若未采样则为 null）。 |
 | current_concurrency | int 或 null | 进行中直播的即时同接，历史场次为 null。 |
 | stats_15m | array | 仅在请求 `stats_15m=1` 或 `stats_15m=true` 时返回。区间以本场开播时间为起点，无统计时返回 `[]`。 |
@@ -307,10 +314,11 @@
 | admiral_danmaku_count | int 或 null | 区间提督弹幕数量；旧记录无字段时为 `null`。 |
 | governor_danmaku_count | int 或 null | 区间总督弹幕数量；旧记录无字段时为 `null`。 |
 | normal_danmaku_count | int 或 null | 区间正常用户弹幕数量；旧记录无字段时为 `null`。 |
-| avg_concurrency | float 或 null | 区间平均同接。 |
+| avg_concurrency | float 或 null | 区间平均同接，四舍五入至两位小数。 |
 | max_concurrency | int 或 null | 区间最高同接。 |
 | sample_count | int | 区间同接采样次数。 |
 | payer_count | int | 区间去重付费人数。 |
+| danmaku_user_count | int 或 null | 本场该 15 分钟区间内的去重发言人数；旧记录缺列时为 null。 |
 
 **错误响应**
 
@@ -535,7 +543,7 @@ curl -sS https://vup.qianqiuzy.cn/health/check
 | `sample_duration_ms` | 一轮采样耗时；依赖失败时采样间隔会加上探测耗时 |
 | `dependencies.database` | 独立短连接执行只读 `SELECT 1`，返回状态、耗时和脱敏异常类型；与业务数据库连接池是否耗尽分开判断 |
 | `dependencies.database_pool` | 业务 SQLAlchemy 连接池的 `size`、`checked_in`、`checked_out`、`overflow`、`max_overflow`、`capacity`、取连接超时和回收周期；满载为 `exhausted` |
-| `dependencies.redis` | `metrics`（配置的 Redis DB）、`whale_db1`、`api_db2` 三类用途分别执行 PING，返回状态、耗时和异常类型；不读写业务键，不证明历史数据完整性 |
+| `dependencies.redis` | `metrics`（配置的 Redis DB）、`whale_db1`、`api_db2`、`danmaku_users_db3`、`danmaku_rank_db4` 五类用途分别执行 PING，返回状态、耗时和异常类型；不读写业务键，不证明历史数据完整性 |
 | `collector.loop_responsive` | 采集事件循环能否在两秒内返回状态快照；未启动、已停止或无响应均不健康 |
 | `collector.http_pool` | 共享 aiohttp 连接池的状态、`limit`（0 为不设总上限）、`limit_per_host`、`acquired`、`waiting`、`idle` |
 | `collector.rooms` | `configured`、`connected`、`not_connected` 及逐房间 `items`；状态包括 `not_started`、`connecting`、`authenticating`、`connected`、`stopped`，仅当前 WebSocket 打开且鉴权成功才计为 connected |

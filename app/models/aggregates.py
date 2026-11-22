@@ -16,6 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Session
 
 from .. import DanmakuCounts
+from ..danmaku_metrics import initial_monthly_count
 from ..database import Base
 from ..repositories.live_stats import (
     add_daily_metrics,
@@ -43,6 +44,12 @@ class RoomStatsMonthly(Base):
     super_chat = Column(Float, default=0.0, nullable=False)
     payer_count = Column(Integer, default=0, nullable=False)
     danmaku_count = Column(Integer, default=0, nullable=True)
+    danmaku_user_count = Column(Integer, default=initial_monthly_count, nullable=True)
+    danmaku_status = Column(String(16), nullable=True)
+    danmaku_top1_ratio = Column(Numeric(12, 8), nullable=True)
+    danmaku_top5_ratio = Column(Numeric(12, 8), nullable=True)
+    danmaku_top10_ratio = Column(Numeric(12, 8), nullable=True)
+    danmaku_top1pct_ratio = Column(Numeric(12, 8), nullable=True)
     captain_danmaku_count = Column(Integer, default=0, nullable=True)
     admiral_danmaku_count = Column(Integer, default=0, nullable=True)
     governor_danmaku_count = Column(Integer, default=0, nullable=True)

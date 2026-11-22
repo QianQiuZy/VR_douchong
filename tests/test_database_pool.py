@@ -177,6 +177,7 @@ def test_monthly_archive_failure_does_not_skip_following_jobs(monkeypatch) -> No
         "archive_attention",
         "archive_room_entry_log",
         "archive_whale_month",
+        "archive_danmaku_metrics",
         "archive_live_session",
     ]
 

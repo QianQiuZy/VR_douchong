@@ -28,6 +28,8 @@ import threading
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import api_app, archive_service, event_ingestion, monitoring_jobs, runtime_state
+from . import danmaku_metrics
+from .danmaku_archive import archive_danmaku_metrics
 from .config import APP_HOST, APP_PORT
 from .database import create_schema, ensure_runtime_schema, log_pool_status
 from .logging_setup import configure_logging
@@ -71,6 +73,7 @@ async def _archive_month(target_month: str | None = None) -> None:
         archive_service.archive_attention,
         archive_service.archive_room_entry_log,
         archive_whale_month,
+        archive_danmaku_metrics,
     ):
         try:
             await asyncio.to_thread(archive_job, target_month)
@@ -125,6 +128,13 @@ async def _archive_closed_sessions(target_month: str | None = None) -> None:
         await asyncio.to_thread(archive_service.archive_live_session, target_month, end_time_before=cutoff, session_ids=session_ids)
     except Exception as exc:
         logger.exception("[archive] 场次补归档失败 error_type=%s", type(exc).__name__, exc_info=False)
+
+
+async def _retry_danmaku_settlement() -> None:
+    try:
+        await asyncio.to_thread(archive_danmaku_metrics, None)
+    except Exception as exc:
+        logger.warning("[archive] 弹幕结算待重试 error_type=%s", type(exc).__name__)
 
 
 async def monthly_reset_scheduler() -> None:
@@ -185,6 +195,7 @@ async def monthly_reset_scheduler() -> None:
         await _sleep_until(wake_at)
         if _now() < target:
             await asyncio.to_thread(archive_service.archive_room_entry_log)
+            await _retry_danmaku_settlement()
             await _archive_closed_sessions()
             continue
         previous_month = _month_str_now_at(target - datetime.timedelta(days=1))
@@ -218,8 +229,9 @@ def init_session() -> None:
 
 
 def _flush_active_metrics(end_time: datetime.datetime) -> None:
+    for room_id in runtime_state.DANMAKU_PENDING.keys() | runtime_state.CURRENT_SESSIONS.keys():
+        monitoring_jobs.flush_pending_danmaku_for_room(room_id, runtime_state.CURRENT_SESSIONS.get(room_id), end_time)
     for room_id, session_id in tuple(runtime_state.CURRENT_SESSIONS.items()):
-        monitoring_jobs.flush_pending_danmaku_for_room(room_id, session_id, end_time)
         flush_session(session_id, end_time)
 
 
@@ -248,6 +260,7 @@ async def main() -> None:
     runtime_state.MAIN_LOOP = asyncio.get_running_loop()
     attention_ready = asyncio.Event()
     runtime_state.STARTUP_ATTENTION_READY = attention_ready
+    danmaku_metrics.start_tracking()
     init_room_info()
     init_session()
     monitoring_jobs.load_cached_room_uids()

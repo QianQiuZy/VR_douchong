@@ -8,11 +8,16 @@ import datetime
 import json
 import logging
 import random
+from dataclasses import replace
 
 import aiohttp
+import redis
 from pydantic import ValidationError
 
 from . import (
+    DanmakuCounts,
+    danmaku_metrics,
+    rounded_concurrency,
     bilibili_gateway,
     event_ingestion,
     room_config,
@@ -173,7 +178,8 @@ def finalize_concurrency_cache(room_id: int, session_id: int | None) -> tuple[fl
     if not cache or session_id is None or cache.get("session_id") != session_id:
         return None, None
     samples = int(cache.get("samples", 0))
-    return ((int(cache.get("total", 0)) / samples) if samples else None, int(cache.get("max", 0)) if samples else None)
+    return (rounded_concurrency(int(cache.get("total", 0)) / samples) if samples else None,
+            int(cache.get("max", 0)) if samples else None)
 
 
 def flush_pending_danmaku_for_room(
@@ -185,17 +191,34 @@ def flush_pending_danmaku_for_room(
     if pending is None:
         return
     total = sum(counts.total for counts in pending.sessions.values())
-    for month, counts in tuple(sorted(pending.monthly.items())):
-        if RoomStatsMonthly.add_danmaku_counts(room_id, month, counts):
-            pending.monthly.pop(month, None)
-    for pending_session_id, counts in tuple(sorted(pending.sessions.items())):
-        if LiveSession.add_danmaku_by_id(pending_session_id, counts):
-            pending.sessions.pop(pending_session_id, None)
-    for target, counts in tuple(
-        sorted(pending.buckets.items(), key=lambda item: item[0].start_time)
-    ):
-        if LiveSession15mStats.add_danmaku_counts(target, counts):
-            pending.buckets.pop(target, None)
+
+    def persist(items, key, scope, writer):
+        try:
+            counts = danmaku_metrics.prepare(pending, key, scope, items[key])
+        except redis.RedisError as exc:
+            logger.warning("[Danmaku] 保留待重试批次 scope=%s error=%s", scope.key, type(exc).__name__)
+            original = items[key]
+            if original.total and writer(key, replace(original, audience=danmaku_metrics.Audience(None, None))):
+                # The legacy totals are durable. Retry only the sender snapshot.
+                items[key] = DanmakuCounts()
+            return
+        if writer(key, counts):
+            del items[key]
+            pending.results.pop(key, None)
+
+    for month in tuple(sorted(pending.monthly)):
+        scope = danmaku_metrics.Scope(f"month:{month}:{room_id}", danmaku_metrics.month_start(month))
+        persist(pending.monthly, month, scope, lambda key, counts: RoomStatsMonthly.add_danmaku_counts(room_id, key, counts))
+    for pending_id in tuple(sorted(pending.sessions)):
+        # The original bucket retains the parent start even after the session closes.
+        start = pending.session_starts.get(pending_id, datetime.datetime.min)
+        persist(pending.sessions, pending_id, danmaku_metrics.Scope(f"session:{pending_id}", start),
+                LiveSession.add_danmaku_by_id)
+        if pending_id not in pending.sessions:
+            pending.session_starts.pop(pending_id, None)
+    for target in tuple(pending.buckets):
+        scope = danmaku_metrics.Scope(f"bucket:{target.session_id}:{target.bucket_index}", target.start_time, ranked=False)
+        persist(pending.buckets, target, scope, LiveSession15mStats.add_danmaku_counts)
     if pending.is_empty():
         runtime_state.DANMAKU_PENDING.pop(room_id, None)
     logger.debug("[Danmaku] room_id=%s 下播/停用即时落库 +%s", room_id, total)

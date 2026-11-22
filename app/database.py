@@ -4,7 +4,7 @@ import logging
 
 import pymysql
 from pymysql.constants import COMMAND
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import Float, create_engine, event, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import QueuePool
@@ -84,6 +84,7 @@ def ensure_runtime_schema() -> None:
         "live_session": {
             "duration_valid": "INT NOT NULL DEFAULT 1",
             "duration_ledger": "TEXT NULL",
+            "avg_concurrency": "DECIMAL(20,2) NULL",
             "start_attention": "INT NULL",
             "end_attention": "INT NULL",
             "payer_count": "INT NOT NULL DEFAULT 0",
@@ -107,7 +108,7 @@ def ensure_runtime_schema() -> None:
             "admiral_danmaku_count": "INT NULL DEFAULT NULL",
             "governor_danmaku_count": "INT NULL DEFAULT NULL",
             "normal_danmaku_count": "INT NULL DEFAULT NULL",
-            "avg_concurrency": "FLOAT NULL",
+            "avg_concurrency": "DECIMAL(20,2) NULL",
             "max_concurrency": "INT NULL",
             "sample_count": "INT NOT NULL DEFAULT 0",
             "payer_count": "INT NOT NULL DEFAULT 0",
@@ -143,6 +144,13 @@ def ensure_runtime_schema() -> None:
             "steel_coin_count": "INT NOT NULL DEFAULT 0",
         },
     }
+    from .danmaku_metrics import RATIOS
+
+    for table in ("live_session", "room_stats_monthly"):
+        required_columns[table].update({name: "DECIMAL(12,8) NULL" for name in RATIOS.values()})
+        required_columns[table]["danmaku_status"] = "VARCHAR(16) NULL"
+    for table in ("live_session", "live_session_15m_stats", "room_stats_monthly"):
+        required_columns[table]["danmaku_user_count"] = "INT NULL"
     try:
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
@@ -168,6 +176,8 @@ def ensure_runtime_schema() -> None:
                     name: ddl
                     for name, ddl in required_columns["live_session_15m_stats"].items()
                     if name not in {
+                        "avg_concurrency",
+                        "danmaku_user_count",
                         "captain_danmaku_count",
                         "admiral_danmaku_count",
                         "governor_danmaku_count",
@@ -181,7 +191,14 @@ def ensure_runtime_schema() -> None:
         if table_name not in table_names:
             continue
         try:
-            existing_cols = {col.get("name") for col in inspector.get_columns(table_name)}
+            definitions = inspector.get_columns(table_name)
+            existing_cols = {col.get("name") for col in definitions}
+            if table_name in ("live_session", "live_session_15m_stats") and any(
+                col.get("name") == "avg_concurrency" and isinstance(col.get("type"), Float)
+                for col in definitions
+            ):
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE `{table_name}` MODIFY COLUMN avg_concurrency DECIMAL(20,2) NULL"))
         except SQLAlchemyError as exc:
             logger.error(f"[schema] 读取 {table_name} 列失败: {exc}")
             continue

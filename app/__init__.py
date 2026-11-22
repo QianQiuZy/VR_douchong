@@ -2,6 +2,21 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_HALF_UP
+from collections import Counter
+from uuid import uuid4
+
+
+@dataclass(frozen=True, slots=True)
+class Audience:
+    count: int | None
+    total: int | None
+
+
+@dataclass(slots=True)
+class SenderBatch:
+    counts: Counter[int] = field(default_factory=Counter)
+    token: str = field(default_factory=lambda: uuid4().hex)
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,6 +26,7 @@ class DanmakuCounts:
     admiral: int = 0
     governor: int = 0
     normal: int = 0
+    audience: Audience | None = None
 
     @classmethod
     def from_privilege_type(cls, privilege_type: int) -> DanmakuCounts:
@@ -49,19 +65,38 @@ class PendingDanmaku:
     sessions: dict[int, DanmakuCounts] = field(default_factory=dict)
     buckets: dict[DanmakuBucketTarget, DanmakuCounts] = field(default_factory=dict)
 
+    # After a Redis timeout the frozen batch keeps its token. New arrivals
+    # accumulate separately, including when the following MySQL write fails.
+    session_starts: dict[int, datetime.datetime] = field(default_factory=dict)
+    senders: dict[object, SenderBatch] = field(default_factory=dict)
+    retry: dict[object, SenderBatch] = field(default_factory=dict)
+    results: dict[object, Audience] = field(default_factory=dict)
+
     def add(
         self,
         event_time: datetime.datetime,
         counts: DanmakuCounts,
         target: DanmakuBucketTarget | None,
+        uid: int = 0,
     ) -> None:
         month = event_time.strftime("%Y%m")
         self.monthly[month] = self.monthly.get(month, DanmakuCounts()) + counts
         if target is not None:
+            self.session_starts[target.session_id] = target.start_time - target.bucket_index * (target.end_time - target.start_time)
             self.sessions[target.session_id] = (
                 self.sessions.get(target.session_id, DanmakuCounts()) + counts
             )
             self.buckets[target] = self.buckets.get(target, DanmakuCounts()) + counts
 
+        keys = (month, target.session_id, target) if target is not None else (month,)
+        for key in keys:
+            if key not in self.senders:
+                self.senders[key] = SenderBatch()
+            self.senders[key].counts[uid] += counts.total
+
     def is_empty(self) -> bool:
         return not self.monthly and not self.sessions and not self.buckets
+
+
+def rounded_concurrency(value: float | None) -> float | None:
+    return None if value is None else float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))

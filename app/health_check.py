@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pymysql
 import redis
 from redis.backoff import NoBackoff
 from redis.retry import Retry
 
+from .api_cache_store import redis_db_url
 from . import config, database, health_events, room_config, runtime_state
 
 SAMPLE_INTERVAL = 15
@@ -48,12 +48,12 @@ def pool_snapshot():
 
 
 def redis_clients():
-    source = urlsplit(config.REDIS_URL)
-    query = urlencode([(k, v) for k, v in parse_qsl(source.query) if k != "db"])
     urls = {
         "metrics": config.REDIS_URL,
-        "whale_db1": urlunsplit((source.scheme, source.netloc, "/1", query, source.fragment)),
-        "api_db2": urlunsplit((source.scheme, source.netloc, "/2", query, source.fragment)),
+        "whale_db1": redis_db_url(config.REDIS_URL, 1),
+        "api_db2": redis_db_url(config.REDIS_URL, 2),
+        "danmaku_users_db3": redis_db_url(config.REDIS_URL, 3),
+        "danmaku_rank_db4": redis_db_url(config.REDIS_URL, 4),
     }
     return {role: redis.Redis.from_url(
         url, socket_connect_timeout=2, socket_timeout=2,

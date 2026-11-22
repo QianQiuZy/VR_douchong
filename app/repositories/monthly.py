@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .. import DanmakuCounts
 from ..database import Session
+from .danmaku import upsert_fields
 from .history import notify_history_change
 
 logger = logging.getLogger(__name__)
@@ -72,29 +73,18 @@ def set_room_payer_count(model, room_id: int, month: str, count: int) -> None:
 
 
 def add_danmaku_counts(model, room_id: int, month: str, counts: DanmakuCounts) -> bool:
-    if counts.total <= 0:
+    if counts.total <= 0 and counts.audience is None:
         return True
     session = Session()
     try:
+        values, updates = upsert_fields(model, counts)
+        if counts.audience is not None:
+            values["danmaku_status"] = "collecting"
+            updates.append(("danmaku_status", "collecting"))
         stmt = insert(model).values(
-            room_id=room_id,
-            month=month,
-            gift=0.0,
-            guard=0.0,
-            super_chat=0.0,
-            payer_count=0,
-            danmaku_count=counts.total,
-            captain_danmaku_count=counts.captain,
-            admiral_danmaku_count=counts.admiral,
-            governor_danmaku_count=counts.governor,
-            normal_danmaku_count=counts.normal,
-        ).on_duplicate_key_update(
-            danmaku_count=func.coalesce(model.danmaku_count, 0) + counts.total,
-            captain_danmaku_count=func.coalesce(model.captain_danmaku_count, 0) + counts.captain,
-            admiral_danmaku_count=func.coalesce(model.admiral_danmaku_count, 0) + counts.admiral,
-            governor_danmaku_count=func.coalesce(model.governor_danmaku_count, 0) + counts.governor,
-            normal_danmaku_count=func.coalesce(model.normal_danmaku_count, 0) + counts.normal,
-        )
+            room_id=room_id, month=month, gift=0.0, guard=0.0, super_chat=0.0,
+            payer_count=0, **values,
+        ).on_duplicate_key_update(updates)
         session.execute(stmt)
         session.commit()
         notify_history_change(month)

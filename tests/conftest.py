@@ -223,9 +223,13 @@ def isolated_metric_redis_clients(monkeypatch):
     """Default offline tests must not read or write the host's metric databases."""
     import fakeredis
 
-    from app import redis_metrics, whale_metrics
+    from app import danmaku_archive, danmaku_metrics, redis_metrics, whale_metrics
 
     client = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(danmaku_metrics, "ranks", fakeredis.FakeRedis(decode_responses=True, db=4))
+    monkeypatch.setattr(danmaku_metrics, "users", fakeredis.FakeRedis(decode_responses=True, db=3))
+    monkeypatch.setattr(danmaku_metrics, "_started", None)
+    monkeypatch.setattr(danmaku_archive, "_registered", None)
     monkeypatch.setattr(redis_metrics, "_client", client)
     monkeypatch.setattr(whale_metrics, "_client", client)
     yield

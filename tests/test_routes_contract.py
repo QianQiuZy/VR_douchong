@@ -344,6 +344,8 @@ class TestGiftCurrentMonthRoute:
             "guard_3",
             "fans_count",
             "current_concurrency",
+            "danmaku_user_count",
+            "danmaku_dependency",
             "whale_dependency",
             "danmaku",
         }
@@ -399,6 +401,8 @@ class TestGiftByMonthRoute:
             "guard_2",
             "guard_3",
             "fans_count",
+            "danmaku_user_count",
+            "danmaku_dependency",
             "whale_dependency",
             "danmaku",
         }

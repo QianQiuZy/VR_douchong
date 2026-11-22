@@ -169,12 +169,12 @@ async def delete_room_async(room_id: int, dependencies: LifecycleDependencies) -
         average, maximum = dependencies.finalize_concurrency(room_id, session_id)
         LiveSession.update_concurrency_by_id(session_id, avg_concurrency=average, max_concurrency=maximum)
         runtime_state.CONCURRENCY_CACHE.pop(room_id, None)
+    # Leave failed danmaku batches available for the periodic retry.
     for state_map in (
         runtime_state.ROOM_UIDS,
         runtime_state.LAST_STATUS,
         runtime_state.LIVE_INFO,
         runtime_state.LAST_RECONNECT,
-        runtime_state.DANMAKU_PENDING,
         runtime_state.FANS_COUNT,
         runtime_state.GUARD_COUNTS,
         runtime_state.CONCURRENCY_CACHE,

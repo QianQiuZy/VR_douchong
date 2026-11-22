@@ -452,7 +452,12 @@ class MyHandler(blivedm.BaseHandler):
                 target = danmaku_bucket_target(session_id, event_time) if session_id is not None else None
             counts = DanmakuCounts.from_privilege_type(int(getattr(message, "privilege_type", 0) or 0))
             pending = runtime_state.DANMAKU_PENDING.setdefault(room_id, PendingDanmaku())
-            pending.add(event_time, counts, target)
+            raw_uid = getattr(message, "uid", 0)
+            try:
+                uid = int(raw_uid)
+            except (TypeError, ValueError, OverflowError):
+                uid = 0
+            pending.add(event_time, counts, target, max(uid, 0))
         except Exception as exc:
             logger.exception("[Danmaku] 统计弹幕时出错: %s", type(exc).__name__, exc_info=False)
 

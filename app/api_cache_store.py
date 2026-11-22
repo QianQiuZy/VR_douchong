@@ -131,10 +131,14 @@ api_sql_scope: ContextVar[ApiSqlScope | None] = ContextVar(
 )
 
 
-def db2_url(url: str) -> str:
+def redis_db_url(url: str, database: int) -> str:
     parsed = urlsplit(url)
     query = urlencode([(k, v) for k, v in parse_qsl(parsed.query) if k != "db"])
-    return urlunsplit((parsed.scheme, parsed.netloc, "/2", query, parsed.fragment))
+    return urlunsplit((parsed.scheme, parsed.netloc, f"/{database}", query, parsed.fragment))
+
+
+def db2_url(url: str) -> str:
+    return redis_db_url(url, 2)
 
 
 def encode(payload) -> bytes:

@@ -4,6 +4,7 @@ from sqlalchemy import and_
 from sqlalchemy.exc import SQLAlchemyError
 
 from .. import DanmakuCounts
+from .. import danmaku_metrics
 from ..database import Session
 from .history import notify_history_change
 
@@ -123,16 +124,25 @@ def _add_danmaku_counts(row, counts: DanmakuCounts) -> None:
 
 
 def add_danmaku_by_id(model, session_id: int, counts: DanmakuCounts) -> bool:
-    if not session_id or counts.total <= 0:
+    if not session_id or (counts.total <= 0 and counts.audience is None):
         return counts.total <= 0
     session = Session()
     try:
-        row = session.query(model).filter_by(id=session_id).first()
+        row = session.query(model).filter_by(id=session_id).with_for_update().first()
         if not row:
             return False
         _add_danmaku_counts(row, counts)
+        settlement = None
+        if counts.audience is not None:
+            row.danmaku_user_count = counts.audience.count if counts.audience.total == row.danmaku_count else None
+            row.danmaku_status = "collecting"
+            if row.end_time is not None:
+                row.danmaku_status = "pending"
+                settlement = danmaku_metrics.settle(row, f"session:{session_id}", row.start_time)
         changed_month = getattr(row, "month", None)
         session.commit()
+        if settlement:
+            settlement.committed()
         notify_history_change(changed_month)
         return True
     except SQLAlchemyError as exc:

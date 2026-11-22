@@ -40,7 +40,7 @@ CURRENT_REPORT_KEYS = frozenset(
         "guard_3",
         "fans_count",
         "current_concurrency",
-        "whale_dependency",
+        "whale_dependency", "danmaku_user_count", "danmaku_dependency",
         "danmaku",
     }
 )

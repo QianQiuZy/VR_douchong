@@ -69,7 +69,7 @@ def test_real_lifespan_samples_once_and_serves_public_diagnostics(monkeypatch):
     monkeypatch.setattr(health_check, "probe_database", database)
     monkeypatch.setattr(health_check, "redis_clients", lambda: {
         role: SimpleNamespace(ping=ping, close=lambda: closed.append(True))
-        for role in ("metrics", "whale_db1", "api_db2")
+        for role in ("metrics", "whale_db1", "api_db2", "danmaku_users_db3", "danmaku_rank_db4")
     })
     with TestClient(api_app.app) as client:
         deadline = time.monotonic() + 2
@@ -84,8 +84,8 @@ def test_real_lifespan_samples_once_and_serves_public_diagnostics(monkeypatch):
             assert result["collector"]["loop_responsive"] is False
             assert result["last_hour"]["full_window"] is False
     assert calls.count("database") == 1
-    assert calls.count("redis") == 3
-    assert len(closed) == 3
+    assert calls.count("redis") == 5
+    assert len(closed) == 5
     assert not service.thread.is_alive()
 
 
@@ -124,7 +124,7 @@ def test_collect_reports_dependency_faults_without_secret_exception_text(monkeyp
         "status": "unavailable" if failure == "collector" else "ok",
         "http_pool": {"status": "exhausted" if failure == "http_pool" else "ok"},
     })
-    clients = {role: SimpleNamespace(ping=ping) for role in ("metrics", "whale_db1", "api_db2")}
+    clients = {role: SimpleNamespace(ping=ping) for role in ("metrics", "whale_db1", "api_db2", "danmaku_users_db3", "danmaku_rank_db4")}
     result = health_check.HealthService().collect(clients)
     assert result["ok"] == (failure is None)
     assert "synthetic-secret" not in json.dumps(result)
@@ -257,7 +257,7 @@ def test_latest_upstream_failure_degrades_health_until_success(monkeypatch):
     monkeypatch.setattr(health_check, "probe_collector", lambda: {
         "status": "ok", "http_pool": {"status": "ok"},
     })
-    clients = {role: SimpleNamespace(ping=lambda: True) for role in ("metrics", "whale_db1", "api_db2")}
+    clients = {role: SimpleNamespace(ping=lambda: True) for role in ("metrics", "whale_db1", "api_db2", "danmaku_users_db3", "danmaku_rank_db4")}
     url = URL("https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids")
     health_events.events.upstream_result(health_events.observation(url), reason="TimeoutError")
     service = health_check.HealthService()
@@ -277,7 +277,7 @@ def test_redis_roles_have_timeouts_and_no_probe_retries(monkeypatch):
         return object()
     monkeypatch.setattr(config, "REDIS_URL", "redis://localhost:6379/4?db=4")
     monkeypatch.setattr(health_check.redis.Redis, "from_url", create)
-    assert set(health_check.redis_clients()) == {"metrics", "whale_db1", "api_db2"}
+    assert set(health_check.redis_clients()) == {"metrics", "whale_db1", "api_db2", "danmaku_users_db3", "danmaku_rank_db4"}
     assert "/1" in calls[1][0] and "db=" not in calls[1][0]
     assert "/2" in calls[2][0] and "db=" not in calls[2][0]
     assert all(options["socket_timeout"] == options["socket_connect_timeout"] == 2 for _, options in calls)
