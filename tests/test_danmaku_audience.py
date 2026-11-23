@@ -108,3 +108,30 @@ def test_missing_coverage_and_zero_keep_separate_contracts(monkeypatch):
             "top1_percent": 0.6667,
         },
     }
+
+
+def test_lost_rank_never_rebuilds_incorrect_ratios_or_erases_db3_count(monkeypatch):
+    start = datetime.datetime(2026, 11, 1)
+    monkeypatch.setattr(dm, "_started", start)
+    for key in ("session:101", "month:202611:42"):
+        scope = dm.Scope(key, start)
+        batch = dm.SenderBatch(Counter({42: 4}))
+        assert dm.record(scope, batch) == dm.Audience(1, 4)
+        assert dm.ratio_values(dm.snapshot(key))["top1"] == 1
+        assert dm.ranks.delete(f"{dm.PREFIX}:rank:{key}") == 1
+        row = SimpleNamespace(danmaku_user_count=1, danmaku_count=4)
+        # Loss is visible even before the next event and when replaying a prior batch.
+        assert dm.report(row, key, live=True)["danmaku_dependency"]["top1"] is None
+        assert dm.record(scope, batch) == dm.Audience(1, 4)
+        assert dm.record(scope, dm.SenderBatch(Counter({42: 1}))) == dm.Audience(1, 5)
+        row.danmaku_count = 5
+        settlement = dm.settle(row, key, start)
+        settlement.committed()
+        for live in (True, False):
+            result = dm.report(row, key, live=live)
+            assert result["danmaku_user_count"] == 1
+            assert result["danmaku_dependency"]["status"] == "partial"
+            assert all(result["danmaku_dependency"][field] is None for field in dm.RATIOS)
+    unknown = dm.Scope("session:unattributed", start)
+    assert dm.record(unknown, dm.SenderBatch(Counter({0: 4}))) == dm.Audience(0, 4)
+    assert "rank_partial" not in dm.snapshot(unknown.key)

@@ -18,6 +18,10 @@ SAMPLE_INTERVAL = 15
 STALE_SECONDS = 45
 
 
+class AttentionColumnNotNullable(RuntimeError):
+    """An old or missing column prevents daily guard/fans-only inserts."""
+
+
 def probe_database():
     # A dedicated bounded connection distinguishes database availability from
     # an exhausted application QueuePool; never wait on its 30-second checkout.
@@ -26,9 +30,12 @@ def probe_database():
         autocommit=True,
     ) as connection:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT 1")
-            if cursor.fetchone() != (1,):
-                raise RuntimeError("UnexpectedDatabaseProbeResult")
+            cursor.execute(
+                "SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attention' AND COLUMN_NAME = 'attention'"
+            )
+            if cursor.fetchone() != ("YES",):
+                raise AttentionColumnNotNullable
 
 
 def pool_snapshot():
@@ -123,6 +130,8 @@ def measured(probe):
     try:
         probe()
         result = {"status": "ok"}
+    except AttentionColumnNotNullable as exc:
+        result = {"status": "schema_mismatch", "error_type": type(exc).__name__}
     except Exception as exc:
         # Exceptions may contain credentials, SQL, signed URLs or user data.
         result = {"status": "unavailable", "error_type": type(exc).__name__}

@@ -74,6 +74,10 @@ def create_schema() -> None:
 def ensure_nullable_daily_attention(table_name: str, columns: list[dict]) -> None:
     if any(col["name"] == "attention" and col.get("nullable") is False for col in columns):
         with engine.begin() as conn:
+            # The metadata lock is session-scoped. Close this physical connection
+            # after the migration so the short timeout never leaks into the pool.
+            conn.detach()
+            conn.execute(text("SET SESSION lock_wait_timeout = 3"))
             conn.execute(text(f"ALTER TABLE `{table_name}` MODIFY COLUMN `attention` INT NULL DEFAULT NULL"))
         logger.info("[schema] 允许 %s.attention 保留缺失值", table_name)
 

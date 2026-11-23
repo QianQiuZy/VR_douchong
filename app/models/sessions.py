@@ -15,6 +15,7 @@ from ..repositories.live_session_snapshots import (
 from ..repositories.live_sessions import (
     add_values_by_id,
     add_values_by_room_open,
+    checkpoint_live_observations,
     close_session_by_id,
     find_open_session,
     set_payer_count,
@@ -81,6 +82,10 @@ class LiveSession(Base):
     @classmethod
     def find_open_session(cls, room_id: int, *, strict: bool = False) -> tuple[int, datetime.datetime] | None:
         return find_open_session(cls, room_id, strict=strict)
+
+    @classmethod
+    def checkpoint_live_observations(cls) -> None:
+        checkpoint_live_observations(cls)
 
     @classmethod
     def record_duration(cls, session_id: int, start: datetime.datetime | None, end: datetime.datetime) -> None:

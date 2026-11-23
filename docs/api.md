@@ -168,7 +168,7 @@
 | top10 | float 或 null | 付费金额最高的 10 名用户合计占总收入的比例，范围为 `0` 到 `1`；无可用数据或总收入为 0 时为 `null`。 |
 | top1_percent | float 或 null | 付费金额最高的前 1% 用户合计占总收入的比例，范围为 `0` 到 `1`；无可用数据或总收入为 0 时为 `null`。 |
 
-`danmaku_dependency` 与 `whale_dependency` 都返回 `status`、`source`、`top1`、`top5`、`top10`、`top1_percent`。弹幕按有效 UID 发言条数排序，分母为该范围内全部已采集弹幕，包含无有效 UID 的条数。前 1% 按有效发言人数向上取整。比例返回 JSON 数字，最多四位小数，分母为零时返回 `null`。当前统计从 Redis 取值，结算后从 MySQL 取值。中途启用时返回 `partial`，比例仅覆盖已采集部分。历史记录缺字段时返回 `unavailable` 和四个 `null`。
+`danmaku_dependency` 与 `whale_dependency` 都返回 `status`、`source`、`top1`、`top5`、`top10`、`top1_percent`。弹幕按有效 UID 发言条数排序，分母为该范围内全部已采集弹幕，包含无有效 UID 的条数。前 1% 按有效发言人数向上取整。比例返回 JSON 数字，最多四位小数，分母为零时返回 `null`。当前统计从 Redis 取值，结算后从 MySQL 取值。中途启用时返回 `partial`，比例仅覆盖已采集部分。若 DB4 排行明细丢失，也返回 `partial`，四项占比均为 `null`，已核实的 `danmaku_user_count` 仍正常返回。历史记录缺字段时返回 `unavailable` 和四个 `null`。
 
 `danmaku` 字段：
 
@@ -544,7 +544,7 @@ curl -sS https://vup.qianqiuzy.cn/health/check
 | `checked_at` / `snapshot_age_seconds` | 后台采样完成时间（上海时区）及采样年龄；首次采样完成前没有依赖明细 |
 | `sample_interval_seconds` / `stale_after_seconds` | 每轮结束后等待 15 秒再采样；结果超过 45 秒未更新即标为 `stale` |
 | `sample_duration_ms` | 一轮采样耗时；依赖失败时采样间隔会加上探测耗时 |
-| `dependencies.database` | 独立短连接执行只读 `SELECT 1`，返回状态、耗时和脱敏异常类型；与业务数据库连接池是否耗尽分开判断 |
+| `dependencies.database` | 独立短连接检查当前库的 `attention.attention` 列。缺列或不允许 NULL 时为 `schema_mismatch`，总体返回 HTTP 503。连接或查询失败时为 `unavailable` |
 | `dependencies.database_pool` | 业务 SQLAlchemy 连接池的 `size`、`checked_in`、`checked_out`、`overflow`、`max_overflow`、`capacity`、取连接超时和回收周期；满载为 `exhausted` |
 | `dependencies.redis` | `metrics`（配置的 Redis DB）、`whale_db1`、`api_db2`、`danmaku_users_db3`、`danmaku_rank_db4` 五类用途分别执行 PING，返回状态、耗时和异常类型；不读写业务键，不证明历史数据完整性 |
 | `collector.loop_responsive` | 采集事件循环能否在两秒内返回状态快照；未启动、已停止或无响应均不健康 |

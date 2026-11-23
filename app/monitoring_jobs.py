@@ -334,6 +334,7 @@ async def daily_fans_worker() -> None:
 async def danmaku_flush_scheduler() -> None:
     while True:
         await asyncio.sleep(60)
+        LiveSession.checkpoint_live_observations()
         retry_failed_buckets()
         now = _now()
         for room, session_id in tuple(runtime_state.CURRENT_SESSIONS.items()):
@@ -468,6 +469,45 @@ async def reconnect_scheduler() -> None:
                 await asyncio.sleep(3 + random.uniform(0.5, 2.0))
 
 
+def _reported_start(info: dict, now: datetime.datetime) -> datetime.datetime | None:
+    raw = info.get("live_time")
+    try:
+        if str(raw).isdigit() and int(raw) > 0:
+            start = datetime.datetime.fromtimestamp(int(raw))
+            if start <= now:
+                return start
+    except (ValueError, OSError, OverflowError):
+        pass
+    return None
+
+
+def _recover_open_session(room_id: int, open_session: tuple[int, datetime.datetime],
+                          start: datetime.datetime, now: datetime.datetime) -> int | None:
+    """Reconcile an open SQL row before releasing the room to WebSocket ingestion."""
+    from . import room_lifecycle
+
+    session_id, original_start = open_session
+    ended = runtime_state.PENDING_SESSION_ENDS.get(room_id)
+    if ended is None:
+        segment = runtime_state.STREAM_STARTS.setdefault(room_id, original_start)
+        observed = max(segment, runtime_state.LAST_LIVE_OBSERVATIONS.get(session_id, segment))
+        if start <= observed:
+            runtime_state.GUARD_FANS_QUEUE.put_nowait((room_id, None, None))
+            return session_id
+        # A different broadcast started after our last evidence of the old one.
+        ended = observed
+    # The reported restart can be inside the grace period even if this process
+    # returned later. A stale start before the interruption cannot prove that.
+    resumed_at = start if ended < start <= now else now
+    if (resumed_at - ended).total_seconds() > room_lifecycle.LIVE_SESSION_GRACE_SECONDS:
+        room_lifecycle.finish_live_session(room_id, ended, lifecycle_dependencies())
+        return None
+    if room_id not in runtime_state.PENDING_SESSION_ENDS:
+        _record_stream_segment(room_id, ended)
+        runtime_state.PENDING_SESSION_ENDS[room_id] = ended
+    return room_lifecycle.resume_interrupted_session(room_id, start, resumed_at)
+
+
 def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool:
     """Finish the lifecycle transition before an initial WebSocket can receive events."""
     from . import room_lifecycle
@@ -482,45 +522,44 @@ def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool
         status = 0
     previous = runtime_state.LAST_STATUS.get(room_id, 0)
     if status == 1 and previous != 1:
-        start_raw = info.get("live_time", 0)
-        try:
-            start = datetime.datetime.fromtimestamp(int(start_raw)).astimezone().replace(tzinfo=None) if str(start_raw).isdigit() and int(start_raw) > 0 else now
-        except (ValueError, OSError, OverflowError):
-            start = now
+        reported_start = _reported_start(info, now)
+        start = reported_start or now
+        pending = room_id in runtime_state.PENDING_SESSION_ENDS and room_id in runtime_state.CURRENT_SESSIONS
+        open_session = None if pending else LiveSession.find_open_session(room_id, strict=True)
+        if open_session and (reported_start is not None or room_id in runtime_state.PENDING_SESSION_ENDS):
+            restore_session(open_session[0], room_id, open_session[1])
+            runtime_state.CURRENT_SESSIONS[room_id] = open_session[0]
         forced_end = runtime_state.FORCED_OFFLINE_AT.get(room_id)
-        if forced_end is not None and start <= forced_end:
+        if forced_end is not None and (reported_start is None or reported_start <= forced_end):
             return True
-        open_session = None
-        if room_id not in runtime_state.PENDING_SESSION_ENDS or room_id not in runtime_state.CURRENT_SESSIONS:
-            open_session = LiveSession.find_open_session(room_id, strict=True)
-            if open_session is not None:
-                restore_session(open_session[0], room_id, open_session[1])
-                runtime_state.CURRENT_SESSIONS[room_id] = open_session[0]
-                room_lifecycle.finish_expired_live_sessions(now, lifecycle_dependencies())
-        forced_end = runtime_state.FORCED_OFFLINE_AT.get(room_id)
-        if forced_end is not None and start <= forced_end:
-            return True
+        if (open_session or pending) and reported_start is None:
+            # Wait for a usable identity before routing new events to a recovered ID.
+            return False
         runtime_state.FORCED_OFFLINE_AT.pop(room_id, None)
-        session_id = room_lifecycle.resume_interrupted_session(room_id, start, now)
+        if open_session:
+            session_id = _recover_open_session(room_id, open_session, start, now)
+        else:
+            session_id = room_lifecycle.resume_interrupted_session(room_id, start, now)
+            if pending and session_id is None:
+                room_lifecycle.finish_live_session(
+                    room_id, runtime_state.PENDING_SESSION_ENDS[room_id], lifecycle_dependencies()
+                )
         if session_id is None:
-            if open_session and runtime_state.CURRENT_SESSIONS.get(room_id) == open_session[0]:
-                runtime_state.STREAM_STARTS.setdefault(room_id, open_session[1])
-                # Refresh the live display without replacing the original start snapshot.
-                runtime_state.GUARD_FANS_QUEUE.put_nowait((room_id, None, None))
-            else:
-                session_id = LiveSession.start_session(room_id, start, info.get("title") or "")
-                if not session_id:
-                    return False
-                runtime_state.STREAM_STARTS[room_id] = start
-                runtime_state.CURRENT_SESSIONS[room_id] = session_id
-                init_concurrency_cache(room_id, session_id, start)
-                runtime_state.GUARD_FANS_QUEUE.put_nowait((room_id, session_id, "start"))
-                runtime_state.ATTENTION_QUEUE.put_nowait((room_id, session_id, "start", now.date()))
+            session_id = LiveSession.start_session(room_id, start, info.get("title") or "")
+            if not session_id:
+                return False
+            runtime_state.STREAM_STARTS[room_id] = start
+            runtime_state.CURRENT_SESSIONS[room_id] = session_id
+            init_concurrency_cache(room_id, session_id, start)
+            runtime_state.GUARD_FANS_QUEUE.put_nowait((room_id, session_id, "start"))
+            runtime_state.ATTENTION_QUEUE.put_nowait((room_id, session_id, "start", now.date()))
         runtime_state.LIVE_INFO.setdefault(room_id, {}).update({"live_time": start.strftime("%Y-%m-%d %H:%M:%S"), "title": info.get("title") or ""})
     elif status != 1:
         if previous == 1:
             room_lifecycle.defer_live_session_finish(room_id, now, lifecycle_dependencies())
         runtime_state.LIVE_INFO.setdefault(room_id, {}).update({"live_time": "0000-00-00 00:00:00", "title": ""})
+    if status == 1 and room_id in runtime_state.CURRENT_SESSIONS:
+        runtime_state.LAST_LIVE_OBSERVATIONS[runtime_state.CURRENT_SESSIONS[room_id]] = now
     runtime_state.LAST_STATUS[room_id] = status
     return True
 

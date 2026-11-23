@@ -131,7 +131,8 @@ def test_collect_reports_dependency_faults_without_secret_exception_text(monkeyp
     assert result["last_hour"]["full_window"] is False
 
 
-def test_database_probe_uses_bounded_dedicated_read_only_connection(monkeypatch):
+@pytest.mark.parametrize("column,status", [(("YES",), "ok"), (("NO",), "schema_mismatch"), (None, "schema_mismatch")])
+def test_database_probe_uses_bounded_dedicated_read_only_connection(monkeypatch, column, status):
     calls = []
 
     class Cursor:
@@ -145,7 +146,7 @@ def test_database_probe_uses_bounded_dedicated_read_only_connection(monkeypatch)
             calls.append(query)
 
         def fetchone(self):
-            return (1,)
+            return column
 
     class Connection(Cursor):
         def cursor(self):
@@ -156,8 +157,8 @@ def test_database_probe_uses_bounded_dedicated_read_only_connection(monkeypatch)
         return Connection()
 
     monkeypatch.setattr(health_check.pymysql, "connect", connect)
-    health_check.probe_database()
-    assert calls == ["SELECT 1"]
+    assert health_check.measured(health_check.probe_database)["status"] == status
+    assert len(calls) == 1 and "TABLE_SCHEMA = DATABASE()" in calls[0] and "IS_NULLABLE" in calls[0]
 
 
 def test_pool_reports_real_occupancy_and_exhaustion(monkeypatch):

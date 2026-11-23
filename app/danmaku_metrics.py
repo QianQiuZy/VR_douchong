@@ -55,7 +55,14 @@ if redis.call('HGET', KEYS[2], 'batch') ~= ARGV[1] then
 end
 return {size, redis.call('HGET', KEYS[2], 'total'), redis.call('HEXISTS', KEYS[2], 'partial')}
 """
-_RECORD = """
+# Detect loss before a returning sender can recreate a missing score. Keep the
+# marker for the lifetime of the summary, including duplicate batches and reads.
+_CHECK_RANK = """
+if redis.call('ZCARD', KEYS[1]) < tonumber(redis.call('HGET', KEYS[2], 'users') or '0') then
+    redis.call('HSET', KEYS[2], 'rank_partial', 1)
+end
+"""
+_RECORD = _CHECK_RANK + """
 if redis.call('HGET', KEYS[2], 'batch') == ARGV[1] then return end
 local total = redis.call('HINCRBY', KEYS[2], 'total', ARGV[3])
 redis.call('HINCRBY', KEYS[2], 'unattributed', ARGV[4])
@@ -167,9 +174,9 @@ def record(scope: Scope, batch: SenderBatch) -> Audience:
                 batch.counts.total() - sum(valid.values()),
                 *args,
             )
-            pipe.hmget(summary, "users", "total")
-            n, ranked_total = map(int, pipe.execute()[-1])
-        if n != size or ranked_total != total:
+            pipe.hmget(summary, "users", "total", "rank_partial")
+            n, ranked_total, rank_partial = pipe.execute()[-1]
+        if (not rank_partial and int(n) != size) or int(ranked_total) != total:
             return Audience(None, total)
     return Audience(size if scope.start >= start and not partial else None, total)
 
@@ -188,10 +195,16 @@ def prepare(
 
 
 def snapshot(scope: str) -> dict:
-    return ranks.hgetall(f"{PREFIX}:summary:{scope}")
+    fields = ranks.eval(
+        _CHECK_RANK + "return redis.call('HGETALL', KEYS[2])",
+        2, f"{PREFIX}:rank:{scope}", f"{PREFIX}:summary:{scope}",
+    )
+    return dict(zip(fields[::2], fields[1::2], strict=True))
 
 
 def ratio_values(summary: dict) -> dict:
+    if summary.get("rank_partial"):
+        return dict.fromkeys(RATIOS)
     total = int(summary.get("total", 0))
     return {name: int(summary[f"{name}_count"]) / total if total else None for name in RATIOS}
 
@@ -208,23 +221,21 @@ def report(row, scope: str, *, live: bool, zero: bool = False, partial: bool = F
             data = snapshot(scope)
             if data:
                 ratios = ratio_values(data)
-                complete = count == int(data["users"]) and int(data["total"]) == getattr(
-                    row, "danmaku_count", 0
-                )
-                status = "live" if complete else "partial"
-                if not complete:
+                totals_match = int(data["total"]) == getattr(row, "danmaku_count", 0)
+                rank_partial = bool(data.get("rank_partial"))
+                count_verified = totals_match and (rank_partial or count == int(data["users"]))
+                status = "live" if count_verified and not rank_partial else "partial"
+                if not count_verified:
                     count = None
             elif zero or (not partial and count == 0 and not getattr(row, "danmaku_count", 0)):
                 status, count = "live", 0
             elif partial or stored in ("collecting", "partial"):
-                status = "partial"
+                status, count = "partial", None
         except redis.RedisError:
             logger.warning("弹幕占比暂不可读 scope=%s", scope)
     elif stored in ("archived", "partial"):
         status = stored
         ratios = {name: getattr(row, column, None) for name, column in RATIOS.items()}
-    if status == "partial":
-        count = None
     dependency = {
         "status": status,
         "source": source,
@@ -281,9 +292,10 @@ def settle(row, scope: str, start: datetime.datetime) -> Settlement | None:
         complete = start >= tracking_start() and int(data.get("total", 0)) == (
             row.danmaku_count or 0
         )
-        if data:
+        rank_partial = bool(data.get("rank_partial"))
+        if data and not rank_partial:
             complete = complete and row.danmaku_user_count == int(data["users"])
-        row.danmaku_status = "archived" if complete else "partial"
+        row.danmaku_status = "archived" if complete and not rank_partial else "partial"
         if not complete or not data:
             row.danmaku_user_count = 0 if complete else None
         for name, value in ratio_values(data).items():

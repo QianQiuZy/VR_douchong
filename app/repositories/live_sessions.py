@@ -4,6 +4,7 @@ import logging
 
 from sqlalchemy import and_, case, update
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import load_only
 
 from .. import config, danmaku_metrics, rounded_concurrency, runtime_state
 from ..database import Session
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 def _restore_duration_state(row) -> None:
     ledger = json.loads(row.duration_ledger or "{}")
     room_id = int(row.room_id)
+    if stamp := ledger.get("last_live_at"):
+        runtime_state.LAST_LIVE_OBSERVATIONS[int(row.id)] = datetime.datetime.fromisoformat(stamp)
     if not row.duration_valid:
         runtime_state.INVALID_DURATION_SESSIONS[room_id] = int(row.id)
     else:
@@ -28,6 +31,31 @@ def _restore_duration_state(row) -> None:
             runtime_state.FORCED_OFFLINE_AT[room_id] = runtime_state.PENDING_SESSION_ENDS[room_id]
     elif ledger.get("segment_start"):
         runtime_state.STREAM_STARTS[room_id] = datetime.datetime.fromisoformat(ledger["segment_start"])
+
+
+def checkpoint_live_observations(model) -> None:
+    observations = {
+        sid: runtime_state.LAST_LIVE_OBSERVATIONS[sid]
+        for sid in runtime_state.CURRENT_SESSIONS.values()
+        if sid in runtime_state.LAST_LIVE_OBSERVATIONS
+    }
+    if not observations:
+        return
+    try:
+        with Session.begin() as session:
+            rows = (
+                session.query(model).options(load_only(model.id, model.duration_ledger))
+                .filter(model.id.in_(observations), model.end_time.is_(None))
+                .order_by(model.id).with_for_update()
+            )
+            for row in rows:
+                ledger = json.loads(row.duration_ledger or '{"days": {}}')
+                stamp = observations[row.id].isoformat()
+                if stamp > ledger.get("last_live_at", ""):
+                    ledger["last_live_at"] = stamp
+                    row.duration_ledger = json.dumps(ledger)
+    except SQLAlchemyError as exc:
+        logger.warning("[LiveSession] 在播检查点保存失败，下轮重试 error_type=%s", type(exc).__name__)
 
 
 def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) -> int | None:
@@ -182,9 +210,9 @@ def close_session_by_id(model, session_id: int | None, end_dt: datetime.datetime
             if settlement:
                 settlement.committed()
             notify_history_change(changed_month)
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         session.rollback()
-        logger.error(f"[LiveSession] close_session_by_id 失败: {exc}")
+        raise
     finally:
         session.close()
 

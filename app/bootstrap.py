@@ -35,7 +35,7 @@ from .config import APP_HOST, APP_PORT
 from .database import create_schema, ensure_runtime_schema, log_pool_status
 from .logging_setup import configure_logging
 from .metrics_runtime import checkpoint_session, retry_failed_buckets
-from .models import RoomInfo
+from .models import LiveSession, RoomInfo
 from .whale_archive import archive_whale_month
 
 logger = logging.getLogger(__name__)
@@ -230,6 +230,7 @@ def init_session() -> None:
 
 
 def _flush_active_metrics(end_time: datetime.datetime) -> None:
+    LiveSession.checkpoint_live_observations()
     for room_id in runtime_state.DANMAKU_PENDING.keys() | runtime_state.CURRENT_SESSIONS.keys():
         monitoring_jobs.flush_pending_danmaku_for_room(room_id, runtime_state.CURRENT_SESSIONS.get(room_id), end_time)
     for room_id, session_id in tuple(runtime_state.CURRENT_SESSIONS.items()):

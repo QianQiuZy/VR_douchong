@@ -78,6 +78,9 @@ def restore_session(session_id: int, room_id: int, start_time: datetime.datetime
         latest, total, samples, maximum, payers = read_open_metrics(LiveSession15mStats, LiveSession, session_id)
         if latest is not None:
             row, subtotal = latest
+            # Pre-upgrade rows lack a poll checkpoint. Only metric-bearing
+            # intervals are considered here (danmaku-only rows have a scheduled end).
+            runtime_state.LAST_LIVE_OBSERVATIONS.setdefault(session_id, row.end_time)
             saved = _Bucket(
                 session_id, room_id, row.month, row.bucket_index, row.start_time,
                 gift=row.gift, guard=row.guard, super_chat=row.super_chat,

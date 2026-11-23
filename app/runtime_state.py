@@ -36,6 +36,8 @@ RECONNECT_DAILY_STATE = {"date": None, "done": set()}
 
 LAST_STATUS: dict[int, int] = {}
 STREAM_STARTS: dict[int, datetime.datetime] = {}
+# Keyed by session ID; only a successful live status poll advances this time.
+LAST_LIVE_OBSERVATIONS: dict[int, datetime.datetime] = {}
 LIVE_INFO: dict[int, dict[str, str]] = {}
 PENDING_SESSION_ENDS: dict[int, datetime.datetime] = {}
 

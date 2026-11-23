@@ -178,7 +178,8 @@ def test_startup_waits_for_uid_and_all_auth_replies_before_refreshing_attention(
                 refresh_finished.set()
 
         async def status():
-            yield {room: (uid, {"live_status": int(room == 10)}) for room, uid in runtime_state.ROOM_UIDS.items()}
+            yield {room: (uid, {"live_status": int(room == 10), "live_time": int(monitoring_jobs._now().timestamp())})
+                   for room, uid in runtime_state.ROOM_UIDS.items()}
 
         class Client:
             def __init__(self, room_id):

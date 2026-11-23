@@ -1200,7 +1200,7 @@ def test_hot_restart_continues_open_session_and_partial_bucket(services, monkeyp
         if legacy_exit:
             client.delete(f"vr:payer:session:{sid}")
         metrics_runtime._buckets.clear()
-        for name in ("CURRENT_SESSIONS", "STREAM_STARTS", "LAST_STATUS", "CONCURRENCY_CACHE"):
+        for name in ("CURRENT_SESSIONS", "STREAM_STARTS", "LAST_STATUS", "CONCURRENCY_CACHE", "LAST_LIVE_OBSERVATIONS"):
             getattr(runtime_state, name).clear()
         # Upstream reports a later segment. The DB session still owns the original buckets.
         info = {"live_status": 1, "live_time": int(when(15).timestamp()), "title": "same session"}
@@ -1245,3 +1245,73 @@ def test_hot_restart_continues_open_session_and_partial_bucket(services, monkeyp
         assert (bucket.month, bucket.start_time, bucket.end_time) == ("200301", when(15), when(30))
         assert (bucket.guard, bucket.super_chat, bucket.blind_box_count, bucket.blind_box_profit) == (3, 5, 2, -9)
         assert (bucket.danmaku_count, bucket.emoticon_danmaku_count, bucket.concurrency_total) == (1, 1, 81)
+
+
+def test_attention_migration_readiness_recovers_after_metadata_lock(services, monkeypatch):
+    from conftest import _ORIG_INSPECT
+    from sqlalchemy.exc import OperationalError
+    from app import database, health_check
+
+    _, engine, _, _ = services
+    monkeypatch.setattr(database, "engine", engine)
+    monkeypatch.setattr(database, "inspect", _ORIG_INSPECT)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE attention MODIFY attention INT NOT NULL"))
+    assert health_check.measured(health_check.probe_database)["status"] == "schema_mismatch"
+    columns = _ORIG_INSPECT(engine).get_columns("attention")
+    with engine.begin() as holding_lock:
+        holding_lock.execute(text("SELECT 1 FROM attention LIMIT 1"))
+        with pytest.raises(OperationalError) as error:
+            database.ensure_nullable_daily_attention("attention", columns)
+        assert error.value.orig.args[0] == 1205
+    assert health_check.measured(health_check.probe_database)["status"] == "schema_mismatch"
+    database.ensure_runtime_schema()
+    assert health_check.measured(health_check.probe_database)["status"] == "ok"
+
+
+def test_danmaku_rank_eviction_preserves_counts_on_settlement(services, monkeypatch):
+    from app import DanmakuBucketTarget, DanmakuCounts, PendingDanmaku, danmaku_archive
+    from app import danmaku_metrics as dm, monitoring_jobs
+    from app.repositories import live_session_snapshots, live_sessions, monthly, session_15m
+
+    store, _, factory, start = services
+    month, room = start.strftime("%Y%m"), 456789
+    for module in (live_sessions, live_session_snapshots, monthly, session_15m, danmaku_archive):
+        monkeypatch.setattr(module, "Session", factory)
+    port = int(os.environ["VR_CACHE_TEST_REDIS_PORT"])
+    monkeypatch.setattr(dm, "PREFIX", store.key("danmaku"))
+    monkeypatch.setattr(dm, "_started", start)
+    monkeypatch.setattr(runtime_state, "DANMAKU_PENDING", {})
+    with redis.Redis(port=port, db=3, decode_responses=True) as users, redis.Redis(
+        port=port, db=4, decode_responses=True
+    ) as ranks:
+        monkeypatch.setattr(dm, "users", users)
+        monkeypatch.setattr(dm, "ranks", ranks)
+        sid = LiveSession.start_session(room, start, "A")
+        scopes = [f"session:{sid}", f"month:{month}:{room}"]
+        target = DanmakuBucketTarget(sid, room, month, 0, start, start + datetime.timedelta(minutes=15))
+        for count in (4, 1):
+            pending = runtime_state.DANMAKU_PENDING[room] = PendingDanmaku()
+            pending.add(start, DanmakuCounts(total=count, normal=count), target, uid=42)
+            monitoring_jobs.flush_pending_danmaku_for_room(room)
+            assert room not in runtime_state.DANMAKU_PENDING
+            if count == 4:
+                for scope in scopes:
+                    assert dm.ratio_values(dm.snapshot(scope))["top1"] == 1
+                    assert ranks.delete(f"{dm.PREFIX}:rank:{scope}") == 1
+
+        LiveSession.close_session_by_id(sid, start + datetime.timedelta(minutes=1))
+        danmaku_archive._settle(RoomStatsMonthly, (room, month), scopes[1], start)
+        with factory() as sql:
+            rows = [sql.get(LiveSession, sid), sql.get(RoomStatsMonthly, (room, month))]
+            for row, scope in zip(rows, scopes, strict=True):
+                assert (row.danmaku_count, row.danmaku_user_count, row.danmaku_status) == (5, 1, "partial")
+                report = dm.report(row, scope, live=False)
+                assert report["danmaku_user_count"] == 1
+                assert all(report["danmaku_dependency"][key] is None for key in dm.RATIOS)
+            bucket = sql.get(LiveSession15mStats, (sid, 0))
+            assert (bucket.danmaku_count, bucket.danmaku_user_count) == (5, 1)
+        for client in (users, ranks):
+            keys = list(client.scan_iter(match=f"{dm.PREFIX}:*"))
+            if keys:
+                client.delete(*keys)

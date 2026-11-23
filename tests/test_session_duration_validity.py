@@ -546,3 +546,94 @@ def test_legacy_ledger_without_segment_keys_can_resume_without_recounting(durati
     poll(monkeypatch, stopped, 0)
     poll(monkeypatch, stopped + datetime.timedelta(seconds=181), 0)
     assert totals(factory) == (7200, 1)
+
+
+@pytest.mark.parametrize("gap", [180, 181, 7200])
+def test_cold_restart_checks_broadcast_identity_before_attaching_metrics(duration_state, gap):
+    from app import bootstrap
+
+    factory, deps, _ = duration_state
+    sid = start_live()
+    observed = START + datetime.timedelta(minutes=38)
+    info = {"live_status": 1, "live_time": int(START.timestamp()), "title": "A"}
+    assert monitoring_jobs._apply_room_status(ROOM, info, observed)
+    # Even a later shutdown must persist the poll timestamp, not shutdown time.
+    bootstrap._flush_active_metrics(observed + datetime.timedelta(minutes=1))
+    with factory() as sql:
+        ledger = json.loads(sql.get(LiveSession, sid).duration_ledger)
+        assert ledger["last_live_at"] == observed.isoformat()
+    for state in (runtime_state.CURRENT_SESSIONS, runtime_state.STREAM_STARTS,
+                  runtime_state.LAST_STATUS, runtime_state.LAST_LIVE_OBSERVATIONS):
+        state.clear()
+    start_b = observed + datetime.timedelta(seconds=gap)
+    recovered_at = start_b + datetime.timedelta(minutes=10)
+    for invalid in (0, None, int((recovered_at + datetime.timedelta(days=1)).timestamp())):
+        assert not monitoring_jobs._apply_room_status(ROOM, dict(info, live_time=invalid), recovered_at)
+        assert ROOM not in runtime_state.CURRENT_SESSIONS
+
+    assert monitoring_jobs._apply_room_status(ROOM, dict(info, live_time=int(start_b.timestamp()), title="B"), recovered_at)
+    new_id = runtime_state.CURRENT_SESSIONS[ROOM]
+    target = metrics_runtime.danmaku_bucket_target(new_id, start_b + datetime.timedelta(minutes=1))
+    assert target is not None
+    with factory() as sql:
+        old = sql.get(LiveSession, sid)
+        if gap <= 180:
+            assert new_id == sid and old.end_time is None
+            assert target.bucket_index == 2
+            assert json.loads(old.duration_ledger)["segment_start"] == start_b.isoformat()
+        else:
+            assert new_id != sid and old.end_time == observed
+            assert sql.get(LiveSession, new_id).start_time == start_b
+            assert target.bucket_index == 0 and target.start_time == start_b
+    room_lifecycle.finish_live_session(ROOM, recovered_at, deps)
+    assert totals(factory)[0] == 38 * 60 + 10 * 60
+
+
+def test_cold_restart_keeps_resumed_segment_and_its_original_buckets(duration_state):
+    factory, deps, _ = duration_state
+    sid = start_live()
+    end = START + datetime.timedelta(minutes=40)
+    room_lifecycle.defer_live_session_finish(ROOM, end, deps)
+    second = end + datetime.timedelta(seconds=150)
+    # The process returns late but the actual restart occurred inside the grace window.
+    for state in (runtime_state.CURRENT_SESSIONS, runtime_state.STREAM_STARTS,
+                  runtime_state.LAST_STATUS, runtime_state.PENDING_SESSION_ENDS):
+        state.clear()
+    info = {"live_status": 1, "live_time": int(second.timestamp())}
+    now = second + datetime.timedelta(hours=1)
+    assert monitoring_jobs._apply_room_status(ROOM, info, now)
+    assert runtime_state.CURRENT_SESSIONS[ROOM] == sid
+    runtime_state.LAST_STATUS.clear()
+    runtime_state.CURRENT_SESSIONS.clear()
+    runtime_state.LAST_LIVE_OBSERVATIONS.clear()
+    runtime_state.STREAM_STARTS.clear()
+    assert monitoring_jobs._apply_room_status(ROOM, info, now)
+    assert runtime_state.STREAM_STARTS[ROOM] == second
+    room_lifecycle.finish_live_session(ROOM, now, deps)
+    assert totals(factory)[0] == 100 * 60
+
+
+def test_cold_restart_retries_failed_close_before_accepting_new_session(duration_state, monkeypatch):
+    factory, _, _ = duration_state
+    sid = start_live()
+    runtime_state.CURRENT_SESSIONS.clear()
+    runtime_state.STREAM_STARTS.clear()
+    runtime_state.LAST_STATUS.clear()
+    start_b = START + datetime.timedelta(hours=2)
+    info = {"live_status": 1, "live_time": int(start_b.timestamp())}
+
+    def fail_close(*args):
+        raise SQLAlchemyError("temporary close failure")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(LiveSession, "close_session_by_id", fail_close)
+        with pytest.raises(SQLAlchemyError):
+            monitoring_jobs._apply_room_status(ROOM, info, start_b)
+    assert runtime_state.LAST_STATUS.get(ROOM) != 1
+    with factory() as sql:
+        assert sql.query(LiveSession).count() == 1
+        assert sql.get(LiveSession, sid).end_time is None
+    assert monitoring_jobs._apply_room_status(ROOM, info, start_b)
+    assert runtime_state.CURRENT_SESSIONS[ROOM] != sid
+    with factory() as sql:
+        assert sql.get(LiveSession, sid).end_time == START

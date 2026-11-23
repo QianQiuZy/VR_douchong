@@ -202,6 +202,7 @@ def isolated_end_snapshots(monkeypatch):
     from app import runtime_state
 
     monkeypatch.setattr(runtime_state, "SESSION_END_SNAPSHOTS", {})
+    monkeypatch.setattr(runtime_state, "LAST_LIVE_OBSERVATIONS", {})
 
 
 @pytest.fixture(autouse=True)

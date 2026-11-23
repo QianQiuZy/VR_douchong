@@ -6,6 +6,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from . import room_config, runtime_state
 from .metrics_runtime import flush_session
 from .models import LiveSession, RoomInfo
@@ -62,12 +64,16 @@ def finish_live_session(
     dependencies: LifecycleDependencies,
 ) -> str | None:
     duration_str = dependencies.record_stream_segment(room_id, end_dt)
-    runtime_state.PENDING_SESSION_ENDS.pop(room_id, None)
-    session_id = runtime_state.CURRENT_SESSIONS.pop(room_id, None)
+    session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
+    if session_id is not None:
+        runtime_state.PENDING_SESSION_ENDS[room_id] = end_dt
     dependencies.flush_pending_danmaku(room_id, session_id)
     average, maximum = dependencies.finalize_concurrency(room_id, session_id)
     flush_session(session_id, end_dt)
     LiveSession.close_session_by_id(session_id, end_dt)
+    runtime_state.PENDING_SESSION_ENDS.pop(room_id, None)
+    runtime_state.CURRENT_SESSIONS.pop(room_id, None)
+    runtime_state.LAST_LIVE_OBSERVATIONS.pop(session_id, None)
     runtime_state.INVALID_DURATION_SESSIONS.pop(room_id, None)
     LiveSession.update_concurrency_by_id(session_id, avg_concurrency=average, max_concurrency=maximum)
     runtime_state.CONCURRENCY_CACHE.pop(room_id, None)
@@ -162,10 +168,16 @@ async def delete_room_async(room_id: int, dependencies: LifecycleDependencies) -
         dependencies.record_stream_segment(room_id, end_dt)
         runtime_state.PENDING_SESSION_ENDS.pop(room_id, None)
         session_id = runtime_state.CURRENT_SESSIONS.pop(room_id, None)
+        runtime_state.LAST_LIVE_OBSERVATIONS.pop(session_id, None)
         _discard_end_snapshot(session_id)
         dependencies.flush_pending_danmaku(room_id, session_id)
         flush_session(session_id, end_dt)
-        LiveSession.close_session_by_id(session_id, end_dt)
+        try:
+            LiveSession.close_session_by_id(session_id, end_dt)
+        except SQLAlchemyError as exc:
+            # The room has already been removed from configuration. Finish its cleanup.
+            logger.error("[delete] 场次关闭失败 room_id=%s session_id=%s error_type=%s",
+                         room_id, session_id, type(exc).__name__)
         average, maximum = dependencies.finalize_concurrency(room_id, session_id)
         LiveSession.update_concurrency_by_id(session_id, avg_concurrency=average, max_concurrency=maximum)
         runtime_state.CONCURRENCY_CACHE.pop(room_id, None)
