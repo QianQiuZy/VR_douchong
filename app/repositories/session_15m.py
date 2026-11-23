@@ -12,7 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from .. import DanmakuBucketTarget, DanmakuCounts
 from .. import danmaku_metrics, rounded_concurrency
 from ..database import Session
-from .danmaku import increments, upsert_fields
+from .danmaku import claim_replay, increments, upsert_fields
 from .history import notify_history_change
 from .tables import month_str, normalize_month_code
 
@@ -195,6 +195,8 @@ def add_danmaku_counts(
 ) -> bool:
     session = Session()
     try:
+        if not claim_replay(session, counts):
+            return True
         if _add_to_archived_bucket(session, target, counts):
             session.commit()
             notify_history_change(target.month)

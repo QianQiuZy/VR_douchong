@@ -24,12 +24,13 @@ import asyncio
 import datetime
 import logging
 import signal
+import sqlite3
 import threading
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import api_app, archive_service, event_ingestion, monitoring_jobs, runtime_state
-from . import danmaku_metrics
+from . import danmaku_metrics, danmaku_recovery
 from .danmaku_archive import archive_danmaku_metrics
 from .config import APP_HOST, APP_PORT
 from .database import create_schema, ensure_runtime_schema, log_pool_status
@@ -218,8 +219,7 @@ def init_room_info() -> None:
     """Seed RoomInfo anchor names from the configured rooms."""
     from . import room_config
 
-    for room_id, name in room_config.get_room_anchors().items():
-        RoomInfo.upsert(room_id, anchor_name=name)
+    RoomInfo.sync_names(room_config.get_room_anchors())
 
 
 def init_session() -> None:
@@ -234,7 +234,12 @@ def _flush_active_metrics(end_time: datetime.datetime) -> None:
     for room_id in runtime_state.DANMAKU_PENDING.keys() | runtime_state.CURRENT_SESSIONS.keys():
         monitoring_jobs.flush_pending_danmaku_for_room(room_id, runtime_state.CURRENT_SESSIONS.get(room_id), end_time)
     for room_id, session_id in tuple(runtime_state.CURRENT_SESSIONS.items()):
-        checkpoint_session(session_id, runtime_state.PENDING_SESSION_ENDS.get(room_id, end_time))
+        checkpoint = runtime_state.PENDING_SESSION_ENDS.get(room_id)
+        if checkpoint is None and room_id in runtime_state.SESSION_ATTRIBUTION_PAUSED:
+            checkpoint = runtime_state.LAST_LIVE_OBSERVATIONS.get(session_id)
+            if checkpoint is None:
+                continue
+        checkpoint_session(session_id, checkpoint or end_time)
     retry_failed_buckets()
 
 
@@ -263,6 +268,7 @@ async def main() -> None:
     runtime_state.MAIN_LOOP = asyncio.get_running_loop()
     attention_ready = asyncio.Event()
     runtime_state.STARTUP_ATTENTION_READY = attention_ready
+    danmaku_recovery.refresh_rooms()
     danmaku_metrics.start_tracking()
     init_room_info()
     init_session()
@@ -271,6 +277,8 @@ async def main() -> None:
     entry_worker = asyncio.create_task(event_ingestion.entry_monitor.worker(), name="entry-writer")
     connections = asyncio.create_task(_run_clients_and_attention(attention_ready), name="startup-connections")
 
+    flush_worker = asyncio.create_task(monitoring_jobs.danmaku_flush_scheduler())
+    recovery_worker = asyncio.create_task(danmaku_recovery.retry_scheduler())
     try:
         await asyncio.gather(
             connections,
@@ -284,7 +292,7 @@ async def main() -> None:
             monitoring_jobs.daily_fans_worker(),
             monitoring_jobs.guard_fans_refresh_scheduler(),  # 未开播房间每小时刷新守护 + 粉丝团
             monitoring_jobs.bili_ticket_scheduler(),  # 每日 5:00 刷新 bili_ticket
-            monitoring_jobs.danmaku_flush_scheduler(),
+            flush_worker, recovery_worker,
             monitoring_jobs.concurrency_poll_scheduler(),  # 开播房间每 15 秒轮询同接
             pool_status_scheduler(),
             event_ingestion.entry_monitor.reload_scheduler(),
@@ -293,11 +301,16 @@ async def main() -> None:
     finally:
         # gather does not cancel siblings when one job raises. Stop the writer
         # before the final drain so the same mutable batch cannot be saved twice.
-        entry_worker.cancel()
-        connections.cancel()
-        await asyncio.gather(entry_worker, connections, return_exceptions=True)
+        workers = (entry_worker, connections, flush_worker, recovery_worker)
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
         await asyncio.gather(*(client.stop_and_close() for client in tuple(runtime_state.ROOM_CLIENTS.values())),
                              return_exceptions=True)
+        try:
+            danmaku_recovery.capture(tuple(runtime_state.DANMAKU_PENDING))
+        except (OSError, sqlite3.Error):
+            logger.exception("[DanmakuRecovery] 退出暂存失败，将直接落库后重试")
         await event_ingestion.entry_monitor.flush()
         snapshot_tasks = [snapshot.task for snapshot in runtime_state.SESSION_END_SNAPSHOTS.values()
                           if snapshot.task is not None]
@@ -305,10 +318,14 @@ async def main() -> None:
             task.cancel()
         await asyncio.gather(*snapshot_tasks, return_exceptions=True)
         runtime_state.SESSION_END_SNAPSHOTS.clear()
-        _flush_active_metrics(_now())
-        if runtime_state.aiohttp_session:
-            await runtime_state.aiohttp_session.close()
-        runtime_state.STARTUP_ATTENTION_READY = None
+        try:
+            _flush_active_metrics(_now())
+            danmaku_recovery.capture(tuple(runtime_state.DANMAKU_PENDING))
+            await danmaku_recovery.drain(5)
+        finally:
+            if runtime_state.aiohttp_session:
+                await runtime_state.aiohttp_session.close()
+            runtime_state.STARTUP_ATTENTION_READY = None
 
 
 # ------------------ API server thread ------------------ #

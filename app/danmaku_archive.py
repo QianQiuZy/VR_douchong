@@ -3,7 +3,7 @@
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.mysql import insert
 
-from . import danmaku_metrics as metrics, room_config
+from . import danmaku_metrics as metrics, room_config, runtime_state
 from .database import Session
 from .models import LiveSession, RoomStatsMonthly
 from .repositories.history import notify_history_change
@@ -75,7 +75,7 @@ def archive_danmaku_metrics(month: str | None = None) -> None:
 def _settle(model, key, scope, start=None) -> None:
     with Session.begin() as session:
         row = session.get(model, key, with_for_update=True)
-        if row is None or row.danmaku_status in ("archived", "partial", "unavailable"):
+        if row is None or row.room_id in runtime_state.DANMAKU_RECOVERY_ROOMS or row.danmaku_status in ("archived", "partial", "unavailable"):
             return
         result = metrics.settle(row, scope, start or row.start_time)
         if result is None:

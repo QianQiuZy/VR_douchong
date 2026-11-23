@@ -203,6 +203,11 @@ def isolated_end_snapshots(monkeypatch):
 
     monkeypatch.setattr(runtime_state, "SESSION_END_SNAPSHOTS", {})
     monkeypatch.setattr(runtime_state, "LAST_LIVE_OBSERVATIONS", {})
+    monkeypatch.setattr(runtime_state, "DANMAKU_RECOVERY_ROOMS", set())
+    monkeypatch.setattr(runtime_state, "RECOVERING_ROOMS", set())
+    monkeypatch.setattr(runtime_state, "SESSION_ATTRIBUTION_PAUSED", set())
+    monkeypatch.setattr(runtime_state, "RECOVERED_LIVE_AT", {})
+    monkeypatch.setattr(runtime_state, "RECENT_LIVE_AT", {})
 
 
 @pytest.fixture(autouse=True)

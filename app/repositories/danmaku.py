@@ -3,6 +3,22 @@
 from sqlalchemy import case, func
 
 
+def claim_replay(session, counts) -> bool:
+    if counts.replay_cursor is None:
+        return True
+    from ..models.recovery import DanmakuReplayCursor
+
+    stream, token = counts.replay_cursor
+    row = session.get(DanmakuReplayCursor, stream, with_for_update=True)
+    if row is None:
+        session.add(DanmakuReplayCursor(stream=stream, token=token))
+    elif row.token == token:
+        return False
+    else:
+        row.token = token
+    return True
+
+
 def increments(counts):
     """Counters that already treat a missing baseline as zero on write."""
     return {

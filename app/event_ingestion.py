@@ -287,6 +287,8 @@ class MyHandler(blivedm.BaseHandler):
         entry_monitor.receive(client, message)
 
     def _resolve_session(self, client, session_id: int | None, event_time: datetime.datetime) -> int | None:
+        if client.room_id in runtime_state.SESSION_ATTRIBUTION_PAUSED:
+            return None
         if session_id is not None:
             return session_id
         room_id = client.room_id
@@ -364,12 +366,12 @@ class MyHandler(blivedm.BaseHandler):
         else:
             profit = dependencies.profit_to_tenths(total_price, total_coin)
         RoomBlindBoxMonthly.add_amounts(client.room_id, event_time.strftime("%Y%m"), count=num, profit=profit)
-        session_id = runtime_state.CURRENT_SESSIONS.get(client.room_id)
+        session_id = runtime_state.event_session(client.room_id)
         if session_id:
             LiveSession.add_values_by_id(session_id, blind_box_count=num, blind_box_profit=profit)
-        else:
+        elif client.room_id not in runtime_state.SESSION_ATTRIBUTION_PAUSED:
             LiveSession.add_values_by_room_open(client.room_id, blind_box_count=num, blind_box_profit=profit)
-        active_session_id = runtime_state.CURRENT_SESSIONS.get(client.room_id)
+        active_session_id = runtime_state.event_session(client.room_id)
         if active_session_id:
             record_payment(
                 active_session_id,
@@ -406,10 +408,10 @@ class MyHandler(blivedm.BaseHandler):
             "gift",
         )
         RoomStatsMonthly.add_amounts(client.room_id, event_time.strftime("%Y%m"), gift=value)
-        session_id = runtime_state.CURRENT_SESSIONS.get(client.room_id)
+        session_id = runtime_state.event_session(client.room_id)
         if session_id:
             LiveSession.add_values_by_id(session_id, gift=value)
-        else:
+        elif client.room_id not in runtime_state.SESSION_ATTRIBUTION_PAUSED:
             LiveSession.add_values_by_room_open(client.room_id, gift=value)
         bucket_payer_added = self._record_payment_metrics(
             client,
@@ -418,7 +420,7 @@ class MyHandler(blivedm.BaseHandler):
             event_time,
             gift=value,
         )
-        active_session_id = runtime_state.CURRENT_SESSIONS.get(client.room_id)
+        active_session_id = runtime_state.event_session(client.room_id)
         if active_session_id:
             record_payment(active_session_id, event_time, gift=value, payer_added=bucket_payer_added)
         log_message = f"[{client.room_id}] {uname} uid{uid} 赠送 {gift_name}×{num} ({value:.2f})"
@@ -445,7 +447,7 @@ class MyHandler(blivedm.BaseHandler):
             if getattr(message, "is_mirror", False) or runtime_state.LAST_STATUS.get(room_id, 0) != 1:
                 return
             event_time = _timestamp_to_datetime(getattr(message, "timestamp", None)) or datetime.datetime.now().astimezone().replace(tzinfo=None)
-            session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
+            session_id = runtime_state.event_session(room_id)
             target = danmaku_bucket_target(session_id, event_time) if session_id is not None else None
             if target is None:
                 session_id = self._resolve_session(client, None, event_time)
@@ -563,10 +565,10 @@ class MyHandler(blivedm.BaseHandler):
             "guard",
         )
         RoomStatsMonthly.add_amounts(room_id, event_time.strftime("%Y%m"), guard=value)
-        session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
+        session_id = runtime_state.event_session(room_id)
         if session_id:
             LiveSession.add_values_by_id(session_id, guard=value)
-        else:
+        elif room_id not in runtime_state.SESSION_ATTRIBUTION_PAUSED:
             LiveSession.add_values_by_room_open(room_id, guard=value)
         bucket_payer_added = self._record_payment_metrics(
             client,
@@ -575,7 +577,7 @@ class MyHandler(blivedm.BaseHandler):
             event_time,
             guard=value,
         )
-        active_session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
+        active_session_id = runtime_state.event_session(room_id)
         if active_session_id:
             record_payment(active_session_id, event_time, guard=value, payer_added=bucket_payer_added)
         logger.info(
@@ -638,10 +640,10 @@ class MyHandler(blivedm.BaseHandler):
                 "super_chat",
             )
             RoomStatsMonthly.add_amounts(room_id, event_time.strftime("%Y%m"), super_chat=value)
-            session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
+            session_id = runtime_state.event_session(room_id)
             if session_id:
                 LiveSession.add_values_by_id(session_id, super_chat=value)
-            else:
+            elif room_id not in runtime_state.SESSION_ATTRIBUTION_PAUSED:
                 LiveSession.add_values_by_room_open(room_id, super_chat=value)
             bucket_payer_added = self._record_payment_metrics(
                 client,
@@ -651,7 +653,7 @@ class MyHandler(blivedm.BaseHandler):
                 super_chat=value,
                 steel_coin=value < 30,
             )
-            active_session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
+            active_session_id = runtime_state.event_session(room_id)
             if active_session_id:
                 record_payment(
                     active_session_id,

@@ -100,6 +100,13 @@ def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) 
         session.close()
 
 
+def open_room_ids(model, rooms: list[int]) -> set[int]:
+    with Session() as session:
+        return {room for room, in session.query(model.room_id).filter(
+            model.room_id.in_(rooms), model.end_time.is_(None)
+        ).distinct()}
+
+
 def find_open_session(model, room_id: int, *, strict: bool = False) -> tuple[int, datetime.datetime] | None:
     session = Session()
     try:
@@ -202,7 +209,7 @@ def close_session_by_id(model, session_id: int | None, end_dt: datetime.datetime
             row.danmaku_status = "pending"
             pending = runtime_state.DANMAKU_PENDING.get(row.room_id)
             settlement = None
-            if not pending or session_id not in pending.sessions:
+            if row.room_id not in runtime_state.DANMAKU_RECOVERY_ROOMS and (not pending or session_id not in pending.sessions):
                 settlement = danmaku_metrics.settle(row, f"session:{session_id}", row.start_time)
             changed_month = getattr(row, "month", None)
             session.commit()

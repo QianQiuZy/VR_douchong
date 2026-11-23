@@ -218,6 +218,7 @@ __marimo__/
 
 # Room UID cache
 *.uids.json
+*.danmaku.sqlite3*
 .*.uids.json.*.tmp
 
 # Local environment overrides

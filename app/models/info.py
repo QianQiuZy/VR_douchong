@@ -8,6 +8,7 @@ from ..repositories.info import (
     attention_upsert_daily_fans,
     attention_upsert_daily_guards,
     room_info_upsert,
+    sync_room_names,
 )
 
 
@@ -18,6 +19,10 @@ class RoomInfo(Base):
     room_id = Column(Integer, primary_key=True)
     anchor_name = Column(String(100), nullable=False)
     attention = Column(Integer, default=0, nullable=False)
+
+    @classmethod
+    def sync_names(cls, anchors: dict[int, str]) -> None:
+        sync_room_names(cls, anchors)
 
     @classmethod
     def upsert(cls, room_id: int, anchor_name: str | None = None, attention: int | None = None) -> None:

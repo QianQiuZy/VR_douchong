@@ -10,6 +10,22 @@ from .history import notify_history_change
 logger = logging.getLogger(__name__)
 
 
+def sync_room_names(model, anchors: dict[int, str]) -> None:
+    if not anchors:
+        return
+    try:
+        with Session.begin() as session:
+            existing = dict(session.query(model.room_id, model.anchor_name)
+                            .filter(model.room_id.in_(anchors)).all())
+            changed = [{"room_id": room, "anchor_name": name} for room, name in anchors.items()
+                       if existing.get(room) != name]
+            if changed:
+                stmt = insert(model).values(changed)
+                session.execute(stmt.on_duplicate_key_update(anchor_name=stmt.inserted.anchor_name))
+    except SQLAlchemyError as exc:
+        logger.error("[RoomInfo] 批量同步房间名称失败 error_type=%s", type(exc).__name__)
+
+
 def room_info_upsert(model, room_id: int, anchor_name: str | None = None, attention: int | None = None) -> None:
     session = Session()
     try:

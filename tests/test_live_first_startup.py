@@ -21,6 +21,7 @@ def isolate_startup(monkeypatch):
     monkeypatch.setattr(runtime_state, "GUARD_FANS_QUEUE", asyncio.Queue())
     monkeypatch.setattr(metrics_runtime, "_buckets", {})
     monkeypatch.setattr(monitoring_jobs.LiveSession, "find_open_session", lambda room, **kwargs: None)
+    monkeypatch.setattr(monitoring_jobs.LiveSession, "open_room_ids", lambda rooms: set())
     monkeypatch.setattr(monitoring_jobs.LiveSession, "start_session", lambda room, *_: room)
     monkeypatch.setattr(runtime_state, "aiohttp_session", object())
 
@@ -45,7 +46,7 @@ def test_offline_rooms_start_only_after_all_live_rooms_authenticate(monkeypatch:
             return False
 
         async def json(self, **kwargs):
-            return {"code": 0, "data": {"1": {"live_status": offline_status}, "2": {"live_status": 1}, "3": {"live_status": 1}}}
+            return {"code": 0, "data": {"1": {"live_status": offline_status}, "2": {"live_status": 1, "live_time": 1500000000}, "3": {"live_status": 1, "live_time": 1500000000}}}
 
     class Session:
         calls = 0
@@ -122,7 +123,7 @@ def test_status_snapshot_handles_missing_rooms_and_multiple_batches(monkeypatch:
             return False
 
         async def json(self, **kwargs):
-            return {"code": 0, "data": {str(uid): {"live_status": 1} for uid in self.uids[:100] if uid in {1, 101, 125}}}
+            return {"code": 0, "data": {str(uid): {"live_status": 1, "live_time": 1500000000} for uid in self.uids[:100] if uid in {1, 101, 125}}}
 
     class Session:
         def get(self, url, *, params, **kwargs):
@@ -319,7 +320,7 @@ def test_startup_timeout_releases_healthy_rooms_and_keeps_retrying(monkeypatch):
         monkeypatch.setattr(runtime_state, "DAILY_ATTENTION_QUEUE", daily_queue)
         monkeypatch.setattr(monitoring_jobs.room_config, "get_room_ids", lambda: [10, 20, 30, 40])
         async def statuses():
-            yield {rid: (rid, {"live_status": int(rid in (10, 20))}) for rid in (10, 20, 30, 40)}
+            yield {rid: (rid, {"live_status": int(rid in (10, 20)), "live_time": 1500000000}) for rid in (10, 20, 30, 40)}
 
         monkeypatch.setattr(monitoring_jobs, "status_batches", statuses)
         monkeypatch.setattr(monitoring_jobs, "STARTUP_AUTH_WAIT_SECONDS", 0.05)
@@ -385,8 +386,8 @@ def test_newly_live_room_takes_next_slot_while_status_batch_is_retried(monkeypat
 
             async def json(self, **kwargs):
                 if self.uids == [101]:
-                    return {"data": {"101": {"live_status": 1}}}
-                return {"data": {"1": {"live_status": 1}, "99": {"live_status": int(first_started.is_set())}}}
+                    return {"data": {"101": {"live_status": 1, "live_time": 1500000000}}}
+                return {"data": {"1": {"live_status": 1, "live_time": 1500000000}, "99": {"live_status": int(first_started.is_set()), "live_time": 1500000000}}}
 
         class Session:
             def get(self, url, *, params, **kwargs):
@@ -427,3 +428,51 @@ def test_newly_live_room_takes_next_slot_while_status_batch_is_retried(monkeypat
         assert attempts[:4] == [1, 101, 1, 101]
 
     anyio.run(scenario)
+
+
+def test_ambiguous_rooms_do_not_block_siblings_or_admit_events(monkeypatch):
+    from app.live_startup import StartupRooms
+
+    async def scenario():
+        startup = StartupRooms()
+        fetch_started = asyncio.Event()
+        release = asyncio.Event()
+        start = 1500000000
+        checked = []
+
+        async def batches():
+            yield {1: (10, {"live_status": 1}), 2: (20, None),
+                   3: (30, {"live_status": 1, "live_time": start})}
+            await fetch_started.wait()
+            assert startup.observed == {3: 30}
+            assert runtime_state.event_session(3) == 3
+            assert runtime_state.RECOVERING_ROOMS == {2}
+            release.set()
+
+        async def detail(room):
+            checked.append(room)
+            fetch_started.set()
+            await release.wait()
+            if room == 2:
+                return {"room_id": 2, "uid": 999, "live_status": 0}
+            return {"room_id": 1, "uid": 10, "live_status": 1, "live_time": "2017-07-14 10:40:00"}
+
+        async def stop(_):
+            if release.is_set():
+                raise asyncio.CancelledError
+            await anyio.lowlevel.checkpoint()
+
+        monkeypatch.setattr(monitoring_jobs.LiveSession, "open_room_ids", lambda rooms: {2})
+        monkeypatch.setattr(monitoring_jobs, "status_batches", batches)
+        monkeypatch.setattr(monitoring_jobs.room_config, "get_room_ids", lambda: [1, 2, 3])
+        monkeypatch.setattr(runtime_state, "ROOM_UIDS", {1: 10, 2: 20, 3: 30})
+        monkeypatch.setattr(bilibili_gateway, "_fetch_room_info", detail)
+        monkeypatch.setattr(monitoring_jobs.asyncio, "sleep", stop)
+        with pytest.raises(asyncio.CancelledError):
+            await monitoring_jobs.monitor_all_rooms_status(startup)
+        assert sorted(checked) == [1, 2]
+        assert startup.observed == {1: 10, 3: 30}
+        assert runtime_state.event_session(2) is None
+        assert runtime_state.RECOVERING_ROOMS == {2}
+
+    asyncio.run(scenario())

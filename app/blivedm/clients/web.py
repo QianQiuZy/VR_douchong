@@ -43,6 +43,15 @@ def _log_failure(endpoint, response, data=None, room_id=None):
 
 
 _session_to_wbi_signer = weakref.WeakKeyDictionary()
+_session_logins = weakref.WeakKeyDictionary()
+
+
+class _SessionLogin:
+    def __init__(self):
+        self.lock = asyncio.Lock()
+        self.cookie_digest = None
+        self.uid = None
+        self.expires = 0.0
 
 
 def _get_wbi_signer(session: aiohttp.ClientSession) -> '_WbiSigner':
@@ -203,6 +212,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
         self._tmp_room_id = room_id
         """用来init_room的临时房间ID，可以用短ID"""
         self._uid = uid
+        self._auto_uid = uid is None
 
         # 在调用init_room后初始化的字段
         self._room_owner_uid: Optional[int] = None
@@ -243,7 +253,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
 
         :return: True代表没有降级，如果需要降级后还可用，重载这个函数返回True
         """
-        if self._uid is None and not await self._init_uid():
+        if self._auto_uid and not await self._init_uid():
             logger.warning('room=%d _init_uid() failed', self._tmp_room_id)
             self._uid = 0
 
@@ -265,13 +275,39 @@ class BLiveClient(ws_base.WebSocketClientBase):
         return res
 
     async def _init_uid(self):
-        cookies = self._session.cookie_jar.filter_cookies(yarl.URL(UID_INIT_URL))
-        sessdata_cookie = cookies.get('SESSDATA', None)
-        if sessdata_cookie is None or sessdata_cookie.value == '':
-            # cookie都没有，不用请求了
-            self._uid = 0
+        try:
+            async with asyncio.timeout(DANMAKU_REQUEST_DEADLINE):
+                return await self._shared_login_uid()
+        except TimeoutError:
+            logger.warning('room=%d login UID lookup timed out', self._tmp_room_id)
+            return False
+
+    async def _shared_login_uid(self):
+        login = _session_logins.get(self._session)
+        if login is None:
+            login = _session_logins[self._session] = _SessionLogin()
+        async with login.lock:
+            cookie = self._session.cookie_jar.filter_cookies(yarl.URL(UID_INIT_URL)).get("SESSDATA")
+            if not cookie or not cookie.value:
+                login.uid = None
+                self._uid = 0
+                return True
+            digest = hashlib.sha256(cookie.value.encode()).digest()
+            now = asyncio.get_running_loop().time()
+            if login.cookie_digest == digest and login.uid is not None and now < login.expires:
+                self._uid = login.uid
+                return True
+            login.uid = None
+            if not await self._fetch_login_uid():
+                return False
+            current = self._session.cookie_jar.filter_cookies(yarl.URL(UID_INIT_URL)).get("SESSDATA")
+            if not current or hashlib.sha256(current.value.encode()).digest() != digest:
+                return False
+            if self._uid:
+                login.cookie_digest, login.uid, login.expires = digest, self._uid, now + 300
             return True
 
+    async def _fetch_login_uid(self):
         try:
             async with self._session.get(
                 UID_INIT_URL,
@@ -294,9 +330,11 @@ class BLiveClient(ws_base.WebSocketClientBase):
                     # 未登录
                     self._uid = 0
                 else:
-                    self._uid = data['mid']
+                    self._uid = int(data['mid'])
+                    if self._uid <= 0:
+                        return False
                 return True
-        except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError, KeyError):
             logger.exception('room=%d _init_uid() failed:', self._tmp_room_id)
             return False
 
@@ -309,7 +347,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
 
     async def _init_buvid(self):
         try:
-            async with self._session.get(
+            async with asyncio.timeout(DANMAKU_REQUEST_DEADLINE), self._session.get(
                 BUVID_INIT_URL,
                 headers={'User-Agent': utils.USER_AGENT},
             ) as res:
@@ -321,7 +359,7 @@ class BLiveClient(ws_base.WebSocketClientBase):
 
     async def _init_room_id_and_owner(self):
         try:
-            async with self._session.get(
+            async with asyncio.timeout(DANMAKU_REQUEST_DEADLINE), self._session.get(
                 ROOM_INIT_URL,
                 headers={'User-Agent': utils.USER_AGENT},
                 params={

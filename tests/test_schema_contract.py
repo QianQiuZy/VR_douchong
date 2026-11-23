@@ -105,6 +105,7 @@ class TestSchemaTablesAndColumns:
     def test_metadata_contains_existing_tables_and_entry_log(self, gift_module):
         assert sorted(gift_module.Base.metadata.tables.keys()) == [
             "attention",
+            "danmaku_replay_cursor",
             "live_session",
             "live_session_15m_stats",
             "room_blind_box_monthly",

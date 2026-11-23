@@ -3,6 +3,7 @@
 import asyncio
 import datetime
 import threading
+from collections import deque
 from dataclasses import dataclass
 
 import aiohttp
@@ -39,6 +40,25 @@ STREAM_STARTS: dict[int, datetime.datetime] = {}
 # Keyed by session ID; only a successful live status poll advances this time.
 LAST_LIVE_OBSERVATIONS: dict[int, datetime.datetime] = {}
 LIVE_INFO: dict[int, dict[str, str]] = {}
+# Open rows awaiting a first explicit status, and rooms whose events cannot
+# currently be attributed to a confirmed broadcast.
+RECOVERING_ROOMS: set[int] = set()
+SESSION_ATTRIBUTION_PAUSED: set[int] = set()
+RECOVERED_LIVE_AT: dict[int, datetime.datetime] = {}
+RECENT_LIVE_AT: dict[int, deque[datetime.datetime]] = {}
+
+
+def observe_live(room_id: int, session_id: int, now: datetime.datetime) -> None:
+    LAST_LIVE_OBSERVATIONS[session_id] = now
+    if room_id not in RECENT_LIVE_AT:
+        RECENT_LIVE_AT[room_id] = deque(maxlen=64)
+    RECENT_LIVE_AT[room_id].append(now)
+
+
+def event_session(room_id: int) -> int | None:
+    return None if room_id in SESSION_ATTRIBUTION_PAUSED else CURRENT_SESSIONS.get(room_id)
+
+
 PENDING_SESSION_ENDS: dict[int, datetime.datetime] = {}
 
 
@@ -58,6 +78,7 @@ class SessionEndSnapshot:
 SESSION_END_SNAPSHOTS: dict[int, SessionEndSnapshot] = {}
 INVALID_DURATION_SESSIONS: dict[int, int] = {}
 FORCED_OFFLINE_AT: dict[int, datetime.datetime] = {}
+DANMAKU_RECOVERY_ROOMS: set[int] = set()
 DANMAKU_PENDING: dict[int, PendingDanmaku] = {}
 FANS_COUNT: dict[int, int] = {}
 GUARD_COUNTS: dict[int, dict[str, int]] = {}

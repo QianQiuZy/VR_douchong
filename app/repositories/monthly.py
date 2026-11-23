@@ -8,7 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .. import DanmakuCounts
 from ..database import Session
-from .danmaku import upsert_fields
+from .danmaku import claim_replay, upsert_fields
 from .history import notify_history_change
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,8 @@ def add_danmaku_counts(model, room_id: int, month: str, counts: DanmakuCounts) -
         return True
     session = Session()
     try:
+        if not claim_replay(session, counts):
+            return True
         values, updates = upsert_fields(model, counts)
         if counts.audience is not None:
             values["danmaku_status"] = "collecting"

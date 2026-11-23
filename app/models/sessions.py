@@ -84,6 +84,11 @@ class LiveSession(Base):
         return find_open_session(cls, room_id, strict=strict)
 
     @classmethod
+    def open_room_ids(cls, rooms: list[int]) -> set[int]:
+        from ..repositories.live_sessions import open_room_ids
+        return open_room_ids(cls, rooms)
+
+    @classmethod
     def checkpoint_live_observations(cls) -> None:
         checkpoint_live_observations(cls)
 

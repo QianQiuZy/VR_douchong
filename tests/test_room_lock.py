@@ -138,7 +138,7 @@ def test_status_poll_only_starts_session_after_room_lock_expires(lock_state, mon
             return False
 
         async def json(self, **kwargs):
-            return {"data": {"1": {"live_status": 1, "title": "new live"}}}
+            return {"data": {"1": {"live_status": 1, "title": "new live", "live_time": int(now.timestamp())}}}
 
     class Session:
         def get(self, *args, **kwargs):

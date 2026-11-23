@@ -230,3 +230,44 @@ class DanmakuPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('gaia_vvoucher=True', output)
         self.assertIn('code=invalid', output)
         self.assertNotIn('private-', output)
+
+    async def test_shared_login_uid_uses_one_nav_and_revalidates_cookie(self):
+        from app.blivedm.clients import web
+        from yarl import URL
+
+        async with aiohttp.ClientSession() as session:
+            first, second = [BLiveClient(room, session=session) for room in (10, 20)]
+            source = URL(web.UID_INIT_URL)
+            with patch.object(session, "get") as nav:
+                self.assertTrue(await first._init_uid())
+                self.assertEqual(first.uid, 0)
+                nav.assert_not_called()
+                session.cookie_jar.update_cookies({"SESSDATA": "test-one"}, source)
+                nav.return_value = Response({"code": 0, "data": {"isLogin": True, "mid": 10}})
+                self.assertEqual(await asyncio.gather(first._init_uid(), second._init_uid()), [True, True])
+                self.assertEqual([first.uid, second.uid, nav.call_count], [10, 10, 1])
+                session.cookie_jar.update_cookies({"SESSDATA": "test-two"}, source)
+                nav.return_value = Response({"code": -101})
+                self.assertTrue(await first._init_uid())
+                self.assertEqual(first.uid, 0)
+                nav.return_value = Response({"code": 0, "data": {"isLogin": True, "mid": 20}})
+                self.assertTrue(await second._init_uid())
+                self.assertEqual((second.uid, nav.call_count), (20, 3))
+                web._session_logins[session].expires = 0
+                self.assertTrue(await first._init_uid())
+                self.assertEqual((first.uid, nav.call_count), (20, 4))
+
+    async def test_all_preflight_requests_respect_short_deadline(self):
+        from app.blivedm.clients import web
+        from yarl import URL
+
+        class Stalled(Response):
+            async def __aenter__(self):
+                await asyncio.Event().wait()
+
+        async with aiohttp.ClientSession() as session:
+            session.cookie_jar.update_cookies({"SESSDATA": "test"}, URL(web.UID_INIT_URL))
+            client = BLiveClient(10, session=session)
+            with patch.object(web, "DANMAKU_REQUEST_DEADLINE", 0.01), patch.object(session, "get", return_value=Stalled({})):
+                for request in (client._init_uid, client._init_buvid, client._init_room_id_and_owner):
+                    self.assertFalse(await asyncio.wait_for(request(), 0.5))

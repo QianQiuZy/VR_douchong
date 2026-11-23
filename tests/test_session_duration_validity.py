@@ -637,3 +637,107 @@ def test_cold_restart_retries_failed_close_before_accepting_new_session(duration
     assert runtime_state.CURRENT_SESSIONS[ROOM] != sid
     with factory() as sql:
         assert sql.get(LiveSession, sid).end_time == START
+
+
+@pytest.mark.parametrize("gap", [180, 181])
+def test_stale_first_live_time_corrected_while_room_stays_live(duration_state, gap):
+    factory, deps, _ = duration_state
+    sid = start_live()
+    observed = START + datetime.timedelta(minutes=18)
+    runtime_state.LAST_LIVE_OBSERVATIONS[sid] = observed
+    LiveSession.checkpoint_live_observations()
+    runtime_state.LAST_LIVE_OBSERVATIONS.clear()
+    runtime_state.CURRENT_SESSIONS.clear()
+    runtime_state.LAST_STATUS.clear()
+    runtime_state.STREAM_STARTS.clear()
+    resumed = observed + datetime.timedelta(seconds=gap)
+    now = resumed + datetime.timedelta(minutes=20)
+    stale = {"live_status": 1, "live_time": int(START.timestamp())}
+    corrected = dict(stale, live_time=int(resumed.timestamp()))
+    assert monitoring_jobs._apply_room_status(ROOM, stale, now)
+    assert runtime_state.LAST_LIVE_OBSERVATIONS[sid] == observed
+    # A second cached batch now appears to put A beyond B's real start.
+    assert monitoring_jobs._apply_room_status(ROOM, stale, now)
+    assert monitoring_jobs._apply_room_status(ROOM, corrected, now)
+    current = runtime_state.event_session(ROOM)
+    assert current and (current == sid) == (gap == 180)
+    bucket = metrics_runtime.danmaku_bucket_target(current, resumed + datetime.timedelta(seconds=1))
+    assert bucket and bucket.bucket_index == (1 if gap == 180 else 0)
+    assert not monitoring_jobs._apply_room_status(ROOM, stale, now)
+    with factory() as sql:
+        assert sql.get(LiveSession, sid).end_time == (None if gap == 180 else observed)
+    room_lifecycle.finish_live_session(ROOM, now, deps)
+    assert totals(factory)[0] == 38 * 60
+
+
+@pytest.mark.parametrize("elapsed", [180, 181])
+def test_startup_inventory_reconciles_explicit_offline_at_last_observation(duration_state, elapsed, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from app import event_ingestion
+
+    factory, _, _ = duration_state
+    sid = start_live()
+    last_seen = START + datetime.timedelta(minutes=17)
+    runtime_state.LAST_LIVE_OBSERVATIONS[sid] = last_seen
+    LiveSession.checkpoint_live_observations()
+    for state in (runtime_state.CURRENT_SESSIONS, runtime_state.LAST_LIVE_OBSERVATIONS,
+                  runtime_state.LAST_STATUS, runtime_state.STREAM_STARTS):
+        state.clear()
+    assert LiveSession.open_room_ids([ROOM, ROOM + 1]) == {ROOM}
+    runtime_state.RECOVERING_ROOMS.add(ROOM)
+    assert monitoring_jobs._apply_room_status(ROOM, {"live_status": 0}, last_seen + datetime.timedelta(seconds=elapsed))
+    assert ROOM not in runtime_state.RECOVERING_ROOMS
+    assert runtime_state.event_session(ROOM) is None
+    client = SimpleNamespace(room_id=ROOM)
+    handler = MyHandler()
+    assert handler._resolve_session(client, None, last_seen) is None
+    monthly, daily = Mock(), Mock()
+    monkeypatch.setattr(event_ingestion, "record_whale_revenue", Mock())
+    monkeypatch.setattr(event_ingestion.RoomStatsMonthly, "add_amounts", monthly)
+    monkeypatch.setattr(RoomLiveStats, "add_metrics", daily)
+    for method in ("add_values_by_id", "add_values_by_room_open", "find_open_session"):
+        monkeypatch.setattr(LiveSession, method, Mock(side_effect=AssertionError("offline session write")))
+    handler._record_gift(client, "test", 1, 1000, event_time=last_seen)
+    monthly.assert_called_once_with(ROOM, "202610", gift=1)
+    assert daily.call_args.kwargs["gift"] == 1
+    with factory() as sql:
+        assert sql.get(LiveSession, sid).end_time == (last_seen if elapsed > 180 else None)
+    assert runtime_state.PENDING_SESSION_ENDS.get(ROOM) == (None if elapsed > 180 else last_seen)
+    assert totals(factory)[0] == 17 * 60
+
+
+
+def test_missing_start_during_grace_waits_for_confirmed_reopen(duration_state, monkeypatch):
+    factory, deps, _ = duration_state
+    sid = start_live()
+    ended = START + datetime.timedelta(minutes=10)
+    room_lifecycle.defer_live_session_finish(ROOM, ended, deps)
+    runtime_state.LAST_STATUS[ROOM] = 0
+    runtime_state.ROOM_UIDS[ROOM] = 99
+    reopened = ended + datetime.timedelta(seconds=180)
+    now = reopened + datetime.timedelta(seconds=5)
+    observations = iter([{"live_status": 1}, {"live_status": 1, "live_time": int(reopened.timestamp())}])
+
+    async def batches():
+        yield {ROOM: (99, next(observations))}
+
+    async def no_detail(_):
+        return None
+
+    async def tick(_):
+        with factory() as sql:
+            assert sql.get(LiveSession, sid).end_time is None
+        if runtime_state.LAST_STATUS[ROOM] == 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(runtime_state, "aiohttp_session", object())
+    monkeypatch.setattr(monitoring_jobs, "_now", lambda: now)
+    monkeypatch.setattr(monitoring_jobs, "status_batches", batches)
+    monkeypatch.setattr(monitoring_jobs.room_config, "get_room_ids", lambda: [ROOM])
+    monkeypatch.setattr(monitoring_jobs.bilibili_gateway, "_fetch_room_info", no_detail)
+    monkeypatch.setattr(monitoring_jobs.asyncio, "sleep", tick)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(monitoring_jobs.monitor_all_rooms_status())
+    assert runtime_state.event_session(ROOM) == sid
+    assert runtime_state.STREAM_STARTS[ROOM] == reopened

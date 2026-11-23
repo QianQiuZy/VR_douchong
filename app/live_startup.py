@@ -1,6 +1,7 @@
 """Schedule first connections from the same status observations used by the collector."""
 
 import asyncio
+import datetime
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 
@@ -35,6 +36,70 @@ async def status_batches() -> AsyncIterator[dict[int, tuple[int, dict | None]]]:
             continue
         requested = set(batch)
         yield {room: (uid, payload["data"].get(str(uid))) for room, uid in rooms.items() if uid in requested}
+
+
+def reported_start(info: dict, now: datetime.datetime) -> datetime.datetime | None:
+    raw = info.get("live_time")
+    try:
+        if str(raw).isdigit() and int(raw) > 0:
+            start = datetime.datetime.fromtimestamp(int(raw))
+        else:
+            # get_info supplies a Shanghai wall-clock string; the batch endpoint
+            # normally supplies epoch seconds.
+            start = datetime.datetime.strptime(str(raw), "%Y-%m-%d %H:%M:%S")
+            start = start.replace(tzinfo=runtime_state.SHANGHAI).astimezone().replace(tzinfo=None)
+        return start if 946684800 <= start.timestamp() and start <= now else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+class LiveIdentityChecks:
+    """Use a separate room detail request only for ambiguous live responses."""
+
+    def __init__(self):
+        self.candidates = {}
+        self.next_lookup = {}
+        self.slots = asyncio.Semaphore(4)
+
+    def needs_lookup(self, room, uid, info, now):
+        key = (room, uid)
+        start = reported_start(info, now)
+        live = int(info["live_status"]) == 1
+        previous = runtime_state.LIVE_INFO.get(room, {}).get("live_time")
+        changed = (runtime_state.LAST_STATUS.get(room) == 1 and start is not None and previous
+                   and previous != start.strftime("%Y-%m-%d %H:%M:%S"))
+        if not live or (start is not None and not changed):
+            self.candidates.pop(key, None)
+            self.next_lookup.pop(key, None)
+            return False
+        if changed and self.candidates.get(key) == start:
+            return False  # Two consecutive batch observations agree.
+        self.candidates[key] = start
+        return True
+
+    async def lookup(self, room, uid, info):
+        key = (room, uid)
+        clock = asyncio.get_running_loop().time()
+        if self.next_lookup.get(key, 0) > clock or self.slots.locked():
+            return None
+        self.next_lookup[key] = clock + 30
+        async with self.slots:
+            detail = await bilibili_gateway._fetch_room_info(room)
+        if not detail or str(detail.get("uid")) != str(uid):
+            return None
+        if str(room) not in (str(detail.get("room_id")), str(detail.get("short_id"))):
+            return None
+        status = str(detail.get("live_status"))
+        if info is None and status in {"0", "2"}:
+            return {"live_status": 0}
+        if status != "1":
+            return None
+        now = datetime.datetime.now()
+        confirmed = reported_start(detail, now)
+        if confirmed is None:
+            return None
+        return {**(info or {}), "live_status": 1, "live_time": int(confirmed.timestamp()),
+                "title": detail.get("title") or (info or {}).get("title", "")}
 
 
 class StartupRooms:

@@ -74,6 +74,8 @@ def finish_live_session(
     runtime_state.PENDING_SESSION_ENDS.pop(room_id, None)
     runtime_state.CURRENT_SESSIONS.pop(room_id, None)
     runtime_state.LAST_LIVE_OBSERVATIONS.pop(session_id, None)
+    runtime_state.RECOVERED_LIVE_AT.pop(room_id, None)
+    runtime_state.RECENT_LIVE_AT.pop(room_id, None)
     runtime_state.INVALID_DURATION_SESSIONS.pop(room_id, None)
     LiveSession.update_concurrency_by_id(session_id, avg_concurrency=average, max_concurrency=maximum)
     runtime_state.CONCURRENCY_CACHE.pop(room_id, None)
@@ -115,15 +117,18 @@ def resume_interrupted_session(room_id: int, start_dt: datetime.datetime, now: d
     _discard_end_snapshot(session_id)
     runtime_state.INVALID_DURATION_SESSIONS.pop(room_id, None)
     runtime_state.PENDING_SESSION_ENDS.pop(room_id, None)
+    runtime_state.RECOVERED_LIVE_AT.pop(room_id, None)
+    runtime_state.RECENT_LIVE_AT.pop(room_id, None)
     runtime_state.STREAM_STARTS[room_id] = segment_start
     return session_id
 
 
-def finish_expired_live_sessions(now: datetime.datetime, dependencies: LifecycleDependencies) -> None:
+def finish_expired_live_sessions(now: datetime.datetime, dependencies: LifecycleDependencies,
+                                 *, awaiting_identity: frozenset[int] | set[int] = frozenset()) -> None:
     expired = [
         (room_id, end_dt)
         for room_id, end_dt in runtime_state.PENDING_SESSION_ENDS.items()
-        if (now - end_dt).total_seconds() > LIVE_SESSION_GRACE_SECONDS
+        if room_id not in awaiting_identity and (now - end_dt).total_seconds() > LIVE_SESSION_GRACE_SECONDS
     ]
     for room_id, end_dt in expired:
         session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
@@ -181,6 +186,10 @@ async def delete_room_async(room_id: int, dependencies: LifecycleDependencies) -
         average, maximum = dependencies.finalize_concurrency(room_id, session_id)
         LiveSession.update_concurrency_by_id(session_id, avg_concurrency=average, max_concurrency=maximum)
         runtime_state.CONCURRENCY_CACHE.pop(room_id, None)
+    runtime_state.RECOVERING_ROOMS.discard(room_id)
+    runtime_state.SESSION_ATTRIBUTION_PAUSED.discard(room_id)
+    runtime_state.RECOVERED_LIVE_AT.pop(room_id, None)
+    runtime_state.RECENT_LIVE_AT.pop(room_id, None)
     # Leave failed danmaku batches available for the periodic retry.
     for state_map in (
         runtime_state.ROOM_UIDS,

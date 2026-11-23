@@ -20,9 +20,10 @@ from __future__ import annotations
 import datetime
 import logging
 
-from sqlalchemy import inspect, text
+from sqlalchemy import bindparam, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from . import runtime_state
 from .danmaku_metrics import COLUMNS
 from .database import Session, engine, ensure_nullable_daily_attention
 from .repositories.history import notify_history_change
@@ -151,10 +152,15 @@ def archive_super_chat_log(target_month: str | None = None) -> int:
 
 def closed_session_ids(end_time_before: datetime.datetime) -> tuple[int, ...]:
     with Session() as session:
-        rows = session.execute(
-            text("SELECT id FROM live_session WHERE month < :current_month AND end_time < :cutoff"),
-            {"current_month": month_str(), "cutoff": end_time_before},
-        ).scalars()
+        query = "SELECT id FROM live_session WHERE month < :current_month AND end_time < :cutoff"
+        params = {"current_month": month_str(), "cutoff": end_time_before}
+        blocked = tuple(runtime_state.DANMAKU_RECOVERY_ROOMS)
+        if blocked:
+            statement = text(query + " AND room_id NOT IN :rooms").bindparams(bindparam("rooms", expanding=True))
+            params["rooms"] = blocked
+        else:
+            statement = text(query)
+        rows = session.execute(statement, params).scalars()
         return tuple(int(session_id) for session_id in rows)
 
 

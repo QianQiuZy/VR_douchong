@@ -28,6 +28,9 @@ class DanmakuCounts:
     normal: int = 0
     audience: Audience | None = None
     emoticon: int = 0
+    # Present only when consuming a durable shutdown batch. The cursor is
+    # committed in the same SQL transaction as this destination's delta.
+    replay_cursor: tuple[str, str] | None = None
 
     @classmethod
     def from_privilege_type(cls, privilege_type: int, *, dm_type: int = 0) -> DanmakuCounts:

@@ -4,8 +4,9 @@ from sqlalchemy import and_
 from sqlalchemy.exc import SQLAlchemyError
 
 from .. import DanmakuCounts
-from .. import danmaku_metrics
+from .. import danmaku_metrics, runtime_state
 from ..database import Session
+from .danmaku import claim_replay
 from .history import notify_history_change
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,8 @@ def add_danmaku_by_id(model, session_id: int, counts: DanmakuCounts) -> bool:
         return counts.total <= 0
     session = Session()
     try:
+        if not claim_replay(session, counts):
+            return True
         row = session.query(model).filter_by(id=session_id).with_for_update().first()
         if not row:
             return False
@@ -142,7 +145,8 @@ def add_danmaku_by_id(model, session_id: int, counts: DanmakuCounts) -> bool:
             row.danmaku_status = "collecting"
             if row.end_time is not None:
                 row.danmaku_status = "pending"
-                settlement = danmaku_metrics.settle(row, f"session:{session_id}", row.start_time)
+                if row.room_id not in runtime_state.DANMAKU_RECOVERY_ROOMS:
+                    settlement = danmaku_metrics.settle(row, f"session:{session_id}", row.start_time)
         changed_month = getattr(row, "month", None)
         session.commit()
         if settlement:

@@ -1315,3 +1315,127 @@ def test_danmaku_rank_eviction_preserves_counts_on_settlement(services, monkeypa
             keys = list(client.scan_iter(match=f"{dm.PREFIX}:*"))
             if keys:
                 client.delete(*keys)
+
+
+def test_restart_room_names_use_one_read_and_only_changed_rows(services, monkeypatch):
+    from sqlalchemy import event
+    from app import bootstrap, room_config
+    from app.repositories import info
+
+    _, engine, factory, _ = services
+    monkeypatch.setattr(info, "Session", factory)
+    names = {111111: "Renamed", 333333: "Added"}
+    monkeypatch.setattr(room_config, "get_room_anchors", lambda: names)
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement.split()[0])
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        bootstrap.init_room_info()
+        assert statements == ["SELECT", "INSERT"]
+        statements.clear()
+        bootstrap.init_room_info()
+        assert statements == ["SELECT"]
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    with factory() as sql:
+        assert sql.get(RoomInfo, 111111).attention == 12345
+        assert [sql.get(RoomInfo, rid).anchor_name for rid in names] == list(names.values())
+
+
+def test_danmaku_handoff_survives_lost_redis_and_sql_acknowledgments(services, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from conftest import _ORIG_INSPECT
+    from app import archive_service, danmaku_archive, danmaku_metrics as dm, danmaku_recovery as recovery
+    from app import event_ingestion, metrics_runtime, monitoring_jobs
+    from app.models import DanmakuReplayCursor
+    from app.repositories import live_sessions, live_session_snapshots, monthly, session_15m
+
+    store, _, factory, _ = services
+    for module in (archive_service, danmaku_archive, live_sessions, live_session_snapshots, monthly, session_15m):
+        monkeypatch.setattr(module, "Session", factory)
+    monkeypatch.setattr(session_15m, "inspect", _ORIG_INSPECT)
+    for name, db in (("users", 3), ("ranks", 4)):
+        monkeypatch.setattr(dm, name, redis.Redis(host="127.0.0.1", port=int(os.environ["VR_CACHE_TEST_REDIS_PORT"]),
+                                                 db=db, decode_responses=True))
+    monkeypatch.setattr(dm, "PREFIX", store.key("handoff"))
+    monkeypatch.setattr(dm, "_started", datetime.datetime(2000, 1, 1))
+    monkeypatch.setattr(runtime_state, "ROOMS_JSON_PATH", str(tmp_path / "rooms.json"))
+    monkeypatch.setattr(runtime_state, "DANMAKU_PENDING", {})
+    monkeypatch.setattr(metrics_runtime, "_buckets", {})
+    rid = 333337
+    start = datetime.datetime(2004, 2, 1, 0)
+    sid = LiveSession.start_session(rid, start, "handoff")
+    assert sid
+    monkeypatch.setitem(runtime_state.CURRENT_SESSIONS, rid, sid)
+    monkeypatch.setitem(runtime_state.LAST_STATUS, rid, 1)
+    metrics_runtime.start_session(sid, rid, start)
+
+    def message(uid, dm_type=0):
+        event_ingestion.MyHandler()._on_danmaku(SimpleNamespace(room_id=rid),
+            SimpleNamespace(uid=uid, timestamp=int(start.timestamp()), dm_type=dm_type))
+
+    real_record = dm.record
+
+    def missing_redis_ack(scope, batch):
+        real_record(scope, batch)
+        raise redis.TimeoutError("lost reply")
+
+    message(11, 1)
+    with monkeypatch.context() as fault:
+        fault.setattr(dm, "record", missing_redis_ack)
+        monitoring_jobs.flush_pending_danmaku_for_room(rid)
+    assert runtime_state.DANMAKU_PENDING[rid].monthly["200402"].total == 0
+    message(11)
+    recovery.capture([rid])
+    runtime_state.DANMAKU_RECOVERY_ROOMS.clear()
+    recovery.refresh_rooms()
+    assert runtime_state.DANMAKU_RECOVERY_ROOMS == {rid}
+    message(22)
+    monitoring_jobs.flush_pending_danmaku_for_room(rid)
+    assert rid not in runtime_state.DANMAKU_PENDING
+    LiveSession.close_session_by_id(sid, start + datetime.timedelta(minutes=1))
+    assert sid not in archive_service.closed_session_ids(start + datetime.timedelta(days=1))
+
+    def replay():
+        recovery.replay(recovery.journal_path(), time.monotonic() + 10)
+        recovery.refresh_rooms()
+
+    save = RoomStatsMonthly.add_danmaku_counts
+    for phase in ("t", "a"):
+        def lost_sql_ack(room, month, counts):
+            assert save(room, month, counts)
+            return not counts.replay_cursor[0].endswith(":" + phase)
+
+        with monkeypatch.context() as fault:
+            fault.setattr(RoomStatsMonthly, "add_danmaku_counts", lost_sql_ack)
+            replay()
+        assert rid in runtime_state.DANMAKU_RECOVERY_ROOMS
+        if phase == "t":
+            delivered = []
+
+            def lose_second_token(scope, batch):
+                delivered.append(batch.token)
+                if len(delivered) == 2:
+                    return missing_redis_ack(scope, batch)
+                return real_record(scope, batch)
+
+            with monkeypatch.context() as fault:
+                fault.setattr(dm, "record", lose_second_token)
+                replay()
+            assert len(set(delivered)) == 2
+    replay()
+    assert not runtime_state.DANMAKU_RECOVERY_ROOMS
+    assert sid in archive_service.closed_session_ids(start + datetime.timedelta(days=1))
+    danmaku_archive._settle(LiveSession, sid, f"session:{sid}")
+    with factory() as sql:
+        rows = [sql.get(RoomStatsMonthly, (rid, "200402")), sql.get(LiveSession, sid),
+                sql.get(LiveSession15mStats, (sid, 0))]
+        assert [(r.danmaku_count, r.emoticon_danmaku_count, r.danmaku_user_count) for r in rows] == [(3, 1, 2)] * 3
+        assert float(rows[1].danmaku_top1_ratio) == pytest.approx(2 / 3, abs=0.0001)
+        assert sql.query(DanmakuReplayCursor).count() == 2
+    for scope in (f"session:{sid}", f"month:200402:{rid}"):
+        assert dm.ranks.zscore(f"{dm.PREFIX}:rank:{scope}", "11") == 2
+        assert dm.ranks.zscore(f"{dm.PREFIX}:rank:{scope}", "22") == 1

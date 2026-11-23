@@ -7,13 +7,16 @@ import asyncio
 import datetime
 import logging
 import random
+import sqlite3
 from dataclasses import replace
 
 import redis
+from sqlalchemy.exc import SQLAlchemyError
 
 from . import (
     DanmakuCounts,
     danmaku_metrics,
+    danmaku_recovery,
     rounded_concurrency,
     bilibili_gateway,
     event_ingestion,
@@ -25,7 +28,7 @@ from . import (
 from .blivedm.clients.ws_base import InitError
 from .config import ATTENTION_DAILY_ROOM_SLEEP_SECONDS
 from .live_client import AuthenticatedLiveClient
-from .live_startup import StartupRooms, status_batches
+from .live_startup import LiveIdentityChecks, StartupRooms, reported_start, status_batches
 from .metrics_runtime import checkpoint_session, record_concurrency, restore_session, retry_failed_buckets, start_session
 from .models import (
     Attention,
@@ -175,6 +178,12 @@ def flush_pending_danmaku_for_room(
 ) -> None:
     pending = runtime_state.DANMAKU_PENDING.get(room_id)
     if pending is None:
+        return
+    if room_id in runtime_state.DANMAKU_RECOVERY_ROOMS:
+        try:
+            danmaku_recovery.capture([room_id])
+        except (OSError, sqlite3.Error):
+            logger.exception("[DanmakuRecovery] 房间 %s 暂存失败，保留内存批次", room_id)
         return
     total = sum(counts.total for counts in pending.sessions.values())
 
@@ -338,7 +347,7 @@ async def danmaku_flush_scheduler() -> None:
         retry_failed_buckets()
         now = _now()
         for room, session_id in tuple(runtime_state.CURRENT_SESSIONS.items()):
-            if runtime_state.LAST_STATUS.get(room) == 1:
+            if runtime_state.LAST_STATUS.get(room) == 1 and runtime_state.event_session(room) == session_id:
                 checkpoint_session(session_id, now)
         for room_id in tuple(runtime_state.DANMAKU_PENDING):
             flush_pending_danmaku_for_room(room_id, runtime_state.CURRENT_SESSIONS.get(room_id))
@@ -396,11 +405,11 @@ async def concurrency_poll_scheduler() -> None:
             if runtime_state.LAST_STATUS.get(room_id, 0) != 1:
                 continue
             uid = runtime_state.ROOM_UIDS.get(room_id)
-            session_id = runtime_state.CURRENT_SESSIONS.get(room_id)
+            session_id = runtime_state.event_session(room_id)
             if uid is None or session_id is None:
                 continue
             count = await bilibili_gateway.fetch_contribution_count(uid, room_id)
-            if (count is not None and runtime_state.CURRENT_SESSIONS.get(room_id) == session_id
+            if (count is not None and runtime_state.event_session(room_id) == session_id
                     and runtime_state.LAST_STATUS.get(room_id, 0) == 1):
                 update_concurrency_cache(room_id, session_id, count)
             await asyncio.sleep(0.1)
@@ -469,20 +478,8 @@ async def reconnect_scheduler() -> None:
                 await asyncio.sleep(3 + random.uniform(0.5, 2.0))
 
 
-def _reported_start(info: dict, now: datetime.datetime) -> datetime.datetime | None:
-    raw = info.get("live_time")
-    try:
-        if str(raw).isdigit() and int(raw) > 0:
-            start = datetime.datetime.fromtimestamp(int(raw))
-            if start <= now:
-                return start
-    except (ValueError, OSError, OverflowError):
-        pass
-    return None
-
-
 def _recover_open_session(room_id: int, open_session: tuple[int, datetime.datetime],
-                          start: datetime.datetime, now: datetime.datetime) -> int | None:
+                          start: datetime.datetime, now: datetime.datetime, *, changed: bool = False) -> int | None:
     """Reconcile an open SQL row before releasing the room to WebSocket ingestion."""
     from . import room_lifecycle
 
@@ -491,9 +488,16 @@ def _recover_open_session(room_id: int, open_session: tuple[int, datetime.dateti
     if ended is None:
         segment = runtime_state.STREAM_STARTS.setdefault(room_id, original_start)
         observed = max(segment, runtime_state.LAST_LIVE_OBSERVATIONS.get(session_id, segment))
-        if start <= observed:
+        if not changed and start <= observed:
+            # Legacy open rows can already contain payments/samples for this
+            # reported segment. Keep their parent and original bucket origin.
+            runtime_state.RECOVERED_LIVE_AT[room_id] = observed
             runtime_state.GUARD_FANS_QUEUE.put_nowait((room_id, None, None))
             return session_id
+        if changed and observed >= start:
+            baseline = runtime_state.RECOVERED_LIVE_AT.get(room_id, segment)
+            samples = (segment, baseline, *runtime_state.RECENT_LIVE_AT.get(room_id, ()))
+            observed = max(sample for sample in samples if segment <= sample < start)
         # A different broadcast started after our last evidence of the old one.
         ended = observed
     # The reported restart can be inside the grace period even if this process
@@ -506,6 +510,25 @@ def _recover_open_session(room_id: int, open_session: tuple[int, datetime.dateti
         _record_stream_segment(room_id, ended)
         runtime_state.PENDING_SESSION_ENDS[room_id] = ended
     return room_lifecycle.resume_interrupted_session(room_id, start, resumed_at)
+
+
+def _restore_offline_room(room_id: int, now: datetime.datetime) -> None:
+    from . import room_lifecycle
+
+    runtime_state.SESSION_ATTRIBUTION_PAUSED.add(room_id)
+    open_session = LiveSession.find_open_session(room_id, strict=True)
+    if open_session is not None:
+        sid, original = open_session
+        restore_session(sid, room_id, original)
+        runtime_state.CURRENT_SESSIONS[room_id] = sid
+        ended = runtime_state.PENDING_SESSION_ENDS.get(room_id)
+        if ended is None:
+            segment = runtime_state.STREAM_STARTS.setdefault(room_id, original)
+            ended = max(segment, runtime_state.LAST_LIVE_OBSERVATIONS.get(sid, segment))
+            _record_stream_segment(room_id, ended)
+            runtime_state.PENDING_SESSION_ENDS[room_id] = ended
+        if (now - ended).total_seconds() > room_lifecycle.LIVE_SESSION_GRACE_SECONDS:
+            room_lifecycle.finish_live_session(room_id, ended, lifecycle_dependencies())
 
 
 def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool:
@@ -521,25 +544,45 @@ def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool
     if status == 2:
         status = 0
     previous = runtime_state.LAST_STATUS.get(room_id, 0)
-    if status == 1 and previous != 1:
-        reported_start = _reported_start(info, now)
-        start = reported_start or now
+    start = reported_start(info, now) if status == 1 else None
+    display = runtime_state.LIVE_INFO.get(room_id, {}).get("live_time")
+    changed = bool(previous == status == 1 and start and display and
+                   display != start.strftime("%Y-%m-%d %H:%M:%S"))
+    segment = runtime_state.STREAM_STARTS.get(room_id)
+    if changed and segment is not None:
+        if start < segment or start.strftime("%Y-%m-%d %H:%M:%S") < display:
+            return False  # Ignore an old broadcast arriving after its replacement.
+        if start == segment:
+            runtime_state.LIVE_INFO[room_id]["live_time"] = start.strftime("%Y-%m-%d %H:%M:%S")
+            changed = False
+    if status == 1 and start is None:
+        return False
+    restored_same = False
+    if status == 1 and (previous != 1 or changed):
+        runtime_state.SESSION_ATTRIBUTION_PAUSED.add(room_id)
         pending = room_id in runtime_state.PENDING_SESSION_ENDS and room_id in runtime_state.CURRENT_SESSIONS
-        open_session = None if pending else LiveSession.find_open_session(room_id, strict=True)
-        if open_session and (reported_start is not None or room_id in runtime_state.PENDING_SESSION_ENDS):
+        if changed and segment is not None and room_id in runtime_state.CURRENT_SESSIONS:
+            open_session = (runtime_state.CURRENT_SESSIONS[room_id], segment)
+        else:
+            changed = False
+            open_session = None if pending else LiveSession.find_open_session(room_id, strict=True)
+        if open_session and not changed:
             restore_session(open_session[0], room_id, open_session[1])
             runtime_state.CURRENT_SESSIONS[room_id] = open_session[0]
         forced_end = runtime_state.FORCED_OFFLINE_AT.get(room_id)
-        if forced_end is not None and (reported_start is None or reported_start <= forced_end):
+        if forced_end is not None and start <= forced_end:
             return True
-        if (open_session or pending) and reported_start is None:
-            # Wait for a usable identity before routing new events to a recovered ID.
-            return False
         runtime_state.FORCED_OFFLINE_AT.pop(room_id, None)
         if open_session:
-            session_id = _recover_open_session(room_id, open_session, start, now)
+            if changed:
+                # A failed SQL close must be retried before admitting events to B.
+                runtime_state.LAST_STATUS[room_id] = 0
+            session_id = _recover_open_session(room_id, open_session, start, now, changed=changed)
+            restored_same = session_id is not None and room_id in runtime_state.RECOVERED_LIVE_AT and not changed
         else:
-            session_id = room_lifecycle.resume_interrupted_session(room_id, start, now)
+            ended = runtime_state.PENDING_SESSION_ENDS.get(room_id)
+            resumed_at = start if ended is not None and ended < start <= now else now
+            session_id = room_lifecycle.resume_interrupted_session(room_id, start, resumed_at)
             if pending and session_id is None:
                 room_lifecycle.finish_live_session(
                     room_id, runtime_state.PENDING_SESSION_ENDS[room_id], lifecycle_dependencies()
@@ -553,13 +596,19 @@ def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool
             init_concurrency_cache(room_id, session_id, start)
             runtime_state.GUARD_FANS_QUEUE.put_nowait((room_id, session_id, "start"))
             runtime_state.ATTENTION_QUEUE.put_nowait((room_id, session_id, "start", now.date()))
+        runtime_state.RECOVERING_ROOMS.discard(room_id)
         runtime_state.LIVE_INFO.setdefault(room_id, {}).update({"live_time": start.strftime("%Y-%m-%d %H:%M:%S"), "title": info.get("title") or ""})
     elif status != 1:
-        if previous == 1:
+        if room_id in runtime_state.RECOVERING_ROOMS:
+            _restore_offline_room(room_id, now)
+            runtime_state.RECOVERING_ROOMS.discard(room_id)
+        elif previous == 1:
             room_lifecycle.defer_live_session_finish(room_id, now, lifecycle_dependencies())
         runtime_state.LIVE_INFO.setdefault(room_id, {}).update({"live_time": "0000-00-00 00:00:00", "title": ""})
-    if status == 1 and room_id in runtime_state.CURRENT_SESSIONS:
-        runtime_state.LAST_LIVE_OBSERVATIONS[runtime_state.CURRENT_SESSIONS[room_id]] = now
+    if status == 1:
+        runtime_state.SESSION_ATTRIBUTION_PAUSED.discard(room_id)
+    if status == 1 and not restored_same and room_id in runtime_state.CURRENT_SESSIONS:
+        runtime_state.observe_live(room_id, runtime_state.CURRENT_SESSIONS[room_id], now)
     runtime_state.LAST_STATUS[room_id] = status
     return True
 
@@ -567,42 +616,76 @@ def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool
 async def monitor_all_rooms_status(startup: StartupRooms | None = None) -> None:
     from . import room_lifecycle
 
+    checks = LiveIdentityChecks()
+    inventory_needed = startup is not None
+
+    def apply(room, uid, info, now):
+        if runtime_state.ROOM_UIDS.get(room) != uid:
+            return False
+        if info is None and room in runtime_state.SESSION_ATTRIBUTION_PAUSED:
+            return False
+        if startup is not None:
+            startup.observed.pop(room, None)
+        try:
+            if info is not None and not _apply_room_status(room, info, now):
+                return False
+        except Exception as exc:
+            logger.error("[LiveStatus] 房间状态处理失败 room_id=%s error=%s", room, type(exc).__name__)
+            return False
+        if startup is not None:
+            startup.observed[room] = uid
+            startup.changed.set()
+        return True
+
+    async def verify(room, uid, info):
+        detail = await checks.lookup(room, uid, info)
+        if detail is not None and room in room_config.get_room_ids() and apply(room, uid, detail, _now()):
+            awaiting_identity.discard(room)
+
     while True:
         if startup is not None and startup.finished:
             startup = None
         if runtime_state.aiohttp_session is not None:
+            if inventory_needed:
+                try:
+                    open_rooms = LiveSession.open_room_ids(room_config.get_room_ids())
+                except SQLAlchemyError as exc:
+                    logger.warning("[LiveStatus] 读取未结束场次失败 error=%s", type(exc).__name__)
+                    await asyncio.sleep(3)
+                    continue
+                runtime_state.RECOVERING_ROOMS.update(open_rooms)
+                runtime_state.SESSION_ATTRIBUTION_PAUSED.update(open_rooms)
+                inventory_needed = False
+            polled_uids = set(runtime_state.ROOM_UIDS.values()) if startup is not None else set()
+            awaiting_identity: set[int] = set()
+            async with asyncio.TaskGroup() as details:
+                async for batch in status_batches():
+                    now = _now()
+                    configured = set(room_config.get_room_ids())
+                    for room, (uid, info) in batch.items():
+                        if room not in configured or runtime_state.ROOM_UIDS.get(room) != uid:
+                            continue
+                        if info is not None and (not isinstance(info, dict) or str(info.get("live_status")) not in {"0", "1", "2"}):
+                            continue
+                        if info is None and room in runtime_state.RECOVERING_ROOMS:
+                            details.create_task(verify(room, uid, None))
+                            continue
+                        if info is not None and checks.needs_lookup(room, uid, info, now):
+                            awaiting_identity.add(room)
+                            if startup is not None:
+                                startup.observed.pop(room, None)
+                            start = reported_start(info, now)
+                            segment = runtime_state.STREAM_STARTS.get(room)
+                            if start is None or segment is None or start >= segment:
+                                runtime_state.SESSION_ATTRIBUTION_PAUSED.add(room)
+                            details.create_task(verify(room, uid, info))
+                        elif apply(room, uid, info, now) and startup is not None:
+                            if runtime_state.LAST_STATUS.get(room) == 1 and room not in runtime_state.ROOM_CLIENTS:
+                                await asyncio.sleep(0)
             try:
-                room_lifecycle.finish_expired_live_sessions(_now(), lifecycle_dependencies())
+                room_lifecycle.finish_expired_live_sessions(_now(), lifecycle_dependencies(), awaiting_identity=awaiting_identity)
             except Exception:
                 logger.exception("[LiveStatus] 结算待结束场次失败")
-            polled_uids = set(runtime_state.ROOM_UIDS.values()) if startup is not None else set()
-            async for batch in status_batches():
-                configured = set(room_config.get_room_ids())
-                now = _now()
-                for room, (uid, info) in batch.items():
-                    if room not in configured or runtime_state.ROOM_UIDS.get(room) != uid:
-                        continue
-                    newly_eligible = startup is not None and (
-                        startup.observed.pop(room, None) != uid or runtime_state.LAST_STATUS.get(room) != 1
-                    )
-                    try:
-                        # An omitted UID can connect as a non-live candidate. It
-                        # never causes a fabricated offline or online transition.
-                        if info is not None and not _apply_room_status(room, info, now):
-                            continue
-                    except Exception as exc:
-                        logger.exception("[LiveStatus] 房间状态处理失败 room_id=%s error=%s", room, type(exc).__name__, exc_info=False)
-                        continue
-                    if startup is not None:
-                        startup.observed[room] = uid
-                        if newly_eligible and runtime_state.LAST_STATUS.get(room) == 1 and room not in runtime_state.ROOM_CLIENTS:
-                            # The next room can require synchronous DB recovery. Give
-                            # this live room its connection slot before doing that work.
-                            startup.changed.set()
-                            await asyncio.sleep(0)
-                            configured = set(room_config.get_room_ids())
-                if startup is not None:
-                    startup.changed.set()
             if startup is not None:
                 startup.checked_uids = polled_uids
                 startup.changed.set()
