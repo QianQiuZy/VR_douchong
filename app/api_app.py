@@ -959,7 +959,7 @@ def get_stats_current_month(_: None = Depends(report_admission)):
                 if cache and cache.get("session_id") == session_id:
                     samples = int(cache.get("samples", 0))
                     if samples > 0:
-                        current_concurrency = int(cache.get("last", 0))
+                        current_concurrency = cache.get("last")
 
             # 当前守护数量 / 粉丝团数量（最新状态）
             guard_info = runtime_state.GUARD_COUNTS.get(room_id, {}) or {}
@@ -1188,7 +1188,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                         avg_concurrency = (total / samples) if samples > 0 else None
                         max_concurrency = int(cache.get("max", 0)) if samples > 0 else None
                         if runtime_state.LAST_STATUS.get(room_id, 0) == 1 and samples > 0:
-                            current_concurrency = int(cache.get("last", 0))
+                            current_concurrency = cache.get("last")
                 out.append(
                     {
                         "start_time": r.start_time.strftime("%Y-%m-%d %H:%M:%S"),

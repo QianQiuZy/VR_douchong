@@ -19,8 +19,8 @@ from app import (
 )
 from app.blivedm.clients.ws_base import WebSocketClientBase
 from app.event_ingestion import MyHandler
-from app.models import LiveSession, RoomLiveStats
-from app.repositories import live_sessions, live_stats, session_duration
+from app.models import LiveSession, LiveSession15mStats, RoomLiveStats
+from app.repositories import live_sessions, live_stats, session_15m, session_duration
 
 ROOM = 21756924
 START = datetime.datetime(2026, 10, 2, 12).astimezone().replace(tzinfo=None)
@@ -30,9 +30,10 @@ START = datetime.datetime(2026, 10, 2, 12).astimezone().replace(tzinfo=None)
 def duration_state(monkeypatch):
     engine = create_engine("sqlite://")
     LiveSession.__table__.create(engine)
+    LiveSession15mStats.__table__.create(engine)
     RoomLiveStats.__table__.create(engine)
     factory = sessionmaker(bind=engine)
-    for module in (live_sessions, live_stats, session_duration):
+    for module in (live_sessions, live_stats, session_15m, session_duration):
         monkeypatch.setattr(module, "Session", factory)
     for module in (live_stats, session_duration):
         monkeypatch.setattr(module, "is_current_month", lambda month: month == "202610")

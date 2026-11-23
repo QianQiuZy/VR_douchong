@@ -1146,3 +1146,102 @@ def test_old_archive_without_sender_columns_keeps_new_rows_readable(crossmonth_s
     assert new["danmaku_user_count"] == 4 and new["danmaku_dependency"]["top1"] == 0.5
     assert new["stats_15m"][0]["danmaku_user_count"] == 3
     assert (new["emoticon_danmaku_count"], new["stats_15m"][0]["emoticon_danmaku_count"]) == (2, 1)
+
+
+def test_hot_restart_continues_open_session_and_partial_bucket(services, monkeypatch, request):
+    import asyncio
+    from conftest import _ORIG_INSPECT
+    from app import DanmakuCounts, bootstrap, metrics_runtime, monitoring_jobs, redis_metrics
+    from app.repositories import live_sessions, session_15m
+
+    _, _, factory, _ = services
+    monkeypatch.setattr(live_sessions, "Session", factory)
+    monkeypatch.setattr(session_15m, "Session", factory)
+    monkeypatch.setattr(session_15m, "inspect", _ORIG_INSPECT)
+    port = int(os.environ["VR_CACHE_TEST_REDIS_PORT"])
+    client = redis.Redis(host="127.0.0.1", port=port, db=0)
+    monkeypatch.setattr(redis_metrics, "_client", client)
+    for name in ("LAST_STATUS", "CURRENT_SESSIONS", "STREAM_STARTS", "LIVE_INFO", "CONCURRENCY_CACHE",
+                 "PENDING_SESSION_ENDS", "SESSION_END_SNAPSHOTS", "LOCKED_ROOM_UNTIL", "FORCED_OFFLINE_AT",
+                 "DANMAKU_PENDING"):
+        monkeypatch.setattr(runtime_state, name, {})
+    monkeypatch.setattr(metrics_runtime, "_buckets", {})
+    monkeypatch.setattr(metrics_runtime, "_failed_writes", {})
+    monkeypatch.setattr(runtime_state, "GUARD_FANS_QUEUE", asyncio.Queue())
+    room = 444444
+    start = datetime.datetime(2003, 1, 31, 23, 50)
+
+    def when(minutes):
+        return start + datetime.timedelta(minutes=minutes)
+
+    sid = LiveSession.start_session(room, start, "month boundary")
+    assert sid is not None
+    keys = [f"vr:payer:session:{sid}", *(f"vr:payer:bucket:{sid}:{i}" for i in range(3))]
+    keys.extend(f"vr:payer:{period}:{date}:{room}" for period, date in
+                [("day", "20030131"), ("day", "20030201"), ("month", "200301"), ("month", "200302")])
+    request.addfinalizer(lambda: client.delete(*keys))
+    runtime_state.CURRENT_SESSIONS[room] = sid
+    monitoring_jobs.init_concurrency_cache(room, sid, start)
+
+    def payment(minute, uid, gift):
+        timestamp = when(minute)
+        registration = redis_metrics.register_payer(room, sid, metrics_runtime.current_bucket_index(sid, timestamp),
+                                                   uid, timestamp.date(), timestamp.strftime("%Y%m"))
+        LiveSession.set_payer_count(sid, registration.session.size)
+        metrics_runtime.record_payment(sid, timestamp, gift=gift, payer_added=registration.bucket.added)
+
+    def sample(minute, count):
+        monkeypatch.setattr(monitoring_jobs, "_now", lambda: when(minute))
+        monitoring_jobs.update_concurrency_cache(room, sid, count)
+
+    def restart(minute, *, legacy_exit=False):
+        bootstrap._flush_active_metrics(when(minute))
+        assert client.exists(f"vr:payer:session:{sid}")
+        if legacy_exit:
+            client.delete(f"vr:payer:session:{sid}")
+        metrics_runtime._buckets.clear()
+        for name in ("CURRENT_SESSIONS", "STREAM_STARTS", "LAST_STATUS", "CONCURRENCY_CACHE"):
+            getattr(runtime_state, name).clear()
+        # Upstream reports a later segment. The DB session still owns the original buckets.
+        info = {"live_status": 1, "live_time": int(when(15).timestamp()), "title": "same session"}
+        assert monitoring_jobs._apply_room_status(room, info, when(minute))
+        assert runtime_state.CURRENT_SESSIONS[room] == sid
+        assert runtime_state.GUARD_FANS_QUEUE.get_nowait() == (room, None, None)
+        assert runtime_state.CONCURRENCY_CACHE[room].get("last") is None
+        assert metrics_runtime.danmaku_bucket_target(sid, when(17)).bucket_index == 1
+
+    payment(1, 801, 3)
+    sample(2, 100)
+    payment(16, 801, 4)
+    payment(17, 802, 6)
+    sample(16, 20)
+    sample(17, 31)
+    metrics_runtime.record_payment(sid, when(17), guard=3, super_chat=5, blind_box_count=2, blind_box_profit=-9)
+    assert metrics_runtime.record_danmaku(sid, when(17), DanmakuCounts(total=1, emoticon=1, normal=1))
+    # Also exercise restoration of the pre-upgrade row (only average and count available).
+    with factory.begin() as sql:
+        sql.get(LiveSession15mStats, (sid, 0)).concurrency_total = None
+    restart(18, legacy_exit=True)
+    assert client.scard(f"vr:payer:session:{sid}") == 2
+    restart(19)
+    payment(20, 801, 0)
+    payment(21, 803, 2)
+    sample(21, 30)
+    sample(31, 5)
+    restart(32)
+    assert monitoring_jobs.finalize_concurrency_cache(room, sid) == (37.2, 100)
+    assert client.scard(f"vr:payer:session:{sid}") == 3
+    metrics_runtime.flush_session(sid, when(33))
+    LiveSession.close_session_by_id(sid, when(33))
+    assert not client.exists(f"vr:payer:session:{sid}")
+    with factory() as sql:
+        parent = sql.get(LiveSession, sid)
+        assert (parent.payer_count, parent.start_time, parent.end_time) == (3, start, when(33))
+        rows = sql.query(LiveSession15mStats).filter_by(session_id=sid).order_by(LiveSession15mStats.bucket_index).all()
+        assert [(r.bucket_index, r.gift, r.payer_count, r.avg_concurrency, r.sample_count) for r in rows] == [
+            (0, 3, 1, 100, 1), (1, 12, 3, 27, 3), (2, 0, 0, 5, 1),
+        ]
+        bucket = rows[1]
+        assert (bucket.month, bucket.start_time, bucket.end_time) == ("200301", when(15), when(30))
+        assert (bucket.guard, bucket.super_chat, bucket.blind_box_count, bucket.blind_box_profit) == (3, 5, 2, -9)
+        assert (bucket.danmaku_count, bucket.emoticon_danmaku_count, bucket.concurrency_total) == (1, 1, 81)

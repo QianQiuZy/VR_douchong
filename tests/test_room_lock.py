@@ -33,7 +33,7 @@ def lock_state(monkeypatch):
     monkeypatch.setattr(runtime_state, "GUARD_FANS_QUEUE", asyncio.Queue())
     monkeypatch.setattr(runtime_state, "ATTENTION_QUEUE", asyncio.Queue())
     monkeypatch.setattr(metrics_runtime, "_buckets", {})
-    monkeypatch.setattr(room_lifecycle.LiveSession, "find_open_session", lambda room: None)
+    monkeypatch.setattr(room_lifecycle.LiveSession, "find_open_session", lambda room, **kwargs: None)
     monkeypatch.setattr(room_lifecycle.LiveSession, "invalidate_duration", lambda session, event_time=None: True)
 
 
@@ -150,7 +150,7 @@ def test_status_poll_only_starts_session_after_room_lock_expires(lock_state, mon
     monkeypatch.setattr(runtime_state, "aiohttp_session", Session())
     monkeypatch.setattr(monitoring_jobs.room_config, "get_room_ids", lambda: [room])
     monkeypatch.setattr(monitoring_jobs, "_now", lambda: now)
-    monkeypatch.setattr(monitoring_jobs.LiveSession, "start_session", lambda *args: started.append(args) or None)
+    monkeypatch.setattr(monitoring_jobs.LiveSession, "start_session", lambda *args: started.append(args) or 123)
     monkeypatch.setattr(monitoring_jobs.asyncio, "sleep", stop_after_poll)
 
     # When: one real status-monitor iteration runs.

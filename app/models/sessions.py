@@ -79,8 +79,8 @@ class LiveSession(Base):
         return start_session(cls, room_id, start_dt, title)
 
     @classmethod
-    def find_open_session(cls, room_id: int) -> tuple[int, datetime.datetime] | None:
-        return find_open_session(cls, room_id)
+    def find_open_session(cls, room_id: int, *, strict: bool = False) -> tuple[int, datetime.datetime] | None:
+        return find_open_session(cls, room_id, strict=strict)
 
     @classmethod
     def record_duration(cls, session_id: int, start: datetime.datetime | None, end: datetime.datetime) -> None:
@@ -201,6 +201,7 @@ class LiveSession15mStats(Base):
     normal_danmaku_count = Column(Integer, default=0, nullable=True)
     avg_concurrency = Column(Numeric(20, 2, asdecimal=False), nullable=True)
     max_concurrency = Column(Integer, nullable=True)
+    concurrency_total = Column(BigInteger, nullable=True)
     sample_count = Column(Integer, default=0, nullable=False)
     payer_count = Column(Integer, default=0, nullable=False)
     __table_args__ = (
@@ -238,6 +239,7 @@ class LiveSession15mStats(Base):
         max_concurrency: int | None,
         sample_count: int,
         payer_count: int,
+        concurrency_total: int | None = None,
     ) -> bool:
         return upsert_stats(
             cls,
@@ -260,5 +262,6 @@ class LiveSession15mStats(Base):
             avg_concurrency=avg_concurrency,
             max_concurrency=max_concurrency,
             sample_count=sample_count,
+            concurrency_total=concurrency_total,
             payer_count=payer_count,
         )

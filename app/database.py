@@ -111,6 +111,7 @@ def ensure_runtime_schema() -> None:
             "avg_concurrency": "DECIMAL(20,2) NULL",
             "max_concurrency": "INT NULL",
             "sample_count": "INT NOT NULL DEFAULT 0",
+            "concurrency_total": "BIGINT NULL",
             "payer_count": "INT NOT NULL DEFAULT 0",
         },
         "room_stats_monthly": {
@@ -178,6 +179,7 @@ def ensure_runtime_schema() -> None:
                     for name, ddl in required_columns["live_session_15m_stats"].items()
                     if name not in {
                         "avg_concurrency",
+                        "concurrency_total",
                         "danmaku_user_count",
                         "emoticon_danmaku_count",
                         "captain_danmaku_count",

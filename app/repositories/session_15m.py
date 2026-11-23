@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import logging
 
-from sqlalchemy import inspect, text
+from sqlalchemy import func, inspect, or_, select, text
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -26,6 +26,28 @@ DANMAKU_COLUMNS = {
     "governor_danmaku_count",
     "normal_danmaku_count",
 }
+
+
+def read_open_metrics(model, parent, session_id: int):
+    """Summarize all samples, then load just the last metric bucket in the same transaction."""
+    # Open sessions stay in the hot tables across month boundaries. Older rows
+    # only contain a rounded average and sample count.
+    sample_sum = func.coalesce(model.concurrency_total, func.round(model.avg_concurrency * model.sample_count))
+    with Session() as session:
+        parent_payers = select(parent.payer_count).where(parent.id == session_id).scalar_subquery()
+        total, samples, maximum, payers = session.execute(
+            select(func.sum(sample_sum), func.sum(model.sample_count), func.max(model.max_concurrency), parent_payers)
+            .where(model.session_id == session_id)
+        ).one()
+        # Danmaku has an independent write path and can create later placeholder
+        # rows while the last payment/concurrency interval is still partial.
+        latest = session.execute(
+            select(model, sample_sum).where(model.session_id == session_id, or_(
+                model.sample_count > 0, model.gift != 0, model.guard != 0, model.super_chat != 0,
+                model.blind_box_count != 0, model.blind_box_profit != 0, model.payer_count > 0,
+            )).order_by(model.bucket_index.desc()).limit(1)
+        ).first()
+    return latest, int(total or 0), int(samples or 0), int(maximum or 0), int(payers or 0)
 
 
 def upsert_stats(
@@ -50,6 +72,7 @@ def upsert_stats(
     max_concurrency: int | None,
     sample_count: int,
     payer_count: int,
+    concurrency_total: int | None = None,
 ) -> bool:
     """Replace one completed bucket idempotently."""
     session = Session()
@@ -76,6 +99,7 @@ def upsert_stats(
             "avg_concurrency": rounded_concurrency(avg_concurrency),
             "max_concurrency": max_concurrency,
             "sample_count": sample_count,
+            "concurrency_total": concurrency_total,
             "payer_count": payer_count,
         }
         replace = {

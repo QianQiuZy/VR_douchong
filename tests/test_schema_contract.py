@@ -92,6 +92,8 @@ class TestSchemaTablesAndColumns:
 
         hot_changes = [sql for sql in statements if "`live_session_15m_stats`" in sql]
         archive_changes = [sql for sql in statements if "`live_session_15m_stats_202501`" in sql]
+        assert any("concurrency_total" in sql for sql in hot_changes)
+        assert not any("concurrency_total" in sql for sql in archive_changes)
         assert any("captain_danmaku_count" in sql for sql in hot_changes)
         assert all("captain_danmaku_count" not in sql for sql in archive_changes)
         assert all("admiral_danmaku_count" not in sql for sql in archive_changes)
@@ -410,6 +412,7 @@ class TestSchemaTablesAndColumns:
             "emoticon_danmaku_count",
             "avg_concurrency",
             "max_concurrency",
+            "concurrency_total",
             "sample_count",
             "payer_count",
         }

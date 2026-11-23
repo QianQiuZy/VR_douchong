@@ -71,7 +71,7 @@ def summaries(
             and cache.get("session_id") == runtime_state.CURRENT_SESSIONS.get(rid)
             and int(cache.get("samples", 0)) > 0
         ):
-            concurrency = int(cache.get("last", 0))
+            concurrency = cache.get("last")
         value = {
             "room_id": rid,
             "anchor_name": room.get("anchor_name")
@@ -390,7 +390,7 @@ class PayloadBuilder:
                             int(cache.get("max", 0)) if samples else None
                         )
                         if samples and runtime_state.LAST_STATUS.get(rid, 0) == 1:
-                            concurrency = int(cache.get("last", 0))
+                            concurrency = cache.get("last")
                 value.update(
                     start_time=api_app._format_optional_timestamp(row["start_time"]),
                     end_time=api_app._format_optional_timestamp(row["end_time"]),

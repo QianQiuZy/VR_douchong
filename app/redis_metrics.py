@@ -73,6 +73,26 @@ def register_payer(
     return PayerRegistration(session_result, bucket_result, daily_result, monthly_result, steel_result)
 
 
+def restore_session_payers(session_id: int, last_bucket: int, expected: int) -> None:
+    """Older collectors deleted the session set on exit but retained its bucket sets."""
+    if expected <= 0:
+        return
+    key = f"vr:payer:session:{session_id}"
+    try:
+        if _client.scard(key) >= expected:
+            return
+        sources = [key, *(f"vr:payer:bucket:{session_id}:{i}" for i in range(last_bucket + 1))]
+        with _client.pipeline(transaction=True) as pipe:
+            pipe.sunionstore(key, sources)
+            pipe.expire(key, REDIS_KEY_TTL_SECONDS)
+            restored, _ = pipe.execute()
+        if restored < expected:
+            logger.warning("[Redis] 旧场次付费 UID 明细不完整 session_id=%s recovered=%s expected=%s",
+                           session_id, restored, expected)
+    except redis.RedisError as exc:
+        logger.warning("[Redis] 恢复场次付费集合失败 session_id=%s error=%s", session_id, type(exc).__name__)
+
+
 def delete_session_keys(session_id: int) -> None:
     """Delete the long-lived session set after a session has been closed."""
     try:

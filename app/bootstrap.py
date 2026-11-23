@@ -11,7 +11,7 @@ Todo 5 makes ownership of ``MAIN_LOOP``, ``_run_in_main_loop``,
   :attr:`api_app.app`.
 * :func:`run` reproduces the pre-extraction ``__main__`` block: call
   :func:`create_schema`, :func:`ensure_runtime_schema`, spawn the API
-  thread, and then ``asyncio.run(main())``.
+  thread, and then run the collector with graceful signal handling.
 
 The archive scheduler (:func:`monthly_reset_scheduler`) lives here because
 it belongs to the runtime orchestration lane, invoking
@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import signal
 import threading
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -33,7 +34,7 @@ from .danmaku_archive import archive_danmaku_metrics
 from .config import APP_HOST, APP_PORT
 from .database import create_schema, ensure_runtime_schema, log_pool_status
 from .logging_setup import configure_logging
-from .metrics_runtime import flush_session
+from .metrics_runtime import checkpoint_session, retry_failed_buckets
 from .models import RoomInfo
 from .whale_archive import archive_whale_month
 
@@ -232,7 +233,8 @@ def _flush_active_metrics(end_time: datetime.datetime) -> None:
     for room_id in runtime_state.DANMAKU_PENDING.keys() | runtime_state.CURRENT_SESSIONS.keys():
         monitoring_jobs.flush_pending_danmaku_for_room(room_id, runtime_state.CURRENT_SESSIONS.get(room_id), end_time)
     for room_id, session_id in tuple(runtime_state.CURRENT_SESSIONS.items()):
-        flush_session(session_id, end_time)
+        checkpoint_session(session_id, runtime_state.PENDING_SESSION_ENDS.get(room_id, end_time))
+    retry_failed_buckets()
 
 
 async def pool_status_scheduler() -> None:
@@ -264,7 +266,6 @@ async def main() -> None:
     init_room_info()
     init_session()
     monitoring_jobs.load_cached_room_uids()
-    await monitoring_jobs.init_uids_and_attention_once()
     await asyncio.to_thread(event_ingestion.entry_monitor.reload)
     entry_worker = asyncio.create_task(event_ingestion.entry_monitor.worker(), name="entry-writer")
     connections = asyncio.create_task(_run_clients_and_attention(attention_ready), name="startup-connections")
@@ -272,7 +273,6 @@ async def main() -> None:
     try:
         await asyncio.gather(
             connections,
-            monitoring_jobs.monitor_all_rooms_status(),  # 按 UID 批量轮询直播状态
             monthly_reset_scheduler(),
             monitoring_jobs.reconnect_scheduler(),  # 每日 6:00 全量重连
             monitoring_jobs.attention_daily_scheduler(),
@@ -295,6 +295,8 @@ async def main() -> None:
         entry_worker.cancel()
         connections.cancel()
         await asyncio.gather(entry_worker, connections, return_exceptions=True)
+        await asyncio.gather(*(client.stop_and_close() for client in tuple(runtime_state.ROOM_CLIENTS.values())),
+                             return_exceptions=True)
         await event_ingestion.entry_monitor.flush()
         snapshot_tasks = [snapshot.task for snapshot in runtime_state.SESSION_END_SNAPSHOTS.values()
                           if snapshot.task is not None]
@@ -322,10 +324,37 @@ def _run_api_server() -> None:
 
 
 # ------------------ launcher entry ------------------ #
+async def _run_collector() -> None:
+    # systemd and container restarts send SIGTERM. Route it through the same
+    # cancellation/drain path as SIGINT on Unix.
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(main())
+    stopping = False
+
+    def terminate() -> None:
+        nonlocal stopping
+        if not stopping:
+            stopping = True
+            task.cancel()
+
+    try:
+        loop.add_signal_handler(signal.SIGTERM, terminate)
+    except NotImplementedError:  # Windows event loops do not support Unix signals.
+        await task
+        return
+    try:
+        await task
+    except asyncio.CancelledError:
+        if not stopping or asyncio.current_task().cancelling():
+            raise
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+
+
 def run() -> None:
     """Reproduce the pre-extraction ``__main__`` block launcher order."""
     configure_logging()
     create_schema()
     ensure_runtime_schema()
     threading.Thread(target=_run_api_server, daemon=True).start()
-    asyncio.run(main())
+    asyncio.run(_run_collector())

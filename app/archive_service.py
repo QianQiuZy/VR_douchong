@@ -375,7 +375,7 @@ def archive_live_session_15m_stats(
                         "danmaku_count", "captain_danmaku_count", "admiral_danmaku_count",
                         "governor_danmaku_count", "normal_danmaku_count", "avg_concurrency",
                         "max_concurrency", "sample_count", "payer_count", "danmaku_user_count",
-                        "emoticon_danmaku_count",
+                        "emoticon_danmaku_count", "concurrency_total",
                     ),
                 )
                 for name in ("danmaku_user_count", "emoticon_danmaku_count"):

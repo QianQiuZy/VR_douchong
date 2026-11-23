@@ -24,7 +24,7 @@ from .metrics_runtime import (
     current_bucket_index,
     danmaku_bucket_target,
     record_payment,
-    start_session,
+    restore_session,
 )
 from .blivedm.models.web import PopularityRedPocketV2NewMessage
 from .models import (
@@ -296,8 +296,8 @@ class MyHandler(blivedm.BaseHandler):
         if open_session is None:
             return None
         resolved_id, start_time = open_session
+        restore_session(resolved_id, room_id, start_time or event_time)
         runtime_state.CURRENT_SESSIONS[room_id] = resolved_id
-        start_session(resolved_id, room_id, start_time or event_time)
         return resolved_id
 
     def _record_payment_metrics(

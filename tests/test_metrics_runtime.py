@@ -117,7 +117,7 @@ def test_shutdown_flush_drains_pending_danmaku_before_metrics(monkeypatch):
         "flush_pending_danmaku_for_room",
         lambda *_args: calls.append("danmaku"),
     )
-    monkeypatch.setattr(bootstrap, "flush_session", lambda *_args: calls.append("metrics"))
+    monkeypatch.setattr(bootstrap, "checkpoint_session", lambda *_args: calls.append("metrics"))
 
     bootstrap._flush_active_metrics(datetime.datetime(2026, 8, 30, 12, 0, 0).astimezone().replace(tzinfo=None))
 
@@ -247,3 +247,56 @@ def test_danmaku_monthly_counts_follow_event_calendar_month(monkeypatch):
     assert 302 not in runtime_state.DANMAKU_PENDING
     runtime_state.LAST_STATUS.pop(301, None)
     runtime_state.LAST_STATUS.pop(302, None)
+
+
+def test_failed_partial_checkpoint_cannot_overwrite_later_interval_totals(monkeypatch):
+    attempts = []
+    monkeypatch.setattr(metrics_runtime, "_failed_writes", {})
+
+    def save(**values):
+        attempts.append((values["bucket_index"], values["gift"]))
+        return len(attempts) >= 3
+
+    monkeypatch.setattr(metrics_runtime.LiveSession15mStats, "upsert", save)
+    start = datetime.datetime(2026, 11, 1)
+    metrics_runtime.start_session(42, 123, start)
+    metrics_runtime.record_payment(42, start, gift=7)
+    metrics_runtime.checkpoint_session(42, start + datetime.timedelta(minutes=5))
+    metrics_runtime.record_payment(42, start + datetime.timedelta(minutes=6), gift=2)
+    metrics_runtime.record_payment(42, start + datetime.timedelta(minutes=15), gift=3)
+    metrics_runtime.retry_failed_buckets()
+    metrics_runtime.checkpoint_session(42, start + datetime.timedelta(minutes=16))
+    metrics_runtime.retry_failed_buckets()
+    assert attempts == [(0, 7), (0, 9), (0, 9), (1, 3)]
+
+
+def test_sigterm_drains_active_collector_in_child_process():
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    if os.name != "posix":
+        pytest.skip("Unix signal handling")
+    script = textwrap.dedent("""
+        import asyncio
+        import os
+        import signal
+        from app import bootstrap
+
+        async def collector():
+            loop = asyncio.get_running_loop()
+            loop.call_soon(os.kill, os.getpid(), signal.SIGTERM)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                loop.call_soon(os.kill, os.getpid(), signal.SIGTERM)
+                await asyncio.sleep(0.01)
+                print("drained")
+
+        bootstrap.main = collector
+        asyncio.run(bootstrap._run_collector())
+    """)
+    result = subprocess.run([sys.executable, "-c", script], text=True, capture_output=True,
+                            timeout=30, check=True)
+    assert "drained" in result.stdout.splitlines()

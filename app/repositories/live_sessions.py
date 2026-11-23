@@ -7,6 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .. import config, danmaku_metrics, rounded_concurrency, runtime_state
 from ..database import Session
+from ..redis_metrics import delete_session_keys
 from .history import notify_history_change
 from .tables import month_str
 
@@ -71,7 +72,7 @@ def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) 
         session.close()
 
 
-def find_open_session(model, room_id: int) -> tuple[int, datetime.datetime] | None:
+def find_open_session(model, room_id: int, *, strict: bool = False) -> tuple[int, datetime.datetime] | None:
     session = Session()
     try:
         row = (
@@ -85,6 +86,8 @@ def find_open_session(model, room_id: int) -> tuple[int, datetime.datetime] | No
         _restore_duration_state(row)
         return int(row.id), row.start_time
     except SQLAlchemyError as exc:
+        if strict:
+            raise
         logger.error(f"[LiveSession] find_open_session 失败: {exc}")
         return None
     finally:
@@ -175,6 +178,7 @@ def close_session_by_id(model, session_id: int | None, end_dt: datetime.datetime
                 settlement = danmaku_metrics.settle(row, f"session:{session_id}", row.start_time)
             changed_month = getattr(row, "month", None)
             session.commit()
+            delete_session_keys(session_id)
             if settlement:
                 settlement.committed()
             notify_history_change(changed_month)
