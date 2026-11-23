@@ -37,6 +37,7 @@ def register_month(month: str) -> None:
                             room_id=rid,
                             month=month,
                             danmaku_user_count=count,
+                            emoticon_danmaku_count=0,
                             danmaku_status="collecting",
                         )
                         for rid in missing

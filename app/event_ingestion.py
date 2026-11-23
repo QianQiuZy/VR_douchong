@@ -450,7 +450,10 @@ class MyHandler(blivedm.BaseHandler):
             if target is None:
                 session_id = self._resolve_session(client, None, event_time)
                 target = danmaku_bucket_target(session_id, event_time) if session_id is not None else None
-            counts = DanmakuCounts.from_privilege_type(int(getattr(message, "privilege_type", 0) or 0))
+            counts = DanmakuCounts.from_privilege_type(
+                int(getattr(message, "privilege_type", 0) or 0),
+                dm_type=getattr(message, "dm_type", 0),
+            )
             pending = runtime_state.DANMAKU_PENDING.setdefault(room_id, PendingDanmaku())
             raw_uid = getattr(message, "uid", 0)
             try:

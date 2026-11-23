@@ -90,7 +90,8 @@ def annual_cache(store, monkeypatch):
         "room_info": [{"room_id": rid, "anchor_name": "Annual Anchor", "attention": 12345}],
         "room_stats_monthly": [
             {"room_id": rid, "month": month, "gift": gift, "guard": 2, "super_chat": 3,
-             "danmaku_count": 10, "captain_danmaku_count": 2, "normal_danmaku_count": normal}
+             "danmaku_count": 10, "captain_danmaku_count": 2, "normal_danmaku_count": normal,
+             "emoticon_danmaku_count": 3}
             for month, gift, normal in (("201912", 999, 8), ("202001", 10.1, 8),
                                         ("202002", 20.2, None), (current, 4, 8))
         ],
@@ -155,7 +156,7 @@ def test_annual_totals_duration_snapshot_fields_and_missing_danmaku(annual_cache
     assert row["blind_box_count"] == 300 and row["blind_box_profit"] == 1.1
     assert row["year"] == "2020" and "month" not in row
     assert row["whale_dependency"] is row["payer_count"] is row["steel_coin_count"] is None
-    assert row["danmaku"] == {"total": 20, "captain": 4, "normal": None, "admiral": None, "governor": None}
+    assert row["danmaku"] == {"total": 20, "emoticon": 6, "captain": 4, "normal": None, "admiral": None, "governor": None}
     assert row["attention"] == 12345 and row["status"] == 0 and row["title"] == ""
     assert row["live_time"] == "0000-00-00 00:00:00"
     assert all(row[field] is None for field in ("guard_1", "guard_2", "guard_3", "fans_count"))
@@ -183,6 +184,7 @@ def test_current_year_uses_latest_runtime_and_never_includes_future_months(annua
     row = next(row for row in rows if row["room_id"] == state.rid)
     assert row["gift"] == 5 and row["live_duration"] == "02:00:00"
     assert row["danmaku"]["total"] == 1
+    assert row["danmaku"]["emoticon"] is None
     assert (row["status"], row["title"], row["guard_1"], row["fans_count"]) == (1, "Live", 12, 99)
 
 
@@ -831,7 +833,7 @@ def test_hot_payload_preserves_runtime_fields_and_historical_nulls(store, monkey
     rid = room_config.get_room_ids()[0]
     value = snapshot(store)
     value.base["room_stats_monthly"] = [
-        {"room_id": rid, "month": value.month, "gift": 12.5, "danmaku_count": 7}
+        {"room_id": rid, "month": value.month, "gift": 12.5, "danmaku_count": 7, "emoticon_danmaku_count": 2}
     ]
     monkeypatch.setitem(runtime_state.LAST_STATUS, rid, 1)
     monkeypatch.setitem(runtime_state.CURRENT_SESSIONS, rid, 123)
@@ -856,6 +858,7 @@ def test_hot_payload_preserves_runtime_fields_and_historical_nulls(store, monkey
     )
     assert current["gift"] == 12.5 and current["current_concurrency"] == 42
     assert current["title"] == "测试" and current["danmaku"]["total"] == 7
+    assert current["danmaku"]["emoticon"] == 2
     monthly = json.loads(gzip.decompress(bodies["/gift/by_month"]))
     assert all("current_concurrency" not in row for row in monthly)
     historical = PayloadBuilder().build(snapshot(store, "190001"))

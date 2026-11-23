@@ -21,7 +21,8 @@ def add_room_stats_amounts(model, room_id: int, month: str, gift: float = 0.0, g
         session = Session()
         try:
             stmt = insert(model).values(
-                room_id=room_id, month=month, gift=gift, guard=guard, super_chat=super_chat, payer_count=0
+                room_id=room_id, month=month, gift=gift, guard=guard, super_chat=super_chat,
+                payer_count=0, emoticon_danmaku_count=0,
             ).on_duplicate_key_update(
                 gift=model.gift + gift,
                 guard=model.guard + guard,
@@ -61,6 +62,7 @@ def set_room_payer_count(model, room_id: int, month: str, count: int) -> None:
             guard=0.0,
             super_chat=0.0,
             payer_count=int(count),
+            emoticon_danmaku_count=0,
         ).on_duplicate_key_update(payer_count=func.greatest(model.payer_count, int(count)))
         session.execute(stmt)
         session.commit()

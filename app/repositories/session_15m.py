@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 DANMAKU_COLUMNS = {
     "danmaku_count",
+    "emoticon_danmaku_count",
     "captain_danmaku_count",
     "admiral_danmaku_count",
     "governor_danmaku_count",
@@ -66,6 +67,7 @@ def upsert_stats(
             "blind_box_count": blind_box_count,
             "blind_box_profit": blind_box_profit,
             "danmaku_count": danmaku_count,
+            "emoticon_danmaku_count": 0 if danmaku_count == 0 else None,
             "captain_danmaku_count": captain_danmaku_count,
             "admiral_danmaku_count": admiral_danmaku_count,
             "governor_danmaku_count": governor_danmaku_count,
@@ -145,6 +147,12 @@ def _add_to_archived_bucket(session, target: DanmakuBucketTarget, counts: Danmak
     if "danmaku_count" not in deltas:
         raise SQLAlchemyError("Archived bucket missing danmaku_count")
     assignments = ", ".join(f"`{name}` = COALESCE(`{name}`, 0) + :{name}" for name in deltas)
+    if "emoticon_danmaku_count" in available:
+        assignments = (
+            "emoticon_danmaku_count = CASE WHEN danmaku_count = 0 THEN :emoticon "
+            "ELSE emoticon_danmaku_count + :emoticon END, " + assignments
+        )
+        deltas["emoticon"] = counts.emoticon
     if counts.audience is not None and "danmaku_user_count" in available:
         # The total assignment above has already applied this delta.
         assignments += ", danmaku_user_count = CASE WHEN danmaku_count = :covered_total THEN :senders END"

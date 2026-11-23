@@ -344,6 +344,7 @@ _ROOM_PAYLOAD_BODY = Body(default={})
 
 class MonthlyDanmakuPayload(TypedDict):
     total: int | None
+    emoticon: int | None
     captain: int | None
     admiral: int | None
     governor: int | None
@@ -483,6 +484,7 @@ def _monthly_danmaku_payload(rsm: Any) -> MonthlyDanmakuPayload:
 
     return {
         "total": optional_int("danmaku_count"),
+        "emoticon": optional_int("emoticon_danmaku_count"),
         "captain": optional_int("captain_danmaku_count"),
         "admiral": optional_int("admiral_danmaku_count"),
         "governor": optional_int("governor_danmaku_count"),
@@ -748,6 +750,7 @@ _BUCKET_FIELDS = (
     "blind_box_count", "blind_box_profit", "danmaku_count", "captain_danmaku_count",
     "admiral_danmaku_count", "governor_danmaku_count", "normal_danmaku_count",
     "avg_concurrency", "max_concurrency", "sample_count", "payer_count", "danmaku_user_count",
+    "emoticon_danmaku_count",
 )
 
 
@@ -767,6 +770,7 @@ def _format_15m_stats(row: Any) -> dict[str, Any]:
         "blind_box_count": int(values.get("blind_box_count") or 0),
         "blind_box_profit": _profit_display(values.get("blind_box_profit")),
         "danmaku_count": int(values.get("danmaku_count") or 0),
+        "emoticon_danmaku_count": values.get("emoticon_danmaku_count"),
         "captain_danmaku_count": values.get("captain_danmaku_count"),
         "admiral_danmaku_count": values.get("admiral_danmaku_count"),
         "governor_danmaku_count": values.get("governor_danmaku_count"),
@@ -1198,6 +1202,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                         "blind_box_count": r.blind_box_count,
                         "blind_box_profit": _profit_display(r.blind_box_profit),
                         "danmaku_count": r.danmaku_count or 0,
+                        "emoticon_danmaku_count": r.emoticon_danmaku_count,
                         "captain_danmaku_count": r.captain_danmaku_count,
                         "admiral_danmaku_count": r.admiral_danmaku_count,
                         "governor_danmaku_count": r.governor_danmaku_count,
@@ -1232,7 +1237,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                     "normal_danmaku_count", "start_guard_1", "start_guard_2", "start_guard_3",
                     "start_fans_count", "start_attention", "end_guard_1", "end_guard_2",
                     "end_guard_3", "end_fans_count", "end_attention", "avg_concurrency",
-                    "max_concurrency", "payer_count", *danmaku_metrics.COLUMNS,
+                    "max_concurrency", "payer_count", "emoticon_danmaku_count", *danmaku_metrics.COLUMNS,
                 )
                 archive_fields = _archive_projection(fields, archive_columns)
                 hot_fields = ", ".join(f"`{name}`" for name in fields)
@@ -1244,7 +1249,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                     "ORDER BY start_time ASC"
                 ), {"room_id": room_id, "month": m}).fetchall()
                 for row in rows:
-                    audience_row = SimpleNamespace(danmaku_count=row[9], **dict(zip(danmaku_metrics.COLUMNS, row[27:])))
+                    metrics_row = SimpleNamespace(**dict(zip(fields, row)))
                     out.append(
                         {
                             "start_time": row[1].strftime("%Y-%m-%d %H:%M:%S"),
@@ -1254,10 +1259,11 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                             "guard": row[5],
                             "super_chat": row[6],
                             "payer_count": row[26] or 0,
-                            **danmaku_metrics.report(audience_row, f"session:{row[0]}", live=row[2] is None or getattr(audience_row, "danmaku_status", None) == "pending"),
+                            **danmaku_metrics.report(metrics_row, f"session:{row[0]}", live=row[2] is None or metrics_row.danmaku_status == "pending"),
                             "blind_box_count": row[7],
                             "blind_box_profit": _profit_display(row[8]),
                             "danmaku_count": row[9] or 0,
+                            "emoticon_danmaku_count": metrics_row.emoticon_danmaku_count,
                             "captain_danmaku_count": row[10],
                             "admiral_danmaku_count": row[11],
                             "governor_danmaku_count": row[12],
@@ -1300,6 +1306,7 @@ def get_live_sessions_by_room_month(request: Request, _: None = Depends(report_a
                             "blind_box_count": r.blind_box_count,
                             "blind_box_profit": _profit_display(r.blind_box_profit),
                             "danmaku_count": r.danmaku_count or 0,
+                            "emoticon_danmaku_count": r.emoticon_danmaku_count,
                             "captain_danmaku_count": r.captain_danmaku_count,
                             "admiral_danmaku_count": r.admiral_danmaku_count,
                             "governor_danmaku_count": r.governor_danmaku_count,

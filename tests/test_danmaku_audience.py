@@ -65,7 +65,7 @@ def test_failed_rank_flush_replays_only_senders_and_accepts_new_events(monkeypat
         original(scope, batch)
         raise redis.TimeoutError("lost reply after successful write")
 
-    pending.add(start, DanmakuCounts(total=1, normal=1), target, 91)
+    pending.add(start, DanmakuCounts(total=1, normal=1, emoticon=1), target, 91)
     monkeypatch.setattr(dm, "record", lost_reply)
     monitoring_jobs.flush_pending_danmaku_for_room(8)
     pending.add(start, DanmakuCounts(total=1, normal=1), target, 92)
@@ -74,6 +74,7 @@ def test_failed_rank_flush_replays_only_senders_and_accepts_new_events(monkeypat
     assert not runtime_state.DANMAKU_PENDING
     for rows in writes.values():
         assert [row.total for row in rows] == [1, 1]
+        assert [row.emoticon for row in rows] == [1, 0]
         assert rows[-1].audience == dm.Audience(2, 2)
     assert dm.snapshot("session:81")["total"] == "2"
 

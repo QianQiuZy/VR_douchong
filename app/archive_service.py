@@ -235,12 +235,12 @@ def archive_live_session(
                         "payer_count", "start_guard_1", "start_guard_2", "start_guard_3",
                         "start_fans_count", "start_attention", "end_guard_1", "end_guard_2",
                         "end_guard_3", "end_fans_count", "end_attention", "avg_concurrency",
-                        "max_concurrency", "duration_valid", "duration_ledger", *COLUMNS,
+                        "max_concurrency", "duration_valid", "duration_ledger", "emoticon_danmaku_count", *COLUMNS,
                     ),
                 )
                 # A pre-upgrade archive cannot carry newly collected metrics.
                 # Keep those rows readable in the hot table without changing archive DDL.
-                for name in COLUMNS:
+                for name in (*COLUMNS, "emoticon_danmaku_count"):
                     if name not in columns:
                         predicate += f" AND `{name}` IS NULL"
                         child_predicate += f" AND parent.`{name}` IS NULL"
@@ -375,10 +375,12 @@ def archive_live_session_15m_stats(
                         "danmaku_count", "captain_danmaku_count", "admiral_danmaku_count",
                         "governor_danmaku_count", "normal_danmaku_count", "avg_concurrency",
                         "max_concurrency", "sample_count", "payer_count", "danmaku_user_count",
+                        "emoticon_danmaku_count",
                     ),
                 )
-                if "danmaku_user_count" not in columns:
-                    predicate += " AND stats.danmaku_user_count IS NULL"
+                for name in ("danmaku_user_count", "emoticon_danmaku_count"):
+                    if name not in columns:
+                        predicate += f" AND stats.{name} IS NULL"
                 count = conn.execute(
                     text(
                         "SELECT COUNT(1) FROM `live_session_15m_stats` AS stats "

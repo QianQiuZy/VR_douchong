@@ -4,6 +4,7 @@ from sqlalchemy import case, func
 
 
 def increments(counts):
+    """Counters that already treat a missing baseline as zero on write."""
     return {
         "danmaku_count": counts.total,
         "captain_danmaku_count": counts.captain,
@@ -18,6 +19,13 @@ def upsert_fields(model, counts):
     updates = [
         (name, func.coalesce(getattr(model, name), 0) + delta) for name, delta in values.items()
     ]
+    values["emoticon_danmaku_count"] = counts.emoticon
+    # Compare the pre-update total. NULL with prior messages must stay unknown.
+    emoticon_count = case(
+        (model.danmaku_count == 0, counts.emoticon),
+        else_=model.emoticon_danmaku_count + counts.emoticon,
+    )
+    updates.insert(0, ("emoticon_danmaku_count", emoticon_count))
     if counts.audience is not None:
         count, covered_total = counts.audience.count, counts.audience.total
         values["danmaku_user_count"] = count if covered_total == counts.total else None

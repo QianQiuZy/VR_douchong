@@ -44,6 +44,7 @@ class RoomStatsMonthly(Base):
     super_chat = Column(Float, default=0.0, nullable=False)
     payer_count = Column(Integer, default=0, nullable=False)
     danmaku_count = Column(Integer, default=0, nullable=True)
+    emoticon_danmaku_count = Column(Integer, nullable=True)
     danmaku_user_count = Column(Integer, default=initial_monthly_count, nullable=True)
     danmaku_status = Column(String(16), nullable=True)
     danmaku_top1_ratio = Column(Numeric(12, 8), nullable=True)

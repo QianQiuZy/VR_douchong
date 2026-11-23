@@ -50,6 +50,7 @@ def start_session(model, room_id: int, start_dt: datetime.datetime, title: str) 
             room_id=room_id,
             start_time=start_dt,
             end_time=None,
+            emoticon_danmaku_count=0,
             danmaku_user_count=0 if danmaku_metrics.covered(start_dt) else None,
             danmaku_status="collecting",
             title=title or "",

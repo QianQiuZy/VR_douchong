@@ -98,6 +98,7 @@ class TestSchemaTablesAndColumns:
         assert all("governor_danmaku_count" not in sql for sql in archive_changes)
         assert all("normal_danmaku_count" not in sql for sql in archive_changes)
         assert all("danmaku_user_count" not in sql for sql in archive_changes)
+        assert all("emoticon_danmaku_count" not in sql for sql in archive_changes)
 
     def test_metadata_contains_existing_tables_and_entry_log(self, gift_module):
         assert sorted(gift_module.Base.metadata.tables.keys()) == [
@@ -192,6 +193,7 @@ class TestSchemaTablesAndColumns:
             "admiral_danmaku_count",
             "governor_danmaku_count",
             "normal_danmaku_count",
+            "emoticon_danmaku_count",
             "whale_top1_amount",
             "whale_top1_ratio",
             "whale_top5_amount",
@@ -322,6 +324,7 @@ class TestSchemaTablesAndColumns:
             "admiral_danmaku_count",
             "governor_danmaku_count",
             "normal_danmaku_count",
+            "emoticon_danmaku_count",
             "payer_count",
             "duration_valid",
             "duration_ledger",
@@ -404,6 +407,7 @@ class TestSchemaTablesAndColumns:
             "admiral_danmaku_count",
             "governor_danmaku_count",
             "normal_danmaku_count",
+            "emoticon_danmaku_count",
             "avg_concurrency",
             "max_concurrency",
             "sample_count",

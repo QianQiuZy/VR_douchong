@@ -18,6 +18,7 @@ from app import (
 
 class _DanmakuCountView(Protocol):
     total: int
+    emoticon: int
     captain: int
     admiral: int
     governor: int
@@ -160,12 +161,15 @@ def test_pending_danmaku_flush_updates_parent_and_15m_bucket(monkeypatch):
     metrics_runtime.start_session(44, 301, start)
     runtime_state.CURRENT_SESSIONS[301] = 44
 
-    for privilege_type in (3, 3, 2, 1, 0, 0, 0):
+    for privilege_type, dm_type in ((3, 1), (3, 0), (2, 0), (1, 0), (0, 1), (0, 0), (0, 2)):
         handler.__getattribute__("_on_danmaku")(
             SimpleNamespace(room_id=301),
             SimpleNamespace(
                 is_mirror=False,
                 privilege_type=privilege_type,
+                dm_type=dm_type,
+                msg="[大笑][大笑]" if dm_type == 0 else "鼠爱大米",
+                mode_info={"extra": {"emots": {"[大笑]": {}}}} if dm_type == 0 else {},
                 timestamp=int(start.timestamp()),
             ),
         )
@@ -177,6 +181,7 @@ def test_pending_danmaku_flush_updates_parent_and_15m_bucket(monkeypatch):
     parent_counts = parent_writes[0][1]
     assert parent_writes[0][0] == 44
     assert parent_counts.total == 7
+    assert parent_counts.emoticon == 2
     assert parent_counts.captain == 2
     assert parent_counts.admiral == 1
     assert parent_counts.governor == 1

@@ -169,6 +169,7 @@ def year_summaries(year: str, base: dict, inputs: dict, *, empty: bool = False) 
             ("total", "danmaku_count"), ("captain", "captain_danmaku_count"),
             ("admiral", "admiral_danmaku_count"), ("governor", "governor_danmaku_count"),
             ("normal", "normal_danmaku_count"),
+            ("emoticon", "emoticon_danmaku_count"),
         ):
             counts = [monthly[rid].get(month, {}).get(column) for month in active[rid]]
             danmaku[name] = (
@@ -362,6 +363,7 @@ class PayloadBuilder:
                         "admiral_danmaku_count",
                         "governor_danmaku_count",
                         "normal_danmaku_count",
+                        "emoticon_danmaku_count",
                         "start_guard_1",
                         "start_guard_2",
                         "start_guard_3",

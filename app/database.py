@@ -151,6 +151,7 @@ def ensure_runtime_schema() -> None:
         required_columns[table]["danmaku_status"] = "VARCHAR(16) NULL"
     for table in ("live_session", "live_session_15m_stats", "room_stats_monthly"):
         required_columns[table]["danmaku_user_count"] = "INT NULL"
+        required_columns[table]["emoticon_danmaku_count"] = "INT NULL DEFAULT NULL"
     try:
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
@@ -178,6 +179,7 @@ def ensure_runtime_schema() -> None:
                     if name not in {
                         "avg_concurrency",
                         "danmaku_user_count",
+                        "emoticon_danmaku_count",
                         "captain_danmaku_count",
                         "admiral_danmaku_count",
                         "governor_danmaku_count",

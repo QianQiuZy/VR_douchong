@@ -364,6 +364,7 @@ class TestGiftCurrentMonthRoute:
         }
         assert item["danmaku"] == {
             "total": None,
+            "emoticon": None,
             "captain": None,
             "admiral": None,
             "governor": None,
@@ -456,6 +457,7 @@ class TestGiftLiveSessionsRoute:
             admiral_danmaku_count=2,
             governor_danmaku_count=3,
             normal_danmaku_count=4,
+            emoticon_danmaku_count=2,
             start_guard_1=None,
             start_guard_2=None,
             start_guard_3=None,
@@ -519,6 +521,7 @@ class TestGiftLiveSessionsRoute:
         assert session["admiral_danmaku_count"] == 2
         assert session["governor_danmaku_count"] == 3
         assert session["normal_danmaku_count"] == 4
+        assert session["emoticon_danmaku_count"] == 2
         assert "stats_15m" not in session
         assert stats_calls == []
 
@@ -602,6 +605,7 @@ class TestGiftLiveSessionsRoute:
         assert item["admiral_danmaku_count"] is None
         assert item["governor_danmaku_count"] is None
         assert item["normal_danmaku_count"] is None
+        assert item["emoticon_danmaku_count"] is None
 
     def test_historical_session_query_selects_null_for_missing_new_columns(
         self, client, gift_module, monkeypatch
@@ -655,6 +659,7 @@ class TestGiftLiveSessionsRoute:
         assert "NULL AS admiral_danmaku_count" in captured["sql"]
         assert "NULL AS governor_danmaku_count" in captured["sql"]
         assert "NULL AS normal_danmaku_count" in captured["sql"]
+        assert "NULL AS emoticon_danmaku_count" in captured["sql"]
 
     def test_missing_room_id_defaults_to_zero_and_returns_400(self, client, gift_module, isolated_db):
         response = client.get("/gift/live_sessions")

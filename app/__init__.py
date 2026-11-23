@@ -27,15 +27,18 @@ class DanmakuCounts:
     governor: int = 0
     normal: int = 0
     audience: Audience | None = None
+    emoticon: int = 0
 
     @classmethod
-    def from_privilege_type(cls, privilege_type: int) -> DanmakuCounts:
-        counts_by_privilege = {
-            1: cls(total=1, governor=1),
-            2: cls(total=1, admiral=1),
-            3: cls(total=1, captain=1),
-        }
-        return counts_by_privilege.get(privilege_type, cls(total=1, normal=1))
+    def from_privilege_type(cls, privilege_type: int, *, dm_type: int = 0) -> DanmakuCounts:
+        return cls(
+            total=1,
+            governor=int(privilege_type == 1),
+            admiral=int(privilege_type == 2),
+            captain=int(privilege_type == 3),
+            normal=int(privilege_type not in (1, 2, 3)),
+            emoticon=int(dm_type == 1),
+        )
 
     def __add__(self, other: DanmakuCounts) -> DanmakuCounts:
         return DanmakuCounts(
@@ -44,6 +47,7 @@ class DanmakuCounts:
             admiral=self.admiral + other.admiral,
             governor=self.governor + other.governor,
             normal=self.normal + other.normal,
+            emoticon=self.emoticon + other.emoticon,
         )
 
 

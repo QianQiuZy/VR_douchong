@@ -446,7 +446,7 @@ def test_real_late_danmaku_updates_archived_bucket_without_shadowing_totals(
     cache, engine, _session_factory = crossmonth_sessions
     with engine.begin() as connection:
         connection.execute(text(
-            "UPDATE live_session_15m_stats SET guard=3, payer_count=4, danmaku_count=100 "
+            "UPDATE live_session_15m_stats SET guard=3, payer_count=4, danmaku_count=100, emoticon_danmaku_count=10 "
             "WHERE session_id=11 AND bucket_index=0"
         ))
     archive = archive_service.archive_live_session if archive_parent else archive_service.archive_live_session_15m_stats
@@ -457,7 +457,7 @@ def test_real_late_danmaku_updates_archived_bucket_without_shadowing_totals(
         session_id=11, room_id=111111, month="200101", bucket_index=0,
         start_time=start, end_time=start + datetime.timedelta(minutes=15),
     )
-    assert LiveSession15mStats.add_danmaku_counts(target, DanmakuCounts(total=2, normal=2))
+    assert LiveSession15mStats.add_danmaku_counts(target, DanmakuCounts(total=2, normal=2, emoticon=1))
     assert LiveSession15mStats.add_danmaku_counts(target, DanmakuCounts(total=3, normal=3))
     # A full stats replay replaces metrics but must not reset archived danmaku.
     assert LiveSession15mStats.upsert(
@@ -484,6 +484,36 @@ def test_real_late_danmaku_updates_archived_bucket_without_shadowing_totals(
     payload = json.loads(gzip.decompress(body))
     bucket = next(row for row in payload["sessions"] if row["title"] == "archived")["stats_15m"][0]
     assert (bucket["gift"], bucket["guard"], bucket["danmaku_count"], bucket["normal_danmaku_count"]) == (6, 3, 105, 47)
+    assert bucket["emoticon_danmaku_count"] == 11
+
+
+@pytest.mark.parametrize(("prior_total", "expected"), [(5, None), (0, 2)])
+def test_danmaku_flush_with_pre_upgrade_totals(crossmonth_sessions, monkeypatch, prior_total, expected):
+    from app import DanmakuBucketTarget, DanmakuCounts
+    from app.repositories import monthly
+
+    _, _, factory = crossmonth_sessions
+    monkeypatch.setattr(monthly, "Session", factory)
+    month = "200101"
+    rid = 111111
+    sid = 12
+    keys = [(RoomStatsMonthly, (rid, month)), (LiveSession, sid), (LiveSession15mStats, (sid, 0))]
+    with factory.begin() as sql:
+        for model, key in keys:
+            row = sql.get(model, key)
+            row.danmaku_count = prior_total
+            row.emoticon_danmaku_count = None
+        bucket = sql.get(LiveSession15mStats, (sid, 0))
+        target = DanmakuBucketTarget(sid, rid, month, 0, bucket.start_time, bucket.end_time)
+    for counts in (DanmakuCounts(total=3, emoticon=2, normal=3), DanmakuCounts(total=1, captain=1)):
+        assert RoomStatsMonthly.add_danmaku_counts(rid, month, counts)
+        assert LiveSession.add_danmaku_by_id(sid, counts)
+        assert LiveSession15mStats.add_danmaku_counts(target, counts)
+    with factory() as sql:
+        for model, key in keys:
+            row = sql.get(model, key)
+            assert row.danmaku_count == prior_total + 4
+            assert row.emoticon_danmaku_count == expected
 
 
 def test_real_late_bucket_writer_serializes_with_archive_copy_delete(crossmonth_sessions):
@@ -990,6 +1020,8 @@ def test_danmaku_senders_from_web_event_to_redis_archive_and_api(services, monke
     for minute, uid in [(0, 99), (1, 99), (2, 42), (3, "unknown"), (15, 42), (16, 50)]:
         handler._on_danmaku(SimpleNamespace(room_id=rid), SimpleNamespace(
             uid=uid, timestamp=int((start + datetime.timedelta(minutes=minute)).timestamp()),
+            dm_type=1 if minute in (0, 3, 15) else 0,
+            msg="[大笑][大笑]", mode_info={"extra": {"emots": {"[大笑]": {}}}},
         ))
         if minute in (2, 16):
             monitoring_jobs.flush_pending_danmaku_for_room(rid, sid)
@@ -1001,6 +1033,9 @@ def test_danmaku_senders_from_web_event_to_redis_archive_and_api(services, monke
     with factory() as sql:
         row = sql.get(LiveSession, sid)
         assert row.danmaku_count == 6 and row.danmaku_user_count == 3
+        assert row.emoticon_danmaku_count == 3
+        assert [sql.get(RoomStatsMonthly, (rid, m)).emoticon_danmaku_count for m in ("200301", "200302")] == [2, 1]
+        assert [sql.get(LiveSession15mStats, (sid, b)).emoticon_danmaku_count for b in (0, 1)] == [2, 1]
         assert row.danmaku_top1_ratio is None
         assert dm.report(row, f"session:{sid}", live=True)["danmaku_dependency"]["top1"] == 0.3333
         assert [sql.get(RoomStatsMonthly, (rid, m)).danmaku_user_count for m in ("200301", "200302")] == [2, 2]
@@ -1017,6 +1052,7 @@ def test_danmaku_senders_from_web_event_to_redis_archive_and_api(services, monke
         assert month.danmaku_status == "archived" and float(month.danmaku_top1_ratio) == 0.5
         silent = sql.get(RoomStatsMonthly, (222222, "200301"))
         assert silent.danmaku_user_count == 0 and silent.danmaku_status == "archived"
+        assert silent.emoticon_danmaku_count == 0
         assert silent.danmaku_top1_ratio is None
         assert sql.get(LiveSession, sid).avg_concurrency == pytest.approx(12.35)
     try:
@@ -1026,9 +1062,12 @@ def test_danmaku_senders_from_web_event_to_redis_archive_and_api(services, monke
             monthly_api = client.get("/gift/by_month?month=200301").json()
             monthly_room = next(item for item in monthly_api if item["room_id"] == rid)
             assert monthly_room["danmaku_user_count"] == 2
+            assert monthly_room["danmaku"]["emoticon"] == 2
             assert monthly_room["danmaku_dependency"]["top1"] == 0.5
             result = client.get(path + "&stats_15m=1").json()["sessions"][0]
             assert result["danmaku_user_count"] == 3
+            assert result["emoticon_danmaku_count"] == 3
+            assert [b["emoticon_danmaku_count"] for b in result["stats_15m"]] == [2, 1]
             assert result["danmaku_dependency"]["status"] == "archived"
             assert result["danmaku_dependency"]["top1"] == 0.3333
             assert result["avg_concurrency"] == 12.35
@@ -1058,12 +1097,22 @@ def test_old_archive_without_sender_columns_keeps_new_rows_readable(crossmonth_s
     cache, engine, factory = crossmonth_sessions
     assert archive_service.archive_live_session("200101", session_ids=(11,)) == 1
     with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE live_session_200101 MODIFY avg_concurrency FLOAT, " + ", ".join(f"DROP COLUMN {name}" for name in dm.COLUMNS)))
-        conn.execute(text("ALTER TABLE live_session_15m_stats_200101 MODIFY avg_concurrency FLOAT, DROP COLUMN danmaku_user_count"))
+        drops = ", ".join(f"DROP COLUMN {name}" for name in (*dm.COLUMNS, "emoticon_danmaku_count"))
+        conn.execute(text(f"ALTER TABLE live_session_200101 MODIFY avg_concurrency FLOAT, {drops}"))
+        conn.execute(text(
+            "ALTER TABLE live_session_15m_stats_200101 MODIFY avg_concurrency FLOAT, "
+            "DROP COLUMN danmaku_user_count, DROP COLUMN emoticon_danmaku_count"
+        ))
         conn.execute(text("UPDATE live_session_200101 SET avg_concurrency=7.3456"))
         conn.execute(text("UPDATE live_session_15m_stats_200101 SET avg_concurrency=8.7654"))
-        conn.execute(text("ALTER TABLE live_session MODIFY avg_concurrency FLOAT, DROP COLUMN danmaku_status"))
-        conn.execute(text("ALTER TABLE live_session_15m_stats MODIFY avg_concurrency FLOAT, DROP COLUMN danmaku_user_count"))
+        conn.execute(text(
+            "ALTER TABLE live_session MODIFY avg_concurrency FLOAT, "
+            "DROP COLUMN danmaku_status, DROP COLUMN emoticon_danmaku_count"
+        ))
+        conn.execute(text(
+            "ALTER TABLE live_session_15m_stats MODIFY avg_concurrency FLOAT, "
+            "DROP COLUMN danmaku_user_count, DROP COLUMN emoticon_danmaku_count"
+        ))
     monkeypatch.setattr(database, "engine", engine)
     monkeypatch.setattr(database, "inspect", _ORIG_INSPECT)
     database.ensure_runtime_schema()
@@ -1074,10 +1123,13 @@ def test_old_archive_without_sender_columns_keeps_new_rows_readable(crossmonth_s
         assert hot["avg_concurrency"]["type"].scale == 2
         assert type(archive["avg_concurrency"]["type"]).__name__ == "FLOAT"
         assert "danmaku_user_count" in hot and "danmaku_user_count" not in archive
+        assert "emoticon_danmaku_count" in hot and "emoticon_danmaku_count" not in archive
     with factory.begin() as sql:
         row = sql.get(LiveSession, 12)
         row.end_time = datetime.datetime(2001, 2, 1)
         row.danmaku_status, row.danmaku_user_count, row.danmaku_top1_ratio = "archived", 4, 0.5
+        row.emoticon_danmaku_count = 2
+        sql.get(LiveSession15mStats, (12, 0)).emoticon_danmaku_count = 1
         sql.get(LiveSession15mStats, (12, 0)).danmaku_user_count = 3
     assert archive_service.archive_live_session("200101", session_ids=(12,)) == 0
     cache.prewarm()
@@ -1089,6 +1141,8 @@ def test_old_archive_without_sender_columns_keeps_new_rows_readable(crossmonth_s
     old, new = direct["sessions"]
     assert old["danmaku_user_count"] is None and old["danmaku_dependency"]["status"] == "unavailable"
     assert old["stats_15m"][0]["danmaku_user_count"] is None
+    assert old["emoticon_danmaku_count"] is None and old["stats_15m"][0]["emoticon_danmaku_count"] is None
     assert (old["avg_concurrency"], old["stats_15m"][0]["avg_concurrency"]) == (7.35, 8.77)
     assert new["danmaku_user_count"] == 4 and new["danmaku_dependency"]["top1"] == 0.5
     assert new["stats_15m"][0]["danmaku_user_count"] == 3
+    assert (new["emoticon_danmaku_count"], new["stats_15m"][0]["emoticon_danmaku_count"]) == (2, 1)

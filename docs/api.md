@@ -175,6 +175,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | total | int 或 null | 当月总弹幕数。 |
+| emoticon | int 或 null | 总数中以整条表情包发送的条数（`dm_type=1`）。带内嵌表情的文本（`dm_type=0`）按文本计。完整采集且没有表情包时为 0，旧记录缺字段或此前已有无法分类的弹幕时为 `null`。 |
 | captain | int 或 null | 当月舰长弹幕数。 |
 | admiral | int 或 null | 当月提督弹幕数。 |
 | governor | int 或 null | 当月总督弹幕数。 |
@@ -278,6 +279,7 @@
 | blind_box_count | int | 单场盲盒数量。 |
 | blind_box_profit | float | 单场盲盒盈亏（正负均可能，最小单位 0.1）。 |
 | danmaku_count | int | 弹幕数量。 |
+| emoticon_danmaku_count | int 或 null | 整场弹幕中以整条表情包发送的条数，口径同月度 `danmaku.emoticon`。 |
 | captain_danmaku_count | int 或 null | 舰长弹幕数量；旧记录无字段时为 `null`。 |
 | admiral_danmaku_count | int 或 null | 提督弹幕数量；旧记录无字段时为 `null`。 |
 | governor_danmaku_count | int 或 null | 总督弹幕数量；旧记录无字段时为 `null`。 |
@@ -310,6 +312,7 @@
 | blind_box_count | int | 区间盲盒数量。 |
 | blind_box_profit | float | 区间盲盒盈亏。 |
 | danmaku_count | int | 区间弹幕数量。 |
+| emoticon_danmaku_count | int 或 null | 本区间弹幕中以整条表情包发送的条数，口径同月度 `danmaku.emoticon`。 |
 | captain_danmaku_count | int 或 null | 区间舰长弹幕数量；旧记录无字段时为 `null`。 |
 | admiral_danmaku_count | int 或 null | 区间提督弹幕数量；旧记录无字段时为 `null`。 |
 | governor_danmaku_count | int 或 null | 区间总督弹幕数量；旧记录无字段时为 `null`。 |

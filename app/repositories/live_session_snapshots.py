@@ -116,6 +116,10 @@ def update_end_attention(model, session_id: int, attention: int | None = None) -
 
 
 def _add_danmaku_counts(row, counts: DanmakuCounts) -> None:
+    if row.danmaku_count == 0:
+        row.emoticon_danmaku_count = counts.emoticon
+    elif row.emoticon_danmaku_count is not None:
+        row.emoticon_danmaku_count += counts.emoticon
     row.danmaku_count = (row.danmaku_count or 0) + counts.total
     row.captain_danmaku_count = (row.captain_danmaku_count or 0) + counts.captain
     row.admiral_danmaku_count = (row.admiral_danmaku_count or 0) + counts.admiral
@@ -162,6 +166,7 @@ def add_danmaku_by_room_open(model, room_id: int, counts: DanmakuCounts) -> bool
             session.query(model)
             .filter(and_(model.room_id == room_id, model.end_time.is_(None)))
             .order_by(model.start_time.desc())
+            .with_for_update()
             .first()
         )
         if not row:
