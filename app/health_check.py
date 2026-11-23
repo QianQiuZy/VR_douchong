@@ -91,11 +91,13 @@ async def collector_snapshot():
         )
     }
     connected = sum(room["status"] == "connected" for room in rooms)
+    daily_reconnecting = sum(room["status"] == "daily-reconnecting" for room in rooms)
     return {
-        "status": "ok" if connected == len(rooms) else "degraded",
+        "status": "ok" if connected + daily_reconnecting == len(rooms) else "degraded",
         "loop_responsive": True, "http_pool": http_pool, "queues": queues,
         "rooms": {"configured": len(rooms), "connected": connected,
-                  "not_connected": len(rooms) - connected, "items": rooms},
+                  "not_connected": len(rooms) - connected,
+                  "daily_reconnecting": daily_reconnecting, "items": rooms},
     }
 
 

@@ -546,12 +546,14 @@ curl -sS https://vup.qianqiuzy.cn/health/check
 | `dependencies.redis` | `metrics`（配置的 Redis DB）、`whale_db1`、`api_db2`、`danmaku_users_db3`、`danmaku_rank_db4` 五类用途分别执行 PING，返回状态、耗时和异常类型；不读写业务键，不证明历史数据完整性 |
 | `collector.loop_responsive` | 采集事件循环能否在两秒内返回状态快照；未启动、已停止或无响应均不健康 |
 | `collector.http_pool` | 共享 aiohttp 连接池的状态、`limit`（0 为不设总上限）、`limit_per_host`、`acquired`、`waiting`、`idle` |
-| `collector.rooms` | `configured`、`connected`、`not_connected` 及逐房间 `items`；状态包括 `not_started`、`connecting`、`authenticating`、`connected`、`stopped`，仅当前 WebSocket 打开且鉴权成功才计为 connected |
+| `collector.rooms` | `configured` 为配置房间数，`connected` 为已连接且鉴权成功的房间数，`not_connected` 为其余房间数。其中处于每日计划重连的房间另计入 `daily_reconnecting`，该状态视为健康。逐房间状态包括 `not_started`、`connecting`、`authenticating`、`connected`、`stopped`、`daily-reconnecting` |
 | `collector.rooms.items[]` | 房间号、直播状态、客户端运行状态、鉴权状态、最近鉴权成功/断联/收到消息时间及当前断联持续秒数；从未连接时相应时间为空 |
 | `collector.queues` | 守护/粉丝、关注数及每日采集队列的当前长度 |
 | `api_cache` | API 缓存的启用/就绪状态、最近刷新年龄和快照实际年龄；缓存关闭时为 `disabled` |
 | `upstream_api` | 近一小时有观测的 B 站接口最近结果汇总及 `failing_endpoints`；最近结果仍为失败时总体状态降级，无观测为 `unknown`；不额外主动请求 B 站 |
 | `last_hour` | 下述一小时历史及覆盖范围 |
+
+每日 06:00 任务逐房间重连。轮到该房间时，从关闭旧连接到新连接首次鉴权成功，`status` 为 `daily-reconnecting`，`last_disconnected_at` 保留上次断联时间（无记录为 `null`），`disconnected_for_seconds` 为 `null`。新连接首次尝试失败或本次重连超过 60 秒时，恢复按实际连接状态判定健康。
 
 `last_hour` 的统计口径：
 

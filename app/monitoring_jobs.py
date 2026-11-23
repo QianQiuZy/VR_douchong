@@ -58,11 +58,15 @@ async def _sleep_until(target: datetime.datetime) -> None:
         await asyncio.sleep(remaining)
 
 
-async def start_client(room_id: int) -> None:
+async def start_client(
+    room_id: int, *, daily_reconnect_from: AuthenticatedLiveClient | None = None,
+) -> None:
     """Start and register one BLive client using the canonical handler."""
     from .logging_setup import api_log_context
 
     client = AuthenticatedLiveClient(room_id, session=runtime_state.aiohttp_session)
+    if daily_reconnect_from is not None:
+        client.inherit_daily_reconnect(daily_reconnect_from)
     client.set_handler(event_ingestion.MyHandler())
     # A room added by HTTP must not tag its long-lived gift/WS tasks as API work.
     with api_log_context(None):
@@ -77,17 +81,23 @@ async def reconnect_one(room_id: int) -> None:
         logger.info("[reconnect] 房间 %s 已在播，跳过重连", room_id)
         return
     client = runtime_state.ROOM_CLIENTS.get(room_id)
-    if client is not None:
+    if client is None:
+        return
+    with client.daily_reconnect(STARTUP_AUTH_WAIT_SECONDS):
         try:
             await client.stop_and_close()
         except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                raise
             logger.debug("[reconnect] room=%s stop_and_close 触发取消（预期），忽略", room_id)
         except Exception as exc:
             logger.exception("[reconnect] stop_and_close 异常 room=%s: %s", room_id, type(exc).__name__, exc_info=False)
-    await asyncio.sleep(3)
-    await start_client(room_id)
+        await asyncio.sleep(3)
+        if runtime_state.ROOM_CLIENTS.get(room_id) is not client:
+            return
+        await start_client(room_id, daily_reconnect_from=client)
     runtime_state.LAST_RECONNECT[room_id] = _now()
-    logger.info("[reconnect] 房间 %s 重连完成", room_id)
+    logger.info("[reconnect] 房间 %s 已启动计划重连", room_id)
 
 
 async def _wait_for_first_connection(room_id: int, start_lock: asyncio.Lock) -> None:
@@ -474,8 +484,6 @@ async def reconnect_scheduler() -> None:
             if room_id in runtime_state.ROOM_CLIENTS and runtime_state.LAST_STATUS.get(room_id, 0) != 1:
                 try:
                     await reconnect_one(room_id)
-                except asyncio.CancelledError:
-                    logger.debug("[reconnect] room=%s 被取消（预期），略过", room_id)
                 except Exception as exc:
                     logger.exception("[reconnect] 房间 %s 重连失败: %s", room_id, type(exc).__name__, exc_info=False)
                 await asyncio.sleep(3 + random.uniform(0.5, 2.0))
