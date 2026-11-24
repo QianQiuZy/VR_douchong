@@ -16,11 +16,13 @@ from . import config
 from .api_cache_store import ApiSqlScope, CacheUnavailable, api_sql_scope
 from .repositories.tables import month_str, normalize_month_code
 
+GIFT_PATH = "/gift"
+GIFT_LIGHT_CACHE_PATH = f"{GIFT_PATH}?light=1"
 LIVE_SESSIONS_PATH = "/gift/live_sessions"
 LIVE_SESSIONS_WITH_STATS_CACHE_PATH = f"{LIVE_SESSIONS_PATH}?stats_15m=1"
 
 GET_PATHS = {
-    "/gift",
+    GIFT_PATH,
     "/gift/by_month",
     LIVE_SESSIONS_PATH,
     "/gift/attention",
@@ -73,7 +75,7 @@ def year_parameter(request: Request) -> str | JSONResponse | None:
 
 def parameters(request: Request) -> tuple[str, int | None] | JSONResponse:
     path = request.url.path.rstrip("/")
-    if path == "/gift":
+    if path == GIFT_PATH:
         return month_str(), None
     if path == "/gift/by_month":
         year = year_parameter(request)
@@ -107,6 +109,10 @@ def parameters(request: Request) -> tuple[str, int | None] | JSONResponse:
         )
         return JSONResponse({"error": message}, status_code=400)
     return month, rid
+
+
+def uses_light_gift(value: str | None) -> bool:
+    return value in ("1", "true")
 
 
 def includes_stats_15m(request: Request) -> bool:
@@ -196,11 +202,11 @@ class CacheMiddleware:
                     if path == "/gift/by_month" and len(period) == 4:
                         body = await anyio.to_thread.run_sync(service.store.read_year, period)
                     else:
-                        cache_path = (
-                            LIVE_SESSIONS_WITH_STATS_CACHE_PATH
-                            if path == LIVE_SESSIONS_PATH and includes_stats_15m(request)
-                            else path
-                        )
+                        cache_path = path
+                        if path == GIFT_PATH and uses_light_gift(request.query_params.get("light")):
+                            cache_path = GIFT_LIGHT_CACHE_PATH
+                        elif path == LIVE_SESSIONS_PATH and includes_stats_15m(request):
+                            cache_path = LIVE_SESSIONS_WITH_STATS_CACHE_PATH
                         body = await anyio.to_thread.run_sync(
                             service.store.read, period, cache_path, rid
                         )

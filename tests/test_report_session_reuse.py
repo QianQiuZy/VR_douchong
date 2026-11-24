@@ -220,6 +220,7 @@ def _report_inspection(monkeypatch: pytest.MonkeyPatch) -> None:
     [
         ("/gift", CURRENT_REPORT_KEYS),
         ("/gift/by_month", MONTH_REPORT_KEYS),
+        ("/gift/by_month?light=1", MONTH_REPORT_KEYS),
     ],
 )
 def test_report_routes_preserve_frozen_response_keys_when_repository_owns_aggregate_sessions(
@@ -243,6 +244,33 @@ def test_report_routes_preserve_frozen_response_keys_when_repository_owns_aggreg
     # Then: its frozen top-level item contract remains unchanged.
     assert response.status_code == 200
     assert _report_key_sets(response) == [expected_keys, expected_keys]
+
+
+def test_light_report_matches_full_without_building_omitted_metrics(
+    gift_module: _GiftModule, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gift_module, "Session", _ReportRouteSession)
+    monkeypatch.setattr(gift_module, "_room_ids_for_month", _two_report_room_ids)
+    omitted = {"danmaku", "danmaku_user_count", "danmaku_dependency", "whale_dependency"}
+
+    def forbidden(*_args: object, **_kwargs: object) -> NoReturn:
+        pytest.fail("light reports must skip the omitted metrics")
+
+    with TestClient(gift_module.app) as client:
+        full = client.get("/gift")
+        assert full.status_code == 200
+        rows = _REPORT_PAYLOADS.validate_json(full.content)
+        assert rows and all(omitted <= row.keys() for row in rows)
+
+        monkeypatch.setattr("app.api_app.danmaku_metrics.monthly_report", forbidden)
+        monkeypatch.setattr("app.api_app._monthly_danmaku_payload", forbidden)
+        monkeypatch.setattr("app.api_app._whale_dependency_for_room", forbidden)
+        light = client.get("/gift?light=true")
+
+    assert light.status_code == 200
+    assert _REPORT_PAYLOADS.validate_json(light.content) == [
+        {key: value for key, value in row.items() if key not in omitted} for row in rows
+    ]
 
 
 def test_aggregate_helpers_create_and_close_fallback_sessions_when_no_session_is_supplied(

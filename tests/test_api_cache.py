@@ -469,6 +469,7 @@ def test_get_cache_never_uses_sql_or_report_gate(store, monkeypatch):
     with app_client(store, monkeypatch) as client:
         for path in (
             "/gift",
+            "/gift?light=1",
             "/gift/by_month",
             "/gift/live_sessions?room_id=111111",
             "/gift/attention?room_id=111111",
@@ -484,6 +485,28 @@ def test_get_cache_never_uses_sql_or_report_gate(store, monkeypatch):
         assert response.status_code == 200
         assert "content-encoding" not in response.headers
     gate.release()
+
+
+def test_cached_light_gift_only_omits_four_fields_and_is_exclusive_to_gift(store, monkeypatch):
+    prepare(store)
+    omitted = {"danmaku", "danmaku_user_count", "danmaku_dependency", "whale_dependency"}
+
+    with app_client(store, monkeypatch) as client:
+        full = client.get("/gift")
+        assert full.status_code == 200
+        rows = full.json()
+        assert rows and all(omitted <= row.keys() for row in rows)
+        expected = [{key: value for key, value in row.items() if key not in omitted} for row in rows]
+
+        for option in ("1", "true", "0", "false", "yes", ""):
+            response = client.get("/gift", params={"light": option})
+            assert response.status_code == 200
+            assert response.json() == (expected if option in ("1", "true") else rows)
+
+        monthly = client.get("/gift/by_month")
+        monthly_with_light = client.get("/gift/by_month?light=1")
+        assert monthly.status_code == monthly_with_light.status_code == 200
+        assert monthly_with_light.json() == monthly.json()
 
 
 def test_cached_summaries_round_whale_ratios(store, monkeypatch):
@@ -630,7 +653,8 @@ def test_gzip_negotiation(header, expected):
 @pytest.mark.parametrize(
     "failure", ["missing", "stale", "redis", "corrupt", "known-field"]
 )
-def test_faults_return_503_without_sql_fallback(store, monkeypatch, failure):
+@pytest.mark.parametrize("path", ["/gift", "/gift?light=1"])
+def test_faults_return_503_without_sql_fallback(store, monkeypatch, failure, path):
     value = snapshot(store)
     if failure == "stale":
         value.stamp -= 31
@@ -639,9 +663,9 @@ def test_faults_return_503_without_sql_fallback(store, monkeypatch, failure):
     if failure in {"corrupt", "known-field"}:
         generation = store.client.get(store.key(f"month:{value.month}"))
         if failure == "corrupt":
-            store.client.hset(generation, "/gift", b"not-gzip")
+            store.client.hset(generation, path, b"not-gzip")
         else:
-            store.client.hdel(generation, "/gift")
+            store.client.hdel(generation, path)
     if failure == "redis":
         monkeypatch.setattr(
             store,
@@ -650,7 +674,7 @@ def test_faults_return_503_without_sql_fallback(store, monkeypatch, failure):
         )
     monkeypatch.setattr(gift, "Session", lambda: pytest.fail("no SQL fallback"))
     with app_client(store, monkeypatch) as client:
-        response = client.get("/gift")
+        response = client.get(path)
     assert response.status_code == 503
     assert response.headers["retry-after"] == "1"
     assert response.headers["cache-control"] == "no-store"

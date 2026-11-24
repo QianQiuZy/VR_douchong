@@ -123,7 +123,7 @@
 
 **请求方式**：`GET`
 
-**请求参数**：无
+可选查询参数 `light`。传 `1` 或 `true` 时返回轻量月报，每个房间省略 `danmaku`、`danmaku_user_count`、`danmaku_dependency`、`whale_dependency` 四个字段。省略参数或使用其他值时返回完整月报。`light` 仅适用于 `GET /gift`。
 
 **响应字段**：返回数组，每个元素为房间汇总对象。
 

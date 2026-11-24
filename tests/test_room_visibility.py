@@ -141,10 +141,11 @@ def test_invalid_room_ids_are_rejected(published, value, path):
     assert published.policy.hidden_rooms() == set()
 
 
-@pytest.mark.parametrize("query", ["", "?month=190001", "?month=180001"])
+@pytest.mark.parametrize(
+    "path", ["/gift", "/gift?light=1", "/gift/by_month?month=190001", "/gift/by_month?month=180001"]
+)
 @pytest.mark.parametrize("encoding", ["gzip", "identity"])
-def test_summaries_hide_and_restore_without_rebuilding(published, query, encoding):
-    path = "/gift/by_month" + query if query else "/gift"
+def test_summaries_hide_and_restore_without_rebuilding(published, path, encoding):
     client = published.http
     headers = {"Accept-Encoding": encoding}
     original = client.get(path, headers=headers).json()

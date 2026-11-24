@@ -55,10 +55,12 @@ from sqlalchemy.orm import Session as OrmSession
 
 from . import config, danmaku_metrics, health_check, room_config, room_visibility, rounded_concurrency, runtime_state
 from .api_cache_http import (
+    GIFT_PATH,
     LIVE_SESSIONS_PATH,
     CacheMiddleware,
     accepts_gzip,
     includes_stats_15m,
+    uses_light_gift,
     year_parameter,
 )
 from .api_cache_store import CacheUnavailable, encode
@@ -897,8 +899,8 @@ def delete_room_api(request: Request, payload: RoomPayload = _ROOM_PAYLOAD_BODY)
     return JSONResponse({"ok": ok, "room_id": room_id, "message": message}, status_code=status)
 
 
-@app.get("/gift")
-def get_stats_current_month(_: None = Depends(report_admission)):
+@app.get(GIFT_PATH)
+def get_stats_current_month(_: None = Depends(report_admission), *, light: str | None = None):
     """
     当月汇总：
       - room_stats_monthly 当月 gift/guard/super_chat
@@ -907,6 +909,7 @@ def get_stats_current_month(_: None = Depends(report_admission)):
       - 当前月开播时返回即时同接（current_concurrency），未开播返回 null
     """
     results = []
+    light_response = uses_light_gift(light)
     session_factory = _resolved_session_factory()
     room_ids_for_month = _resolved_room_ids_for_month()
     session = session_factory()
@@ -968,34 +971,36 @@ def get_stats_current_month(_: None = Depends(report_admission)):
             guard_3 = guard_info.get("guard_3", 0)  # 总督
             fans_count = runtime_state.FANS_COUNT.get(room_id, 0)
 
-            results.append(
-                {
-                    "room_id": room_id,
-                    "anchor_name": anchor_name,
-                    "attention": attention,
-                    "status": status_val,
-                    "gift": g,
-                    "guard": gd,
-                    "super_chat": sc,
-                    "payer_count": payer_count,
-                    **danmaku_metrics.monthly_report(rsm, room_id, m, current=is_current_month(m)),
-                    "steel_coin_count": steel_coin_count,
-                    "blind_box_count": bb_count,
-                    "blind_box_profit": bb_profit,
-                    "live_duration": live_dur_str,
-                    "effective_days": eff_days,
-                    "live_time": live_time_val,
-                    "title": title_val,
-                    "month": m,
-                    "guard_1": guard_1,  # 舰长
-                    "guard_2": guard_2,  # 提督
-                    "guard_3": guard_3,  # 总督
-                    "fans_count": fans_count,  # 粉丝团数量
-                    "current_concurrency": current_concurrency,
-                    "whale_dependency": _whale_dependency_for_room(rsm, room_id, m),
-                    "danmaku": _monthly_danmaku_payload(rsm),
-                }
-            )
+            result = {
+                "room_id": room_id,
+                "anchor_name": anchor_name,
+                "attention": attention,
+                "status": status_val,
+                "gift": g,
+                "guard": gd,
+                "super_chat": sc,
+                "payer_count": payer_count,
+                "steel_coin_count": steel_coin_count,
+                "blind_box_count": bb_count,
+                "blind_box_profit": bb_profit,
+                "live_duration": live_dur_str,
+                "effective_days": eff_days,
+                "live_time": live_time_val,
+                "title": title_val,
+                "month": m,
+                "guard_1": guard_1,  # 舰长
+                "guard_2": guard_2,  # 提督
+                "guard_3": guard_3,  # 总督
+                "fans_count": fans_count,  # 粉丝团数量
+                "current_concurrency": current_concurrency,
+            }
+            if not light_response:
+                result.update(
+                    danmaku_metrics.monthly_report(rsm, room_id, m, current=is_current_month(m))
+                )
+                result["whale_dependency"] = _whale_dependency_for_room(rsm, room_id, m)
+                result["danmaku"] = _monthly_danmaku_payload(rsm)
+            results.append(result)
         return JSONResponse(results)
     except SQLAlchemyError as e:
         session.rollback()

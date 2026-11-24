@@ -7,7 +7,12 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from . import danmaku_metrics, room_config, rounded_concurrency, runtime_state
-from .api_cache_http import LIVE_SESSIONS_PATH, LIVE_SESSIONS_WITH_STATS_CACHE_PATH
+from .api_cache_http import (
+    GIFT_LIGHT_CACHE_PATH,
+    GIFT_PATH,
+    LIVE_SESSIONS_PATH,
+    LIVE_SESSIONS_WITH_STATS_CACHE_PATH,
+)
 from .api_cache_source import Snapshot
 from .api_cache_store import encode
 from .repositories.tables import month_str
@@ -239,7 +244,11 @@ class PayloadBuilder:
             )
         }
         if month == month_str():
-            values["/gift"] = encode(rows)
+            values[GIFT_PATH] = encode(rows)
+            omitted = {"danmaku", "danmaku_user_count", "danmaku_dependency", "whale_dependency"}
+            values[GIFT_LIGHT_CACHE_PATH] = encode(
+                [{key: value for key, value in row.items() if key not in omitted} for row in rows]
+            )
         return values
 
     def body(self, field: str, payload: dict, current: bool) -> bytes:
