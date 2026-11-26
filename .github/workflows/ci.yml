@@ -43,17 +43,18 @@ jobs:
         run: bash scripts/check.sh
 
   integration:
-    name: Disposable MySQL / Redis integration
+    name: MySQL 9.7.4 / Redis 8.0.5 integration
     if: github.event_name == 'workflow_dispatch' && inputs.integration
     needs: ubuntu
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       mysql:
-        image: mysql:5.7.44
+        image: mysql:9.7.4
         env:
           MYSQL_ROOT_PASSWORD: vr_cache_test
           MYSQL_DATABASE: vr_cache_test
+          TZ: Asia/Shanghai
         ports:
           - 33060:3306
         options: >-

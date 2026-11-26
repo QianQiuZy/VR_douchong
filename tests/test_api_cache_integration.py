@@ -1,4 +1,4 @@
-"""Opt-in disposable MySQL 5.7.44 / Redis 8.0.5 tests; never use production env.
+"""Opt-in disposable MySQL 9.7.4 / Redis 8.0.5 tests; never use production env.
 
 VR_CACHE_TEST_MYSQL_PORT and VR_CACHE_TEST_REDIS_PORT must point to explicitly
 created loopback test containers. The database name is fixed to vr_cache_test.
@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -58,7 +59,8 @@ def services(monkeypatch):
     from conftest import _ORIG_CREATE_ALL, _ORIG_INSPECT
 
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT VERSION()")).startswith("5.7.44")
+        version = connection.scalar(text("SELECT VERSION()"))
+        assert isinstance(version, str) and version.split("-", 1)[0] == "9.7.4"
     client = redis.Redis(host="127.0.0.1", port=int(redis_port), db=2)
     assert client.info("server")["redis_version"] == "8.0.5"
     # Fixed test database only; no global Redis flush and no production DSN.
@@ -360,6 +362,34 @@ def test_daily_attention_keeps_missing_value_and_archives_true_zero(services, mo
             connection.execute(text(f"DROP TABLE IF EXISTS `{archive}`"))
 
 
+def test_whale_archive_upsert_preserves_monthly_amounts_and_updates_ratios(services, monkeypatch):
+    from app import whale_archive
+
+    _, engine, _, _ = services
+    monkeypatch.setattr(whale_archive, "engine", engine)
+    monthly = text(
+        "SELECT gift, payer_count, whale_top1_amount, whale_top1_ratio, "
+        "whale_status, whale_calculated_at FROM room_stats_monthly "
+        "WHERE room_id=:room_id AND month='190001'"
+    )
+    paid = whale_metrics.calculate_whale_metrics({7: 40}, 100, 60)
+    empty = whale_metrics.calculate_whale_metrics({}, 0, 0)
+    whale_archive._persist_metrics(222222, "190001", paid)
+    whale_archive._persist_metrics(111111, "190001", paid)
+    with engine.connect() as connection:
+        inserted = connection.execute(monthly, {"room_id": 222222}).one()
+        updated = connection.execute(monthly, {"room_id": 111111}).one()
+        assert inserted[:5] == (0, 0, 40, Decimal("0.4"), "archived")
+        assert updated[:5] == (1.5, 0, 40, Decimal("0.4"), "archived")
+        assert inserted.whale_calculated_at is not None
+        assert updated.whale_calculated_at is not None
+
+    whale_archive._persist_metrics(111111, "190001", empty)
+    with engine.connect() as connection:
+        updated = connection.execute(monthly, {"room_id": 111111}).one()
+        assert updated[:5] == (1.5, 0, 0, None, "archived")
+
+
 @pytest.fixture
 def crossmonth_sessions(services, monkeypatch):
     from conftest import _ORIG_INSPECT
@@ -573,13 +603,16 @@ def test_real_archive_keeps_parent_corrections_and_identical_duplicate_buckets(
             archive = prefix + "_200101"
             connection.execute(text(f"CREATE TABLE `{archive}` LIKE `{prefix}`"))
             connection.execute(text(f"INSERT INTO `{archive}` SELECT * FROM `{prefix}` WHERE `{identity}`=11"))
-        connection.execute(text("UPDATE live_session SET gift=9 WHERE id=11"))
+        for table in ("live_session", "live_session_200101"):
+            connection.execute(text(f"ALTER TABLE `{table}` MODIFY avg_concurrency DECIMAL(20,4) NULL"))
+        connection.execute(text("UPDATE live_session SET gift=9, avg_concurrency=123.125 WHERE id=11"))
     assert archive_service.archive_live_session("200101", session_ids=(11,)) == 1
     with engine.connect() as connection:
         for prefix, identity in (("live_session", "id"), ("live_session_15m_stats", "session_id")):
             assert connection.scalar(text(f"SELECT COUNT(*) FROM `{prefix}` WHERE `{identity}`=11")) == 0
             expected = 9 if prefix == "live_session" else bucket_gift
             assert connection.scalar(text(f"SELECT gift FROM `{prefix}_200101` WHERE `{identity}`=11")) == expected
+        assert connection.scalar(text("SELECT avg_concurrency FROM live_session_200101 WHERE id=11")) == Decimal("123.13")
 
 
 @pytest.mark.parametrize("conflict", ["legacy_stub", "full_correction", "null_optional"])

@@ -1,4 +1,4 @@
--- MySQL 5.7: run on a read-only replica with the application database selected.
+-- MySQL 9.7.4: run on a read-only replica with the application database selected.
 -- This SELECT generates one read-only query per monthly archive. Execute each
 -- returned audit_sql separately. No parent join filter: orphan hot buckets must
 -- also be reported. A zero amount does not identify a partial bucket.

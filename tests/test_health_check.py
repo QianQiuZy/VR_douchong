@@ -154,6 +154,7 @@ def test_database_probe_uses_bounded_dedicated_read_only_connection(monkeypatch,
 
     def connect(**kwargs):
         assert all(kwargs[key] == 2 for key in ("connect_timeout", "read_timeout", "write_timeout"))
+        assert kwargs["database"] == health_check.config.DB_CONFIG["db"] and "db" not in kwargs
         return Connection()
 
     monkeypatch.setattr(health_check.pymysql, "connect", connect)

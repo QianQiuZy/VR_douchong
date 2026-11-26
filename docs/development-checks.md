@@ -18,20 +18,19 @@
    uv sync --locked --no-dev
    ```
 
-   部署基准为 **OpenCloudOS 9.2 x86-64、Python 3.13.11**。`.python-version` 固定 Python 补丁版本，`pyproject.toml` 集中管理运行依赖、开发依赖、pytest 和 Ruff 配置，`uv.lock` 固定依赖版本。WSL 使用 Ubuntu 24.04 x86-64，并保持相同 Python 和锁文件；Windows 原生环境单独安装，不复用 WSL 虚拟环境。
+   部署基准为 **OpenCloudOS 9.2 x86-64、Python 3.13.11、MySQL 9.7.4 LTS**。`.python-version` 固定 Python 补丁版本，`pyproject.toml` 集中管理运行依赖、开发依赖、pytest 和 Ruff 配置，`uv.lock` 固定依赖版本。WSL 使用 Ubuntu 24.04 x86-64，并保持相同 Python 和锁文件；Windows 原生环境单独安装，不复用 WSL 虚拟环境。
 
    **Brotli 兼容要求：** 新版 aiohttp 的 HTTP 解压要求 `Brotli>=1.2`，锁文件固定为 1.2.1。若房间初始化出现 `process() takes exactly 1 argument (2 given)` / `Can not decode content-encoding: br`，应在实际运行环境同步依赖并重启采集进程。宝塔使用自有解释器时，确认安装与启动使用同一环境；不要只更新系统 Python 的包。具体排查见[开发规范](./development.md#http-brotli-依赖兼容修复2026-10-24)。
 
-3. 安装 MySQL 和 Redis，为 MySQL 创建独立数据库与用户：
+3. 安装 MySQL 9.7.4 和 Redis，为项目创建独立数据库与用户。
 
    ```sql
    CREATE DATABASE db;
-   CREATE USER 'user'@'localhost' IDENTIFIED BY '<替换为自己的密码>';
+   CREATE USER 'user'@'localhost' IDENTIFIED WITH caching_sha2_password BY '<替换为自己的密码>';
    GRANT ALL PRIVILEGES ON db.* TO 'user'@'localhost';
-   FLUSH PRIVILEGES;
    ```
 
-   将示例数据库名、用户名替换为实际部署配置。启动会创建表并补缺失列，数据库用户需要相应权限；已有金额列的类型迁移见[运行与数据约定](./runtime.md)。
+   将示例库名、用户名和密码替换为实际部署配置。启动时需要创建表和补缺失列，已有金额列的类型迁移见[数据库升级说明](./runtime.md#启动归档与数据库升级)。部署前在实际 Python 环境中用应用账号验证首次 TLS 连接，详见[数据库部署基准](./runtime.md#数据库部署基准)。
 
 4. 将仓库中的 `.env.example` 复制为 `.env`，配置数据库、Redis、B 站 Cookies、管理 API 密钥等。变量名与默认值可查模板、`app/config.py`、`app/bilibili_gateway.py`，不要复制其他项目的配置。
 
@@ -63,4 +62,4 @@ git diff --check
 
 默认测试隔离真实配置、MySQL 与 B 站连接；真实 MySQL/Redis 集成测试需要专用测试服务。环境隔离、按模块选取检查及集成测试配置见[开发规范](./development.md)。
 
-[GitHub Actions](../.github/workflows/ci.yml) 在 main 分支 push、pull request 和手动触发时，默认只运行一个 Ubuntu 24.04 x86-64 任务：锁文件安装、依赖一致性、Ruff、Python 语法/JSON 校验、完整离线 pytest。为节省时间和额度，只有手动触发并勾选 `integration`，才创建一次性 MySQL 5.7.44 / Redis 8.0.5 服务并执行缓存集成测试。检查任务不启动真实采集器，也不需要线上凭据。
+[GitHub Actions](../.github/workflows/ci.yml) 在 main 分支 push、pull request 和手动触发时，默认只运行一个 Ubuntu 24.04 x86-64 任务：锁文件安装、依赖一致性、Ruff、Python 语法/JSON 校验、完整离线 pytest。手动触发并勾选 `integration` 后，会创建一次性 MySQL 9.7.4 / Redis 8.0.5 服务并执行集成测试。检查任务不启动真实采集器，也不需要线上凭据。

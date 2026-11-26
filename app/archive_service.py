@@ -57,7 +57,7 @@ def _archive_columns(table_name: str, candidates: tuple[str, ...]) -> list[str]:
 
 def _session_archive_projection(columns: list[str], prefix: str = "") -> str:
     return ", ".join(
-        f"ROUND(CAST({prefix}`avg_concurrency` AS DECIMAL(24,10)), 2)"
+        f"ROUND(CAST({prefix}`avg_concurrency` AS DECIMAL(24,10)), 2) AS `avg_concurrency`"
         if name == "avg_concurrency" else f"{prefix}`{name}`"
         for name in columns
     )
@@ -273,12 +273,16 @@ def archive_live_session(
                         continue
                 count = len(parent_ids)
                 quoted_columns = ", ".join(f"`{name}`" for name in columns)
-                update_columns = ", ".join(f"`{name}`=VALUES(`{name}`)" for name in columns if name != "id")
+                update_columns = ", ".join(
+                    f"`{name}` = incoming.`{name}`" for name in columns if name != "id"
+                )
                 conn.execute(
                     text(
                         f"INSERT INTO `{table_name}` ({quoted_columns}) "
+                        "SELECT incoming.* FROM ("
                         f"SELECT {_session_archive_projection(columns)} FROM `live_session` "
-                        f"WHERE {predicate} ON DUPLICATE KEY UPDATE {update_columns}"
+                        f"WHERE {predicate}) AS incoming "
+                        f"ON DUPLICATE KEY UPDATE {update_columns}"
                     ),
                     params,
                 )
@@ -432,7 +436,7 @@ def archive_live_session_15m_stats(
                         f"INSERT INTO `{table_name}` ({quoted_columns}) "
                         f"SELECT {selected_columns} FROM `live_session_15m_stats` AS stats "
                         "JOIN `live_session` AS parent ON parent.id = stats.session_id "
-                        f"WHERE {predicate} ON DUPLICATE KEY UPDATE session_id=VALUES(session_id)"
+                        f"WHERE {predicate} ON DUPLICATE KEY UPDATE session_id=stats.session_id"
                     ),
                     params,
                 )
@@ -609,8 +613,8 @@ def archive_attention(target_month: str | None = None) -> int:
             ]
             quoted_columns = ", ".join(f"`{name}`" for name in copy_columns)
             update_clause = ", ".join(
-                f"`{name}` = COALESCE(VALUES(`{name}`), `{table_name}`.`{name}`)"
-                if name == "attention" else f"`{name}` = VALUES(`{name}`)"
+                f"`{name}` = COALESCE(incoming.`{name}`, `{table_name}`.`{name}`)"
+                if name == "attention" else f"`{name}` = incoming.`{name}`"
                 for name in copy_columns
                 if name not in ("room_id", "date")
             )
@@ -628,8 +632,8 @@ def archive_attention(target_month: str | None = None) -> int:
                     text(
                         f"INSERT INTO `{table_name}` ({quoted_columns}) "
                         f"SELECT {quoted_columns} "
-                        "FROM `attention` "
-                        "WHERE `date` >= :start_date AND `date` < :end_date "
+                        "FROM `attention` AS incoming "
+                        "WHERE incoming.`date` >= :start_date AND incoming.`date` < :end_date "
                         f"ON DUPLICATE KEY UPDATE {update_clause}"
                     ),
                     {"start_date": start_date, "end_date": end_date},

@@ -25,8 +25,11 @@ class AttentionColumnNotNullable(RuntimeError):
 def probe_database():
     # A dedicated bounded connection distinguishes database availability from
     # an exhausted application QueuePool; never wait on its 30-second checkout.
+    db_config = config.DB_CONFIG
     with pymysql.connect(
-        **config.DB_CONFIG, connect_timeout=2, read_timeout=2, write_timeout=2,
+        host=db_config["host"], port=db_config["port"], user=db_config["user"],
+        password=db_config["password"], database=db_config["db"],
+        connect_timeout=2, read_timeout=2, write_timeout=2,
         autocommit=True,
     ) as connection:
         with connection.cursor() as cursor:

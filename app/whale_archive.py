@@ -67,13 +67,13 @@ def _persist_metrics(room_id: int, month: str, metrics: WhaleMetrics) -> None:
                 ":top1pct_ratio, :total_revenue, :attributed_revenue, :unattributed_revenue, "
                 ":payer_count, 'archived', 1, :calculated_at) "
                 "ON DUPLICATE KEY UPDATE "
-                "whale_top1_amount=VALUES(whale_top1_amount), whale_top1_ratio=VALUES(whale_top1_ratio), "
-                "whale_top5_amount=VALUES(whale_top5_amount), whale_top5_ratio=VALUES(whale_top5_ratio), "
-                "whale_top10_amount=VALUES(whale_top10_amount), whale_top10_ratio=VALUES(whale_top10_ratio), "
-                "whale_top1pct_amount=VALUES(whale_top1pct_amount), whale_top1pct_ratio=VALUES(whale_top1pct_ratio), "
-                "whale_total_revenue=VALUES(whale_total_revenue), whale_attributed_revenue=VALUES(whale_attributed_revenue), "
-                "whale_unattributed_revenue=VALUES(whale_unattributed_revenue), whale_payer_count=VALUES(whale_payer_count), "
-                "whale_status='archived', whale_metric_version=1, whale_calculated_at=VALUES(whale_calculated_at)"
+                "whale_top1_amount=:top1_amount, whale_top1_ratio=:top1_ratio, "
+                "whale_top5_amount=:top5_amount, whale_top5_ratio=:top5_ratio, "
+                "whale_top10_amount=:top10_amount, whale_top10_ratio=:top10_ratio, "
+                "whale_top1pct_amount=:top1pct_amount, whale_top1pct_ratio=:top1pct_ratio, "
+                "whale_total_revenue=:total_revenue, whale_attributed_revenue=:attributed_revenue, "
+                "whale_unattributed_revenue=:unattributed_revenue, whale_payer_count=:payer_count, "
+                "whale_status='archived', whale_metric_version=1, whale_calculated_at=:calculated_at"
             ),
             {
                 "room_id": room_id,

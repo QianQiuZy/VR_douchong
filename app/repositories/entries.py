@@ -89,7 +89,7 @@ def archive_entries(target_month: str | None = None) -> int:
                         text(
                             f"INSERT INTO `{table}` (room_id, uid, event_time) "
                             "VALUES (:room_id, :uid, :event_time) "
-                            "ON DUPLICATE KEY UPDATE uid=VALUES(uid)"
+                            f"ON DUPLICATE KEY UPDATE uid=`{table}`.uid"
                         ),
                         [dict(row) for row in rows],
                     )

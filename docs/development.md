@@ -49,13 +49,13 @@
 
 ## 环境与配置
 
-部署基准为 OpenCloudOS 9.2 x86-64、Python 3.13.11；本机 WSL 为 Ubuntu 24.04 x86-64。安装 uv 0.11.7，使用 `.python-version`、`pyproject.toml` 和提交的 `uv.lock`，本地和 CI 均执行 `bash scripts/check.sh`。项目按应用管理，不发布 Python 包；运行依赖在 `project.dependencies`，开发依赖在 `dependency-groups.dev`。
+部署基准为 OpenCloudOS 9.2 x86-64、Python 3.13.11 和 MySQL 9.7.4 LTS。本机 WSL 为 Ubuntu 24.04 x86-64，数据库集成测试使用 MySQL 9.7.4 和 Redis 8.0.5。安装 uv 0.11.7，使用 `.python-version`、`pyproject.toml` 和提交的 `uv.lock`，本地和 CI 均执行 `bash scripts/check.sh`。项目按应用管理，不发布 Python 包；运行依赖在 `project.dependencies`，开发依赖在 `dependency-groups.dev`。
 
 新建环境不继承全局包，Windows 环境与 WSL 分开；不复用其他仓库的依赖目录。已有 `.venv` 不随意重建：原本地环境 `include-system-site-packages = true`，因此使用新建 `.venv-ci` 验证。命令前设置 `UV_PROJECT_ENVIRONMENT=.venv-ci` 可保留旧环境；`scripts/check_project.py` 检查 Python 补丁版本和环境隔离，拒绝继承全局包的环境。
 
 修改依赖后执行 `uv lock` 并审查 `pyproject.toml` / `uv.lock` 差异。只有明确升级依赖时才使用 `uv lock --upgrade`；部署使用 `uv sync --locked --no-dev`，检查使用 `uv sync --locked --group dev`，防止运行时静默改变锁文件。旧 requirements 文件已移除，不再维护第二份依赖清单。
 
-项目当前正式版本为 `1.0.14`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
+项目当前正式版本为 `1.1.0`，在 `main.py` 的 `__version__` 中维护。发布时同步 `pyproject.toml` 的项目版本并执行 `uv lock` 更新锁文件；`scripts/check_project.py` 静态读取版本并检查一致性，不为读取版本而导入或启动采集程序。内置 blivedm 继续独立维护库版本，不随项目发布版本变化。
 
 安装依赖前确认实际解释器。安装、Git 等外网开发命令沿用会话代理配置；未配置时按工作区约定检查 `http://127.0.0.1:10808` 是否可达后，仅为该命令/会话配置。回环与专用本地测试服务直连，不把本机代理写入业务配置。
 
@@ -87,11 +87,11 @@ aiohttp 在处理 HTTP `Content-Encoding: br` 时调用有限长的 `process(dat
 | fakeredis / Ruff | 2.39.0 / 0.16.3 | 2.40.0 / 0.17.2 |
 | pure-protobuf / httpx / pytest | 3.1.5 / 0.28.1 / 9.1.1 | 保持不变 |
 
-其余间接依赖随解析更新，完整版本和文件哈希以 `uv.lock` 为准。SQLAlchemy 2.1 默认不再安装 greenlet（[迁移说明](https://docs.sqlalchemy.org/en/21/changelog/migration_21.html)）；本项目使用同步 PyMySQL 引擎，不使用 SQLAlchemy asyncio 扩展，因此未额外安装该依赖。FastAPI 新增的 OpenTelemetry 间接依赖按发行元数据安装。未升级 MySQL/Redis 服务端版本。
+其余间接依赖随解析更新，完整版本和文件哈希以 `uv.lock` 为准。SQLAlchemy 2.1 默认不再安装 greenlet（[迁移说明](https://docs.sqlalchemy.org/en/21/changelog/migration_21.html)）；本项目使用同步 PyMySQL 引擎，不使用 SQLAlchemy asyncio 扩展，因此未额外安装该依赖。FastAPI 新增的 OpenTelemetry 间接依赖按发行元数据安装。该次依赖更新沿用当时的 MySQL 和 Redis 服务端版本。
 
-在 Python 3.13.11 独立环境完成依赖一致性、Ruff、项目检查和全量离线回归；另外使用 **MySQL 5.7.44 / Redis 8.0.5** 临时容器执行全部七项集成测试，版本在夹具中强制核验。涵盖查询兼容、真实写入/归档、缓存预算、分代发布、限流以及隐藏期间持续写库和恢复展示。这些是 WSL 本地隔离验证，不代表已完成线上 OpenCloudOS/B 站连接验证。
+当时在 Python 3.13.11 独立环境完成依赖一致性、Ruff、项目检查和全量离线回归，并用 **MySQL 5.7.44 / Redis 8.0.5** 临时容器通过七项集成测试。验证覆盖查询兼容、写入与归档、缓存预算、分代发布、限流及房间隐藏与恢复。当前使用下节的 9.7.4 测试基准，生产切换记录见 [历史问题与修复记录](./history.md#110-数据库升级迁移里程碑2026-11-26)。
 
-当前仍有 `httpx` TestClient、SQLAlchemy `tuples()`、aiohttp `client.loop` 和 SQLite 日期适配弃用警告，未屏蔽。`httpx2` 属于另一包的迁移，本次保留现有 httpx 测试调用方式；SQLAlchemy 的现有调用仍在 2.1.6 上通过上述验证。
+当前离线检查可见 `httpx` TestClient、aiohttp `client.loop` 和 SQLite 日期适配弃用警告。项目测试继续使用现有的 httpx 调用方式。
 
 ## 最小验证与回归
 
@@ -129,7 +129,7 @@ uv run --locked pytest -q tests/test_send_gift_v2.py tests/test_send_gift_v2_bat
 
 默认 `tests/conftest.py` 指向空配置、测试房间文件并阻止实际数据库初始化，不读取真实 `.env` 或连接 B 站。旧报表测试走离线路径，缓存测试分别启用隔离缓存。
 
-真实 MySQL 5.7.44 / Redis 8.0.5 集成验证只连接专用测试端口，数据库名固定为 `vr_cache_test`：
+真实 MySQL 9.7.4 / Redis 8.0.5 集成验证只连接专用测试端口。MySQL 使用 `Asia/Shanghai` 时区，数据库名固定为 `vr_cache_test`，夹具在改动业务表前核对两个服务的版本。
 
 ```bash
 VR_CACHE_TEST_MYSQL_PORT=<本机专用 MySQL 测试端口> \
@@ -143,7 +143,7 @@ uv run --locked pytest -q tests/test_api_cache_integration.py
 
 `.github/workflows/ci.yml` 默认只有一个 Ubuntu 24.04 x86-64 任务，与当前 WSL 系统保持一致，统一运行 `scripts/check.sh`：锁文件安装、`uv pip check`、Ruff、Python 语法及业务 JSON 结构检查、完整离线 pytest。Python 固定为部署版本 3.13.11，本机与云端使用同一锁文件。CI 不额外启动 OpenCloudOS 容器，不声称 Ubuntu 检查等同于云端系统验证。
 
-为节省额度，集成任务仅在手动触发并勾选 `integration` 且默认检查通过后运行；它使用 GitHub 的临时 MySQL 5.7.44 / Redis 8.0.5 服务，运行隔离集成测试。测试数据库和凭据均为测试专用，不配置生产 Secrets。工作流只有仓库只读权限，第三方 Actions 固定提交 SHA，启用依赖缓存并自动取消同一分支的旧运行。没有配置自动部署。
+集成任务在手动触发并勾选 `integration` 且默认检查通过后运行，使用临时 MySQL 9.7.4 / Redis 8.0.5 服务。测试数据库和凭据均为测试专用，不配置生产 Secrets。工作流只有仓库只读权限，第三方 Actions 固定提交 SHA，启用依赖缓存并自动取消同一分支的旧运行。没有配置自动部署。
 
 Ruff 明确启用 E4/E7/E9/F；内置 blivedm 仅为既有星号导入保留 F403/F405 的文件级兼容，其他规则照常检查。`gift.py` 的延后导入用于原有兼容接线，按行说明 E402 原因；不借配置迁移更改 V2 协议处理。
 
