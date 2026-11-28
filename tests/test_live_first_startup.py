@@ -476,3 +476,44 @@ def test_ambiguous_rooms_do_not_block_siblings_or_admit_events(monkeypatch):
         assert runtime_state.RECOVERING_ROOMS == {2}
 
     asyncio.run(scenario())
+
+
+def test_unavailable_status_at_startup_allows_websocket_connection(monkeypatch):
+    from types import SimpleNamespace
+
+    class BadBatch:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def json(self, **kwargs):
+            return {"code": 0, "data": []}
+
+    async def scenario():
+        started = asyncio.Event()
+        async def start(room):
+            assert room == 10
+            runtime_state.ROOM_CLIENTS[room] = SimpleNamespace(wait_connected=asyncio.Event().wait)
+            started.set()
+
+        async def tick(_seconds):
+            await anyio.lowlevel.checkpoint()
+
+        monkeypatch.setattr(monitoring_jobs.room_config, "get_room_ids", lambda: [10])
+        monkeypatch.setattr(runtime_state, "ROOM_UIDS", {10: 1})
+        monkeypatch.setattr(runtime_state, "ROOM_CLIENTS", {})
+        monkeypatch.setattr(runtime_state, "aiohttp_session", SimpleNamespace(get=lambda *a, **kw: BadBatch()))
+        monkeypatch.setattr(monitoring_jobs, "start_client", start)
+        monkeypatch.setattr(monitoring_jobs.asyncio, "sleep", tick)
+        with anyio.fail_after(2):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(monitoring_jobs.run_clients_loop)
+                await started.wait()
+                tasks.cancel_scope.cancel()
+        assert not runtime_state.CURRENT_SESSIONS
+
+    asyncio.run(scenario())

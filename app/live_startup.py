@@ -14,8 +14,13 @@ logger = logging.getLogger(__name__)
 
 async def status_batches() -> AsyncIterator[dict[int, tuple[int, dict | None]]]:
     """Yield successful batches immediately. A failed batch is retried on the next poll."""
+    from .ws_live_status import owns_status
+
     rooms = {room: runtime_state.ROOM_UIDS[room] for room in room_config.get_room_ids()
-             if room in runtime_state.ROOM_UIDS}
+             if room in runtime_state.ROOM_UIDS and (
+                 runtime_state.LAST_STATUS.get(room) == 1
+                 or not owns_status(runtime_state.ROOM_CLIENTS.get(room))
+             )}
     uids = list(dict.fromkeys(rooms.values()))
     for offset in range(0, len(uids), 100):
         batch = uids[offset:offset + 100]
@@ -99,7 +104,7 @@ class LiveIdentityChecks:
         if confirmed is None:
             return None
         return {**(info or {}), "live_status": 1, "live_time": int(confirmed.timestamp()),
-                "title": detail.get("title") or (info or {}).get("title", "")}
+                "title": (info or {}).get("title", "")}
 
 
 class StartupRooms:
@@ -134,10 +139,14 @@ class StartupRooms:
                         eligible = [room for room in pending if room in self.observed
                                     and self.observed[room] == runtime_state.ROOM_UIDS.get(room)]
                         room = next((room for room in eligible if runtime_state.LAST_STATUS.get(room) == 1), None)
-                        if room is None and self.checked_uids and eligible and not any(
+                        if room is None and self.checked_uids and not any(
                             runtime_state.LAST_STATUS.get(r) == 1 for r in deadlines
                         ):
-                            room = eligible[0]
+                            # Even a completely failed status batch must allow the primary WS to start.
+                            room = next(iter(eligible), None)
+                            if room is None:
+                                room = next((r for r in pending
+                                             if runtime_state.ROOM_UIDS.get(r) in self.checked_uids), None)
                         if room is not None:
                             if room not in runtime_state.ROOM_CLIENTS:
                                 await start_client(room)

@@ -107,6 +107,16 @@ def open_room_ids(model, rooms: list[int]) -> set[int]:
         ).distinct()}
 
 
+def fill_missing_title(model, session_id: int, title: str) -> None:
+    with Session.begin() as session:
+        row = session.query(model).filter_by(id=session_id, end_time=None, title="").first()
+        if row is None:
+            return
+        row.title = title
+        month = row.month
+    notify_history_change(month)
+
+
 def find_open_session(model, room_id: int, *, strict: bool = False) -> tuple[int, datetime.datetime] | None:
     session = Session()
     try:

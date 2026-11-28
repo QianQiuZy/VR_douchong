@@ -106,6 +106,9 @@ class BaseHandler(HandlerInterface):
         for message in messages:
             self._on_gift(client, message)
 
+    def __room_event_callback(self, client, command):
+        return self._on_room_event(client, web_models.RoomEventMessage.from_command(command))
+
     def __red_pocket_v2_new_callback(self, client, command):
         try:
             message = web_models.PopularityRedPocketV2NewMessage.from_command(command.get('data'))
@@ -127,6 +130,65 @@ class BaseHandler(HandlerInterface):
         'SEND_GIFT': _make_msg_callback('_on_gift', web_models.GiftMessage),
         'SEND_GIFT_V2': __send_gift_v2_callback,
         'POPULARITY_RED_POCKET_V2_NEW': __red_pocket_v2_new_callback,
+        # 已识别的 Web 房间通知，共用保留原始字段的回调。
+        **dict.fromkeys((
+            'ANCHOR_LOTTERY_ACTIVITY',
+            'ANCHOR_LOT_AWARD',
+            'ANCHOR_LOT_CHECKSTATUS',
+            'ANCHOR_LOT_END',
+            'ANCHOR_LOT_NOTICE',
+            'ANCHOR_LOT_START',
+            'BENEFIT_CARD_CLEAN',
+            'CHG_RANK_REFRESH',
+            'COMMON_ANIMATION',
+            'DANMU_ACTIVITY_CONFIG',
+            'DANMU_AGGREGATION',
+            'FLOW_REWARD_CARD',
+            'FULL_SCREEN_MASK_OPEN',
+            'FULL_SCREEN_SPECIAL_EFFECT',
+            'GIFT_COMBO',
+            'GIFT_PANEL_PLAN',
+            'GOTO_BUY_FLOW',
+            'GUARD_FAME_GLORY_EVENT',
+            'GUARD_HONOR_THOUSAND',
+            'HOT_ROOM_NOTIFY',
+            'INTERACTIVE_USER',
+            'LIKE_GUIDE_USER',
+            'LIKE_INFO_V3_NOTICE',
+            'LIVE_ANI_RES_UPDATE',
+            'LIVE_INTERACT_GAME_STATE_CHANGE',
+            'LIVE_MULTI_VIEW_EVENT_CHANGE',
+            'LIVE_MULTI_VIEW_NEW_INFO',
+            'LIVE_OPEN_PLATFORM_GAME',
+            'OTHER_SLICE_LOADING_RESULT',
+            'PANEL_INTERACTIVE_NOTIFY_CHANGE',
+            'PLAYURL_RELOAD',
+            'PLAYURL_RELOAD_MASTER',
+            'POPULARITY_RANK_TAB_CHG',
+            'POPULARITY_RED_POCKET_NEW',
+            'POPULARITY_RED_POCKET_V2_START',
+            'RADIO_BACKGROUND',
+            'RANK_CHANGED',
+            'RANK_REM',
+            'RECALL_DANMU_MSG',
+            'REVENUE_DISPLAY_EFFECT',
+            'RING_STATUS_CHANGE',
+            'RING_STATUS_CHANGE_V2',
+            'ROOM_CHANGE',
+            'ROOM_SKIN_MSG',
+            'SHOPPING_CART_SHOW',
+            'SUPER_CHAT_ENTRANCE',
+            'SYS_MSG',
+            'TRADING_SCORE',
+            'VOICE_CHAT_UPDATE',
+            'VOICE_JOIN_LIST',
+            'VOICE_JOIN_ROOM_COUNT_INFO',
+            'VOICE_JOIN_SWITCH',
+            'VOICE_JOIN_SWITCH_V2',
+            'WIDGET_GIFT_STAR_PROCESS_V2',
+            'WIDGET_WISH_INFO',
+            'WIDGET_WISH_INFO_V2',
+        ), __room_event_callback),
         # 上舰
         'GUARD_BUY': _make_msg_callback('_on_buy_guard', web_models.GuardBuyMessage),
         # 另一个上舰消息
@@ -197,6 +259,9 @@ class BaseHandler(HandlerInterface):
 
     def _on_gift(self, client: ws_base.WebSocketClientBase, message: web_models.GiftMessage):
         """礼物"""
+
+    def _on_room_event(self, client: ws_base.WebSocketClientBase, message: web_models.RoomEventMessage):
+        """已识别的房间通知，通过 message.cmd 区分命令。"""
 
     def _on_red_pocket_v2_new(
         self, client: ws_base.WebSocketClientBase,

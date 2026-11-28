@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import json
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import MetaData, create_engine, event
@@ -19,6 +20,8 @@ from app import (
 )
 from app.blivedm.clients.ws_base import WebSocketClientBase
 from app.event_ingestion import MyHandler
+from app.live_client import AuthenticatedLiveClient
+from app.ws_live_status import RoomStatusFeed
 from app.models import LiveSession, LiveSession15mStats, RoomLiveStats
 from app.repositories import live_sessions, live_stats, session_15m, session_duration
 
@@ -112,6 +115,221 @@ def poll(monkeypatch, now, status, start=None):
     monkeypatch.setattr(monitoring_jobs.asyncio, "sleep", stop)
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(monitoring_jobs.monitor_all_rooms_status())
+
+
+@pytest.fixture
+def room_socket(duration_state, monkeypatch):
+    client = AuthenticatedLiveClient.__new__(AuthenticatedLiveClient)
+    client._room_id = client._tmp_room_id = ROOM
+    client._websocket = SimpleNamespace(closed=False)
+    client._health_authenticated = True
+    client.status_feed = RoomStatusFeed()
+    monkeypatch.setattr(runtime_state, "ROOM_CLIENTS", {ROOM: client})
+    monkeypatch.setattr(monitoring_jobs, "init_concurrency_cache", lambda *args: None)
+    return client
+
+
+def test_ws_transitions_titles_and_grace(duration_state, room_socket, monkeypatch):
+    factory, _, _ = duration_state
+    handler = MyHandler()
+    def send(cmd, when, **fields):
+        monkeypatch.setattr(monitoring_jobs, "_now", lambda: when)
+        handler.handle(room_socket, {"cmd": cmd, "roomid": str(ROOM), **fields})
+
+    send("LIVE", START, live_time=int(START.timestamp()), live_key="A")
+    sid = runtime_state.event_session(ROOM)
+    assert sid and runtime_state.LAST_STATUS[ROOM] == 1
+    later = START + datetime.timedelta(minutes=30)
+    send("LIVE", later, live_key="A")
+    poll(monkeypatch, later, 0)
+    assert runtime_state.STREAM_STARTS[ROOM] == START
+    assert runtime_state.event_session(ROOM) == sid
+    assert runtime_state.LIVE_INFO[ROOM]["title"] == "new"
+    with factory() as db:
+        assert db.get(LiveSession, sid).title == "new"
+    send("PREPARING", later + datetime.timedelta(seconds=5), send_time=int(later.timestamp()*1000))
+    send("PREPARING", later + datetime.timedelta(seconds=6), round=1)
+    send("LIVE", later + datetime.timedelta(seconds=7), live_key="A")
+    assert runtime_state.LAST_STATUS[ROOM] == 0 and runtime_state.PENDING_SESSION_ENDS[ROOM] == later
+    reopened = later + datetime.timedelta(seconds=180)
+    send("LIVE", reopened, live_time=int(reopened.timestamp()), live_key="B")
+    send("PREPARING", reopened, send_time=int(later.timestamp()*1000))
+    assert runtime_state.event_session(ROOM) == sid
+    assert runtime_state.STREAM_STARTS[ROOM] == reopened
+    stop = reopened + datetime.timedelta(minutes=1)
+    send("PREPARING", stop)
+    poll(monkeypatch, stop + datetime.timedelta(seconds=181), 1)
+    with factory() as db:
+        assert db.get(LiveSession, sid).end_time == stop
+
+
+def test_ws_undated_live_and_http_reconnect(duration_state, room_socket, monkeypatch):
+    handler = MyHandler()
+    now = START + datetime.timedelta(seconds=30)
+    monkeypatch.setattr(monitoring_jobs, "_now", lambda: now)
+    def send(**fields):
+        handler.handle(room_socket, {"cmd": "LIVE", "roomid": ROOM, "live_key": "A", **fields})
+
+    send()
+    assert runtime_state.LAST_STATUS[ROOM] == 1 and runtime_state.event_session(ROOM) is None
+    poll(monkeypatch, now, 0)
+    assert runtime_state.LAST_STATUS[ROOM] == 1
+    send(live_time=int(START.timestamp()))
+    sid = runtime_state.event_session(ROOM)
+    assert sid and runtime_state.STREAM_STARTS[ROOM] == START
+    assert runtime_state.LIVE_INFO[ROOM]["title"] == "new"
+    room_socket._health_authenticated = False
+    room_socket.status_feed.reset_connection()
+    poll(monkeypatch, now, 0)
+    assert runtime_state.PENDING_SESSION_ENDS[ROOM] == now
+    room_socket._health_authenticated = True
+    reopened = now + datetime.timedelta(seconds=60)
+    poll(monkeypatch, reopened, 1, reopened)
+    assert room_socket.status_feed.synchronized
+    assert runtime_state.event_session(ROOM) == sid and runtime_state.STREAM_STARTS[ROOM] == reopened
+    poll(monkeypatch, reopened, 0)
+    assert runtime_state.LAST_STATUS[ROOM] == 1
+
+
+@pytest.mark.parametrize("kind", ["CUT_OFF", "ROOM_LOCK", "WARNING"])
+def test_ws_ordinary_events_respect_moderation(duration_state, room_socket, monkeypatch, kind):
+    handler = MyHandler()
+    now = START + datetime.timedelta(hours=1)
+    monkeypatch.setattr(monitoring_jobs, "_now", lambda: now)
+    def send(cmd, **fields):
+        handler.handle(room_socket, {"cmd": cmd, "roomid": ROOM, **fields})
+    send("LIVE", live_time=int(START.timestamp()))
+    sid = runtime_state.event_session(ROOM)
+    handler.handle(room_socket, command(kind, now))
+    assert runtime_state.INVALID_DURATION_SESSIONS[ROOM] == sid
+    if kind == "WARNING":
+        assert runtime_state.LAST_STATUS[ROOM] == 1
+        send("PREPARING", send_time=int(now.timestamp()*1000))
+    else:
+        send("LIVE", live_time=int(START.timestamp()))
+        send("LIVE")
+        send("PREPARING")
+    assert runtime_state.LAST_STATUS[ROOM] == 0
+    assert runtime_state.PENDING_SESSION_ENDS[ROOM] == now
+
+
+def test_http_in_flight_cannot_undo_ws_event(duration_state, room_socket, monkeypatch):
+    room = ROOM
+    runtime_state.ROOM_UIDS[room] = 77
+    monkeypatch.setattr(runtime_state, "aiohttp_session", object())
+    monkeypatch.setattr(monitoring_jobs.room_config, "get_room_ids", lambda: [room])
+    monkeypatch.setattr(monitoring_jobs, "_now", lambda: START)
+    async def batches():
+        MyHandler().handle(room_socket, {"cmd": "LIVE", "roomid": room, "live_time": int(START.timestamp())})
+        room_socket._health_authenticated = False
+        room_socket.status_feed.reset_connection()
+        yield {room: (77, {"live_status": 0, "title": "old"})}
+    async def stop(_seconds):
+        raise asyncio.CancelledError
+    monkeypatch.setattr(monitoring_jobs, "status_batches", batches)
+    monkeypatch.setattr(monitoring_jobs.asyncio, "sleep", stop)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(monitoring_jobs.monitor_all_rooms_status())
+    assert runtime_state.LAST_STATUS[room] == 1 and runtime_state.event_session(room)
+    assert runtime_state.LIVE_INFO[room]["title"] == ""
+
+
+def test_ws_retry_keeps_original_start_and_discards_foreign_frames(duration_state, room_socket, monkeypatch):
+    factory, _, _ = duration_state
+    packet = {"cmd": "LIVE", "roomid": ROOM, "live_time": int(START.timestamp())}
+    handle = MyHandler().handle
+    monkeypatch.setattr(monitoring_jobs, "_now", lambda: START)
+    handle(room_socket, dict(packet, roomid=ROOM + 1))
+    runtime_state.ROOM_CLIENTS.pop(ROOM)
+    handle(room_socket, packet)
+    assert not room_socket.status_feed.pending and ROOM not in runtime_state.LAST_STATUS
+    runtime_state.ROOM_CLIENTS[ROOM] = room_socket
+    with monkeypatch.context() as fail:
+        fail.setattr(LiveSession, "start_session", lambda *args: None)
+        handle(room_socket, packet)
+        assert len(room_socket.status_feed.pending) == 1 and runtime_state.event_session(ROOM) is None
+    now = START + datetime.timedelta(seconds=45)
+    poll(monkeypatch, now, 0)
+    assert not room_socket.status_feed.pending
+    sid = runtime_state.event_session(ROOM)
+    with factory() as db:
+        assert db.get(LiveSession, sid).start_time == START
+
+
+def test_new_undated_broadcast_does_not_accrue_time_to_previous_one(duration_state, room_socket, monkeypatch):
+    factory, _, _ = duration_state
+    handle = MyHandler().handle
+    monkeypatch.setattr(monitoring_jobs, "_now", lambda: START)
+    handle(room_socket, {"cmd": "LIVE", "live_key": "A", "roomid": ROOM, "live_time": int(START.timestamp())})
+    old = runtime_state.event_session(ROOM)
+    seen = START + datetime.timedelta(minutes=10)
+    poll(monkeypatch, seen, 1, START)
+    now = seen + datetime.timedelta(minutes=5)
+    monkeypatch.setattr(monitoring_jobs, "_now", lambda: now)
+    handle(room_socket, {"cmd": "LIVE", "live_key": "B", "roomid": ROOM})
+    assert runtime_state.event_session(ROOM) is None and runtime_state.LAST_STATUS[ROOM] == 1
+    handle(room_socket, {"cmd": "PREPARING", "roomid": str(ROOM)})
+    poll(monkeypatch, now, 0)
+    with factory() as db:
+        assert db.get(LiveSession, old).end_time == seen
+
+
+def test_live_and_preparing_through_collector_websocket(duration_state, monkeypatch):
+    import aiohttp
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+    from app.blivedm.clients.ws_base import HEADER_STRUCT, Operation
+
+    def command_frame(data):
+        body = json.dumps(data).encode()
+        return HEADER_STRUCT.pack(16 + len(body), 16, 0, Operation.SEND_MSG_REPLY, 1) + body
+
+    async def run():
+        ended = START + datetime.timedelta(minutes=1)
+        finish = asyncio.Event()
+        async def serve(request):
+            socket = web.WebSocketResponse()
+            await socket.prepare(request)
+            await socket.receive()  # Room authentication packet.
+            await socket.send_bytes(AuthenticatedLiveClient._make_packet({"code": 0}, Operation.AUTH_REPLY)
+                                    + command_frame({"cmd": "LIVE", "roomid": ROOM, "live_time": int(START.timestamp())}))
+            await finish.wait()
+            await socket.send_bytes(command_frame({"cmd": "PREPARING", "roomid": str(ROOM),
+                                                   "send_time": int(ended.timestamp() * 1000)}))
+            async for _ in socket:
+                pass
+            return socket
+
+        async def initialize(client, _retry):
+            client._room_id = ROOM
+            client._host_server_token = "offline-test"
+
+        app = web.Application()
+        app.router.add_get("/ws", serve)
+        async with TestServer(app) as server, aiohttp.ClientSession() as session:
+            monkeypatch.setattr(runtime_state, "aiohttp_session", session)
+            monkeypatch.setattr(runtime_state, "ROOM_CLIENTS", {})
+            monkeypatch.setattr(AuthenticatedLiveClient, "_on_before_ws_connect", initialize)
+            monkeypatch.setattr(AuthenticatedLiveClient, "_get_ws_url", lambda *_: str(server.make_url("/ws")))
+            monkeypatch.setattr(monitoring_jobs, "_now", lambda: ended)
+            monkeypatch.setattr(monitoring_jobs, "init_concurrency_cache", lambda *args: None)
+            await monitoring_jobs.start_client(ROOM)
+            client = runtime_state.ROOM_CLIENTS[ROOM]
+            try:
+                async with asyncio.timeout(3):
+                    await client.wait_connected()
+                    while runtime_state.event_session(ROOM) is None:
+                        await asyncio.sleep(0.001)
+                    assert runtime_state.STREAM_STARTS[ROOM] == START
+                    finish.set()
+                    while runtime_state.LAST_STATUS[ROOM] == 1:
+                        await asyncio.sleep(0.001)
+                    assert runtime_state.PENDING_SESSION_ENDS[ROOM] == ended
+            finally:
+                finish.set()
+                await client.stop_and_close()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("kind", ["WARNING", "CUT_OFF", "ROOM_LOCK"])

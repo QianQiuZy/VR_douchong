@@ -79,7 +79,7 @@ class RedPocketV2Tests(unittest.TestCase):
         })
 
     def test_library_version(self):
-        self.assertEqual(__version__, "1.0.4-VR_douchong")
+        self.assertEqual(__version__, "1.0.5-VR_douchong")
 
 
 if __name__ == "__main__":

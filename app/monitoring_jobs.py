@@ -24,6 +24,7 @@ from . import (
     room_lock_events,
     room_uid_cache,
     runtime_state,
+    ws_live_status,
 )
 from .blivedm.clients.ws_base import InitError
 from .config import ATTENTION_DAILY_ROOM_SLEEP_SECONDS
@@ -531,6 +532,20 @@ def _restore_offline_room(room_id: int, now: datetime.datetime) -> None:
             room_lifecycle.finish_live_session(room_id, ended, lifecycle_dependencies())
 
 
+def _update_http_title(room: int, title: str | None) -> None:
+    if not isinstance(title, str) or not title or runtime_state.LAST_STATUS.get(room) != 1:
+        return
+    live = runtime_state.LIVE_INFO.setdefault(room, {})
+    session_id = runtime_state.event_session(room)
+    if session_id is not None and not live.get("title"):
+        try:
+            LiveSession.fill_missing_title(session_id, title)
+        except SQLAlchemyError as exc:
+            logger.warning("[LiveStatus] 补写场次标题失败 room_id=%s error=%s", room, type(exc).__name__)
+            return
+    live["title"] = title
+
+
 def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool:
     """Finish the lifecycle transition before an initial WebSocket can receive events."""
     from . import room_lifecycle
@@ -558,7 +573,8 @@ def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool
     if status == 1 and start is None:
         return False
     restored_same = False
-    if status == 1 and (previous != 1 or changed):
+    awaiting_start = segment is None and room_id in runtime_state.SESSION_ATTRIBUTION_PAUSED
+    if status == 1 and (previous != 1 or changed or awaiting_start):
         runtime_state.SESSION_ATTRIBUTION_PAUSED.add(room_id)
         pending = room_id in runtime_state.PENDING_SESSION_ENDS and room_id in runtime_state.CURRENT_SESSIONS
         if changed and segment is not None and room_id in runtime_state.CURRENT_SESSIONS:
@@ -587,8 +603,10 @@ def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool
                 room_lifecycle.finish_live_session(
                     room_id, runtime_state.PENDING_SESSION_ENDS[room_id], lifecycle_dependencies()
                 )
+        initial_title = ""
         if session_id is None:
-            session_id = LiveSession.start_session(room_id, start, info.get("title") or "")
+            initial_title = info.get("title") or ""
+            session_id = LiveSession.start_session(room_id, start, initial_title)
             if not session_id:
                 return False
             runtime_state.STREAM_STARTS[room_id] = start
@@ -597,12 +615,14 @@ def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool
             runtime_state.GUARD_FANS_QUEUE.put_nowait((room_id, session_id, "start"))
             runtime_state.ATTENTION_QUEUE.put_nowait((room_id, session_id, "start", now.date()))
         runtime_state.RECOVERING_ROOMS.discard(room_id)
-        runtime_state.LIVE_INFO.setdefault(room_id, {}).update({"live_time": start.strftime("%Y-%m-%d %H:%M:%S"), "title": info.get("title") or ""})
+        live = runtime_state.LIVE_INFO.setdefault(room_id, {})
+        live["live_time"] = start.strftime("%Y-%m-%d %H:%M:%S")
+        live["title"] = initial_title
     elif status != 1:
         if room_id in runtime_state.RECOVERING_ROOMS:
             _restore_offline_room(room_id, now)
             runtime_state.RECOVERING_ROOMS.discard(room_id)
-        elif previous == 1:
+        elif previous == 1 and room_id not in runtime_state.PENDING_SESSION_ENDS:
             room_lifecycle.defer_live_session_finish(room_id, now, lifecycle_dependencies())
         runtime_state.LIVE_INFO.setdefault(room_id, {}).update({"live_time": "0000-00-00 00:00:00", "title": ""})
     if status == 1:
@@ -610,6 +630,8 @@ def _apply_room_status(room_id: int, info: dict, now: datetime.datetime) -> bool
     if status == 1 and not restored_same and room_id in runtime_state.CURRENT_SESSIONS:
         runtime_state.observe_live(room_id, runtime_state.CURRENT_SESSIONS[room_id], now)
     runtime_state.LAST_STATUS[room_id] = status
+    if status == 1:
+        _update_http_title(room_id, info.get("title"))
     return True
 
 
@@ -620,10 +642,16 @@ async def monitor_all_rooms_status(startup: StartupRooms | None = None) -> None:
     inventory_needed = startup is not None
 
     def apply(room, uid, info, now):
-        if runtime_state.ROOM_UIDS.get(room) != uid:
+        if runtime_state.ROOM_UIDS.get(room) != uid or tokens.get(room) != ws_live_status.poll_token(room):
             return False
         if info is None and room in runtime_state.SESSION_ATTRIBUTION_PAUSED:
             return False
+        client = runtime_state.ROOM_CLIENTS.get(room)
+        feed = getattr(client, "status_feed", None)
+        if feed and feed.last_end and info and str(info.get("live_status")) == "1":
+            start = reported_start(info, now)
+            if start and start <= feed.last_end:
+                return False
         if startup is not None:
             startup.observed.pop(room, None)
         try:
@@ -632,6 +660,9 @@ async def monitor_all_rooms_status(startup: StartupRooms | None = None) -> None:
         except Exception as exc:
             logger.error("[LiveStatus] 房间状态处理失败 room_id=%s error=%s", room, type(exc).__name__)
             return False
+        if info is not None and getattr(client, "status_authenticated", False):
+            expected = int(str(info["live_status"]) == "1")
+            client.status_feed.synchronized = runtime_state.LAST_STATUS.get(room) == expected
         if startup is not None:
             startup.observed[room] = uid
             startup.changed.set()
@@ -658,16 +689,27 @@ async def monitor_all_rooms_status(startup: StartupRooms | None = None) -> None:
                 inventory_needed = False
             polled_uids = set(runtime_state.ROOM_UIDS.values()) if startup is not None else set()
             awaiting_identity: set[int] = set()
+            tokens = {room: ws_live_status.poll_token(room) for room in room_config.get_room_ids()}
             async with asyncio.TaskGroup() as details:
                 async for batch in status_batches():
                     now = _now()
                     configured = set(room_config.get_room_ids())
                     for room, (uid, info) in batch.items():
-                        if room not in configured or runtime_state.ROOM_UIDS.get(room) != uid:
+                        if (room not in configured or runtime_state.ROOM_UIDS.get(room) != uid
+                                or tokens.get(room) != ws_live_status.poll_token(room)):
+                            continue
+                        client = runtime_state.ROOM_CLIENTS.get(room)
+                        feed = getattr(client, "status_feed", None)
+                        if feed is not None and feed.pending:
+                            continue
+                        if ws_live_status.owns_status(client):
+                            if isinstance(info, dict):
+                                _update_http_title(room, info.get("title"))
                             continue
                         if info is not None and (not isinstance(info, dict) or str(info.get("live_status")) not in {"0", "1", "2"}):
                             continue
-                        if info is None and room in runtime_state.RECOVERING_ROOMS:
+                        if info is None and (room in runtime_state.RECOVERING_ROOMS
+                                             or runtime_state.LAST_STATUS.get(room) == 1):
                             details.create_task(verify(room, uid, None))
                             continue
                         if info is not None and checks.needs_lookup(room, uid, info, now):
@@ -682,6 +724,18 @@ async def monitor_all_rooms_status(startup: StartupRooms | None = None) -> None:
                         elif apply(room, uid, info, now) and startup is not None:
                             if runtime_state.LAST_STATUS.get(room) == 1 and room not in runtime_state.ROOM_CLIENTS:
                                 await asyncio.sleep(0)
+            for room, client in tuple(runtime_state.ROOM_CLIENTS.items()):
+                feed = getattr(client, "status_feed", None)
+                if feed is not None and feed.pending:
+                    ws_live_status.drain(room, feed)
+                    if feed.pending:
+                        awaiting_identity.add(room)
+                if ws_live_status.owns_status(client) and runtime_state.LAST_STATUS.get(room) == 1:
+                    session_id = runtime_state.event_session(room)
+                    if session_id is None:
+                        awaiting_identity.add(room)
+                    else:
+                        runtime_state.observe_live(room, session_id, _now())
             try:
                 room_lifecycle.finish_expired_live_sessions(_now(), lifecycle_dependencies(), awaiting_identity=awaiting_identity)
             except Exception:

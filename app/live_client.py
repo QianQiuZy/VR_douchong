@@ -8,6 +8,7 @@ import aiohttp
 from . import health_events
 from .blivedm import BLiveClient
 from .blivedm.clients.ws_base import HeaderTuple, InitError, Operation
+from .ws_live_status import RoomStatusFeed
 
 
 class AuthenticatedLiveClient(BLiveClient):
@@ -15,6 +16,7 @@ class AuthenticatedLiveClient(BLiveClient):
 
     def __init__(self, room_id: int, *, session: aiohttp.ClientSession | None = None) -> None:
         super().__init__(room_id, session=session)
+        self.status_feed = RoomStatusFeed()
         self._first_connection = asyncio.Event()
         self._authenticated = False
         self._health_transport_open = False
@@ -38,6 +40,8 @@ class AuthenticatedLiveClient(BLiveClient):
         # Carry the last disconnect across clients, but start with no active outage.
         self._daily_reconnect_until = previous._daily_reconnect_until
         self._health_disconnected_at = previous._health_disconnected_at
+        self.status_feed = previous.status_feed
+        self.status_feed.reset_connection()
 
     def start(self) -> None:
         if not self.is_running:
@@ -55,6 +59,7 @@ class AuthenticatedLiveClient(BLiveClient):
         await super()._on_ws_connect()
 
     async def _on_ws_close(self) -> None:
+        self.status_feed.reset_connection()
         planned_close = self._health_stop_requested and self._daily_reconnect_until is not None
         if not planned_close:
             # The first replacement attempt failed, possibly before a socket opened.
@@ -91,12 +96,16 @@ class AuthenticatedLiveClient(BLiveClient):
             disconnected_for = round(max(0, time.time() - self._health_disconnected_since), 3)
         return {
             "status": status, "running": self.is_running,
-            "authenticated": bool(open_socket and self._health_authenticated),
+            "authenticated": self.status_authenticated,
             "connected_at": health_events.timestamp(self._health_connected_at),
             "last_disconnected_at": health_events.timestamp(self._health_disconnected_at),
             "last_message_at": health_events.timestamp(self._health_last_message_at),
             "disconnected_for_seconds": disconnected_for,
         }
+
+    @property
+    def status_authenticated(self) -> bool:
+        return self._health_authenticated and self._websocket is not None and not self._websocket.closed
 
     async def wait_connected(self) -> None:
         await self._first_connection.wait()
@@ -106,6 +115,7 @@ class AuthenticatedLiveClient(BLiveClient):
     async def _parse_business_message(self, header: HeaderTuple, body: bytes) -> None:
         await super()._parse_business_message(header, body)
         if header.operation == Operation.AUTH_REPLY:
+            self.status_feed.reset_connection()
             self._daily_reconnect_until = None
             self._authenticated = True
             self._health_authenticated = True

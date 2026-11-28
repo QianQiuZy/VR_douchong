@@ -135,7 +135,7 @@ wss://{host}:{wss_port}/sub
 
 `ROOM_LOCK` 的 `room_id`、`send_time`（毫秒时间戳）和 `expire`（北京时间的解封时间）位于消息顶层，不在 `data` 中。采集器在解封前忽略该房间的滞后在播状态；不再通过 `room_init` 推断封禁。
 
-本项目也处理顶层 `WARNING`（`roomid`、毫秒 `send_time`）：仅作废当前片段有效时长，不主动下播。`CUT_OFF`、`ROOM_LOCK` 作废当前片段并强制下播，保留 180 秒场次合并边界。`LIVE`、`PREPARING` 当前未接入业务回调，状态 API 轮询仍负责开下播校正，详见 [parsing.md](./parsing.md)。
+本项目也处理顶层 `WARNING`（`roomid`、毫秒 `send_time`）：仅作废当前片段有效时长，不主动下播。`CUT_OFF`、`ROOM_LOCK` 作废当前片段并强制下播，保留 180 秒场次合并边界。`LIVE`、`PREPARING` 负责已鉴权房间的普通开下播。批量状态 API 提供标题，并在未连接或重连待同步时补查状态，详见 [parsing.md](./parsing.md)。
 
 ### 活动/抽奖
 

@@ -1,16 +1,20 @@
 """Canonical mutable runtime state and queue singletons."""
 
+from __future__ import annotations
+
 import asyncio
 import datetime
 import threading
 from collections import deque
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import aiohttp
 
 from . import PendingDanmaku
 from . import config
-from .live_client import AuthenticatedLiveClient
+if TYPE_CHECKING:
+    from .live_client import AuthenticatedLiveClient
 
 # Entry timestamps use Shanghai time explicitly, independently of the host TZ.
 SHANGHAI = datetime.timezone(datetime.timedelta(hours=8), name="Asia/Shanghai")
@@ -37,7 +41,7 @@ RECONNECT_DAILY_STATE = {"date": None, "done": set()}
 
 LAST_STATUS: dict[int, int] = {}
 STREAM_STARTS: dict[int, datetime.datetime] = {}
-# Keyed by session ID; only a successful live status poll advances this time.
+# Last observation of an active broadcast via the room socket or HTTP fallback.
 LAST_LIVE_OBSERVATIONS: dict[int, datetime.datetime] = {}
 LIVE_INFO: dict[int, dict[str, str]] = {}
 # Open rows awaiting a first explicit status, and rooms whose events cannot

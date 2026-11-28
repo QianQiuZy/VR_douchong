@@ -19,6 +19,7 @@ from . import (
     config,
     room_lock_events,
     runtime_state,
+    ws_live_status,
 )
 from .metrics_runtime import (
     current_bucket_index,
@@ -275,6 +276,8 @@ class MyHandler(blivedm.BaseHandler):
 
     _CMD_CALLBACK_DICT: ClassVar[dict] = {
         **blivedm.BaseHandler._CMD_CALLBACK_DICT,
+        "LIVE": ws_live_status.receive,
+        "PREPARING": ws_live_status.receive,
         "ROOM_LOCK": room_lock_events.handle_room_lock,
         "CUT_OFF": room_lock_events.handle_cut_off,
         "WARNING": room_lock_events.handle_warning,

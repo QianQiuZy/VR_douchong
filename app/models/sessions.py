@@ -17,6 +17,7 @@ from ..repositories.live_sessions import (
     add_values_by_room_open,
     checkpoint_live_observations,
     close_session_by_id,
+    fill_missing_title,
     find_open_session,
     set_payer_count,
     start_session,
@@ -78,6 +79,10 @@ class LiveSession(Base):
     @classmethod
     def start_session(cls, room_id: int, start_dt: datetime.datetime, title: str) -> int | None:
         return start_session(cls, room_id, start_dt, title)
+
+    @classmethod
+    def fill_missing_title(cls, session_id: int, title: str) -> None:
+        fill_missing_title(cls, session_id, title)
 
     @classmethod
     def find_open_session(cls, room_id: int, *, strict: bool = False) -> tuple[int, datetime.datetime] | None:

@@ -21,6 +21,7 @@ __all__ = (
     'InteractWordMessage',
     'InteractWordV2Message',
     'PopularityRedPocketV2NewMessage',
+    'RoomEventMessage',
     'SendGiftV2DecodeError',
     'SendGiftV2Message',
     'SuperChatDeleteMessage',
@@ -41,6 +42,44 @@ class HeartbeatMessage:
     def from_command(cls, data: dict):
         return cls(
             popularity=data['popularity'],
+        )
+
+
+@dataclasses.dataclass
+class RoomEventMessage:
+    """Web 房间通知。data 保留原始 JSON 类型，raw 保留带后缀的命令和全部顶层字段。"""
+
+    cmd: str
+    data: Any
+    room_id: Optional[int]
+    send_time: Optional[int]
+    msg_id: Optional[str]
+    raw: dict = dataclasses.field(repr=False)
+
+    @classmethod
+    def from_command(cls, command: dict):
+        cmd = command['cmd'].partition(':')[0]
+        if 'data' in command:
+            data = command['data']
+        else:
+            # SYS_MSG 和 ROOM_SKIN_MSG 直接把消息字段放在顶层。
+            data = {key: value for key, value in command.items() if key != 'cmd'}
+
+        room_id = command.get('room_id', command.get('roomid'))
+        if room_id is None and isinstance(data, dict):
+            room_id = data.get('room_id', data.get('roomid'))
+        if isinstance(room_id, str) and room_id.isascii() and room_id.isdecimal():
+            try:
+                room_id = int(room_id)
+            except ValueError:
+                room_id = None
+        return cls(
+            cmd=cmd,
+            data=data,
+            room_id=room_id if type(room_id) is int else None,
+            send_time=command.get('send_time'),
+            msg_id=command.get('msg_id'),
+            raw=command,
         )
 
 
